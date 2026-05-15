@@ -6,112 +6,103 @@
 <title>Remote Monitor — CCTV</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Segoe UI', system-ui, sans-serif; background: #ffffff; color: #000; min-height: 100vh; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: #000; min-height: 100vh; }
 
-/* ── Top Bar ── */
 #topbar {
   background: #fff; border-bottom: 2px solid #4caf50;
-  padding: 12px 20px; display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 16px; display: flex; align-items: center; justify-content: space-between;
   position: sticky; top: 0; z-index: 100;
 }
-#topbar h1 { font-size: 20px; color: #2e7d32; font-weight: 700; }
-#topbar-right { display: flex; gap: 10px; align-items: center; font-size: 14px; }
+#topbar h1 { font-size: 16px; color: #2e7d32; font-weight: 700; }
+#topbar-right { display: flex; gap: 8px; align-items: center; font-size: 12px; }
 #topbar-right button {
   background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7;
-  padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+  padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600;
 }
 #topbar-right button:hover { background: #c8e6c9; }
-#topbar-right button.primary { background: #4caf50; color: #fff; border-color: #4caf50; }
-#status-dot { width: 10px; height: 10px; border-radius: 50%; background: #ccc; display: inline-block; }
-#status-dot.online { background: #4caf50; box-shadow: 0 0 8px #4caf50; }
+#status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; display: inline-block; }
+#status-dot.online { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
 
-/* ── CCTV Grid ── */
 #cctv-grid {
-  display: grid; gap: 6px; padding: 6px;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  min-height: calc(100vh - 58px);
+  display: grid; gap: 3px; padding: 3px;
+  min-height: calc(100vh - 42px);
 }
 .cctv-cell {
-  background: #fff; border: 2px solid #e0e0e0; border-radius: 6px;
+  background: #fff; border: 1px solid #e0e0e0; border-radius: 3px;
   overflow: hidden; cursor: pointer; position: relative;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s;
 }
-.cctv-cell:hover { border-color: #4caf50; box-shadow: 0 2px 12px rgba(76,175,80,0.2); }
+.cctv-cell:hover { border-color: #4caf50; box-shadow: 0 1px 6px rgba(0,0,0,0.1); }
 .cctv-cell .cell-header {
   position: absolute; top: 0; left: 0; right: 0; z-index: 2;
-  background: linear-gradient(180deg, rgba(255,255,255,0.92) 0%, transparent 100%);
-  padding: 8px 12px; display: flex; justify-content: space-between; align-items: center;
+  background: linear-gradient(180deg, rgba(255,255,255,0.88) 0%, transparent 100%);
+  padding: 2px 6px; display: flex; justify-content: space-between; align-items: center;
 }
-.cctv-cell .cell-name { font-size: 15px; font-weight: 700; color: #1b5e20; }
-.cctv-cell .cell-ip { font-size: 12px; color: #555; font-family: monospace; margin-left: 8px; }
+.cctv-cell .cell-name { font-weight: 700; color: #1b5e20; }
+.cctv-cell .cell-ips { display: flex; flex-direction: column; gap: 1px; font-family: monospace; color: #555; }
+.cctv-cell .ip-line { white-space: nowrap; }
 .cctv-cell .cell-live {
-  font-size: 11px; color: #d32f2f; font-weight: 700; letter-spacing: 1px;
-  display: flex; align-items: center; gap: 5px;
+  color: #d32f2f; font-weight: 700; display: flex; align-items: center; gap: 2px;
 }
 .cctv-cell .cell-live::before {
-  content: ''; width: 8px; height: 8px; border-radius: 50%; background: #d32f2f;
+  content: ''; width: 4px; height: 4px; border-radius: 50%; background: #d32f2f;
   animation: blink 1s infinite;
 }
 @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 .cctv-cell img {
   width: 100%; display: block; aspect-ratio: 16/9; object-fit: contain;
-  background: #f0f0f0; transition: opacity 0.15s;
+  background: #f5f5f5;
 }
 .cctv-cell .cell-footer {
   position: absolute; bottom: 0; left: 0; right: 0; z-index: 2;
-  background: linear-gradient(0deg, rgba(255,255,255,0.92) 0%, transparent 100%);
-  padding: 8px 12px; font-size: 12px; color: #555;
+  background: linear-gradient(0deg, rgba(255,255,255,0.88) 0%, transparent 100%);
+  padding: 2px 6px; font-size: 9px; color: #666;
   display: flex; justify-content: space-between; align-items: center;
 }
-.cctv-cell .cell-footer .open-link {
-  color: #2e7d32; font-weight: 600; font-size: 14px; text-decoration: none;
-}
+.cctv-cell .cell-footer .open-link { color: #2e7d32; font-weight: 600; }
+.cctv-cell .cell-footer .hide-btn { color: #d32f2f; cursor: pointer; font-weight: 600; }
 
-/* ── No agents ── */
 #no-agents-msg {
   display: none; grid-column: 1 / -1; text-align: center;
   padding: 80px 20px; color: #888;
 }
-#no-agents-msg span { font-size: 56px; display: block; margin-bottom: 16px; }
-#no-agents-msg p { font-size: 18px; }
+#no-agents-msg span { font-size: 48px; display: block; margin-bottom: 12px; }
 
-/* ── Login Modal ── */
 #login-overlay {
   display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.3);
   z-index: 500; align-items: center; justify-content: center;
 }
 #login-overlay.show { display: flex; }
 #login-box {
-  background: #fff; border: 2px solid #4caf50; border-radius: 10px;
-  padding: 28px; width: 320px;
+  background: #fff; border: 2px solid #4caf50; border-radius: 8px;
+  padding: 24px; width: 300px; position: relative;
 }
-#login-box h3 { color: #2e7d32; margin-bottom: 14px; font-size: 16px; }
+#login-box h3 { color: #2e7d32; margin-bottom: 12px; font-size: 15px; }
 #login-box input {
-  width: 100%; padding: 10px; background: #fff; border: 2px solid #ccc;
-  color: #000; border-radius: 6px; font-size: 14px; margin-bottom: 10px;
+  width: 100%; padding: 8px; background: #fff; border: 2px solid #ccc;
+  color: #000; border-radius: 5px; font-size: 13px; margin-bottom: 8px;
 }
 #login-box input:focus { border-color: #4caf50; outline: none; }
 #login-box button {
-  width: 100%; padding: 10px; background: #4caf50; color: #fff;
-  border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;
+  width: 100%; padding: 8px; background: #4caf50; color: #fff;
+  border: none; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600;
 }
 #login-box .close-btn {
   background: none; border: none; color: #999; cursor: pointer;
-  font-size: 22px; position: absolute; top: 8px; right: 14px;
+  font-size: 20px; position: absolute; top: 6px; right: 10px;
 }
 
-/* ── Wizard ── */
 #wizard-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 600; align-items: center; justify-content: center; }
 #wizard-overlay.show { display: flex; }
-#wizard-box { background: #fff; border: 2px solid #4caf50; border-radius: 12px; padding: 28px; max-width: 520px; width: 90%; }
-#wizard-box h2 { color: #2e7d32; font-size: 18px; margin-bottom: 18px; }
-.wizard-opt { background: #fff; border: 2px solid #e0e0e0; border-radius: 8px; padding: 14px; margin-bottom: 10px; cursor: pointer; }
+#wizard-box { background: #fff; border: 2px solid #4caf50; border-radius: 10px; padding: 24px; max-width: 500px; width: 90%; }
+#wizard-box h2 { color: #2e7d32; font-size: 16px; margin-bottom: 14px; }
+.wizard-opt { background: #fff; border: 2px solid #e0e0e0; border-radius: 6px; padding: 12px; margin-bottom: 8px; cursor: pointer; }
 .wizard-opt:hover, .wizard-opt.sel { border-color: #4caf50; background: #e8f5e9; }
-.wizard-opt h4 { font-size: 15px; margin-bottom: 4px; }
-.wizard-opt p { font-size: 13px; color: #555; }
-#wizard-box button { background: #4caf50; color: #fff; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; margin-top: 14px; }
+.wizard-opt h4 { font-size: 13px; margin-bottom: 3px; }
+.wizard-opt p { font-size: 11px; color: #555; }
+#wizard-box button { background: #4caf50; color: #fff; border: none; padding: 8px 14px; border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 600; margin-top: 10px; }
 #wizard-box button.secondary { background: #ccc; color: #333; }
-#wizard-status { margin-top: 12px; font-size: 14px; display: none; }
+#wizard-status { margin-top: 10px; font-size: 12px; display: none; }
 #wizard-status.ok { display: block; color: #2e7d32; }
 #wizard-status.err { display: block; color: #d32f2f; }
 </style>
@@ -119,11 +110,14 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #ffffff; colo
 <body>
 
 <div id="topbar">
-  <h1>📡 Remote Monitor <span id="agent-count" style="color:#555;font-weight:normal;font-size:15px">— 0 online</span></h1>
+  <h1>📡 Remote Monitor <span id="agent-count" style="color:#666;font-weight:normal;font-size:12px">— 0 online</span></h1>
   <div id="topbar-right">
     <span id="status-dot"></span>
-    <span id="conn-status" style="color:#555">Connecting...</span>
+    <span id="conn-status" style="color:#666">Connecting...</span>
     <button onclick="openWizard()">⚙ Server</button>
+    <button id="btn-logs" onclick="downloadLogs()" style="display:none">📊 Export Logs</button>
+    <button id="btn-compile" onclick="compileMonthly()" style="display:none">📅 Compile</button>
+    <button id="btn-push" onclick="pushToGitHub()" style="display:none">🚀 Push to GitHub</button>
     <button id="btn-login" onclick="showLogin()">🔒 Login</button>
     <button id="btn-logout" onclick="logout()" style="display:none">🔓 Logout</button>
   </div>
@@ -136,26 +130,24 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #ffffff; colo
   </div>
 </div>
 
-<!-- Login Modal -->
 <div id="login-overlay">
-  <div id="login-box" style="position:relative">
+  <div id="login-box">
     <button class="close-btn" onclick="hideLogin()">×</button>
     <h3>🔐 Admin Login</h3>
     <input type="password" id="login-pass" placeholder="Password" autofocus>
     <button onclick="doLogin()">Unlock</button>
-    <div id="login-error" style="color:#d32f2f;font-size:12px;margin-top:8px;display:none"></div>
+    <div id="login-error" style="color:#d32f2f;font-size:11px;margin-top:6px;display:none"></div>
   </div>
 </div>
 
-<!-- Server Wizard -->
 <div id="wizard-overlay">
   <div id="wizard-box">
     <h2>⚙ Server Setup</h2>
     <div id="wizard-step1">
-      <div class="wizard-opt sel" onclick="pickWizard(this,'render')"><h4>☁️ Render.com</h4><p>Cloud server, agents connect via internet</p></div>
-      <div class="wizard-opt" onclick="pickWizard(this,'local')"><h4>🏠 Local Server</h4><p>This PC becomes the server (LAN only)</p></div>
-      <div class="wizard-opt" onclick="pickWizard(this,'vps')"><h4>🌐 VPS Server</h4><p>Custom VPS URL</p></div>
-      <div style="display:flex;gap:8px;margin-top:12px">
+      <div class="wizard-opt sel" onclick="pickWizard(this,'render')"><h4>☁️ Render.com</h4><p>Cloud server</p></div>
+      <div class="wizard-opt" onclick="pickWizard(this,'local')"><h4>🏠 Local Server</h4><p>This PC (LAN only)</p></div>
+      <div class="wizard-opt" onclick="pickWizard(this,'vps')"><h4>🌐 VPS Server</h4><p>Custom URL</p></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
         <button onclick="wizardApply()">Apply</button>
         <button class="secondary" onclick="closeWizard()">Cancel</button>
       </div>
@@ -168,18 +160,20 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #ffffff; colo
 const AUTH_PASS = 'puneet12';
 let authenticated = false;
 let wizardMode = 'render';
+let hiddenAgents = JSON.parse(localStorage.getItem('hiddenAgents') || '[]');
 
-/* ── Auth ── */
 function showLogin() { document.getElementById('login-overlay').classList.add('show'); document.getElementById('login-pass').focus(); }
 function hideLogin() { document.getElementById('login-overlay').classList.remove('show'); document.getElementById('login-error').style.display = 'none'; }
 function doLogin() {
-  const pass = document.getElementById('login-pass').value;
-  if (pass === AUTH_PASS) {
+  if (document.getElementById('login-pass').value === AUTH_PASS) {
     authenticated = true;
     document.getElementById('btn-login').style.display = 'none';
     document.getElementById('btn-logout').style.display = '';
+    document.getElementById('btn-logs').style.display = '';
+    document.getElementById('btn-compile').style.display = '';
+    document.getElementById('btn-push').style.display = '';
     hideLogin();
-    document.querySelectorAll('.admin-only').forEach(el => el.style.display = '');
+    renderGrid();
   } else {
     const err = document.getElementById('login-error');
     err.textContent = 'Wrong password';
@@ -190,11 +184,13 @@ function logout() {
   authenticated = false;
   document.getElementById('btn-login').style.display = '';
   document.getElementById('btn-logout').style.display = 'none';
-  document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
+  document.getElementById('btn-logs').style.display = 'none';
+  document.getElementById('btn-compile').style.display = 'none';
+  document.getElementById('btn-push').style.display = 'none';
+  renderGrid();
 }
 document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
-/* ── Wizard ── */
 function openWizard() { document.getElementById('wizard-overlay').classList.add('show'); }
 function closeWizard() { document.getElementById('wizard-overlay').classList.remove('show'); }
 function pickWizard(el, mode) {
@@ -208,16 +204,23 @@ function wizardApply() {
   if (wizardMode === 'render') url = 'wss://pu-k752.onrender.com';
   else if (wizardMode === 'local') url = 'ws://' + (window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname) + ':3000';
   else { url = prompt('Enter VPS WebSocket URL (ws:// or wss://):'); if (!url) return; }
-  st.textContent = 'Switching agents...';
+  st.textContent = 'Switching...';
   st.className = '';
   fetch('/api/switch-server', { method: 'POST', headers: { 'x-server-url': url, 'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS) } })
-    .then(r => r.json()).then(d => {
-      st.textContent = '✅ ' + d.agentsNotified + ' agents switched to ' + url;
-      st.className = 'ok';
-    }).catch(e => { st.textContent = '❌ ' + e.message; st.className = 'err'; });
+    .then(r => r.json()).then(d => { st.textContent = '✅ ' + d.agentsNotified + ' agents switched'; st.className = 'ok'; })
+    .catch(e => { st.textContent = '❌ ' + e.message; st.className = 'err'; });
 }
 
-/* ── WebSocket ── */
+function toggleHide(id) {
+  if (hiddenAgents.includes(id)) {
+    hiddenAgents = hiddenAgents.filter(a => a !== id);
+  } else {
+    hiddenAgents.push(id);
+  }
+  localStorage.setItem('hiddenAgents', JSON.stringify(hiddenAgents));
+  renderGrid();
+}
+
 const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsUrl = `${wsProto}//${location.host}?token=TOKEN_PLACEHOLDER`;
 let ws, agents = {}, frames = {};
@@ -231,24 +234,10 @@ function connect() {
   };
   ws.onmessage = e => {
     const d = JSON.parse(e.data);
-    if (d.type === 'agent-list') {
-      agents = {};
-      d.agents.forEach(a => { agents[a.id] = a; });
-      renderGrid();
-    }
-    if (d.type === 'agent-connected') {
-      agents[d.agentId] = { id: d.agentId, name: d.name, ip: d.ip };
-      renderGrid();
-    }
-    if (d.type === 'agent-disconnected') {
-      delete agents[d.agentId];
-      delete frames[d.agentId];
-      renderGrid();
-    }
-    if (d.type === 'frame') {
-      frames[d.agentId] = d.frame;
-      updateFrame(d.agentId, d.frame);
-    }
+    if (d.type === 'agent-list') { agents = {}; d.agents.forEach(a => { agents[a.id] = a; }); renderGrid(); }
+    if (d.type === 'agent-connected') { agents[d.agentId] = { id: d.agentId, name: d.name, ip: d.ip, localIP: d.localIP, publicIP: d.publicIP, hostname: d.hostname }; renderGrid(); }
+    if (d.type === 'agent-disconnected') { delete agents[d.agentId]; delete frames[d.agentId]; renderGrid(); }
+    if (d.type === 'frame') { frames[d.agentId] = d.frame; updateFrame(d.agentId, d.frame); }
   };
   ws.onclose = () => {
     document.getElementById('status-dot').classList.remove('online');
@@ -257,13 +246,35 @@ function connect() {
   };
 }
 
+function getGridCols(count) {
+  if (count <= 1) return '1fr';
+  if (count <= 4) return 'repeat(2, 1fr)';
+  if (count <= 9) return 'repeat(3, 1fr)';
+  if (count <= 16) return 'repeat(4, 1fr)';
+  if (count <= 25) return 'repeat(5, 1fr)';
+  return 'repeat(6, 1fr)';
+}
+
+function getFontSize(count) {
+  if (count <= 4) return { name: 14, ip: 11, live: 10, footer: 11 };
+  if (count <= 9) return { name: 12, ip: 10, live: 9, footer: 10 };
+  if (count <= 16) return { name: 11, ip: 9, live: 8, footer: 9 };
+  return { name: 10, ip: 8, live: 7, footer: 8 };
+}
+
 function renderGrid() {
   const grid = document.getElementById('cctv-grid');
-  const ids = Object.keys(agents);
-  document.getElementById('agent-count').textContent = `— ${ids.length} online`;
-  document.getElementById('no-agents-msg').style.display = ids.length ? 'none' : '';
+  const allIds = Object.keys(agents);
+  const visibleIds = allIds.filter(id => !hiddenAgents.includes(id));
+  const hiddenCount = allIds.length - visibleIds.length;
 
-  ids.forEach(id => {
+  document.getElementById('agent-count').textContent = `— ${allIds.length} online${hiddenCount ? ' (' + hiddenCount + ' hidden)' : ''}`;
+  document.getElementById('no-agents-msg').style.display = allIds.length ? 'none' : '';
+
+  grid.style.gridTemplateColumns = getGridCols(visibleIds.length || 1);
+  const fs = getFontSize(visibleIds.length || 1);
+
+  visibleIds.forEach(id => {
     if (document.getElementById('cell-' + id)) return;
     const a = agents[id];
     const cell = document.createElement('div');
@@ -271,22 +282,38 @@ function renderGrid() {
     cell.id = 'cell-' + id;
     cell.innerHTML = `
       <div class="cell-header">
-        <div><span class="cell-name">${esc(a.name)}</span><span class="cell-ip">${esc(a.ip || '')}</span></div>
-        <span class="cell-live">LIVE</span>
+        <div><span class="cell-name" style="font-size:${fs.name}px">${esc(a.name)}</span></div>
+        <span class="cell-live" style="font-size:${fs.live}px">LIVE</span>
       </div>
       <img id="frame-${id}" src="${frames[id] ? 'data:image/jpeg;base64,' + frames[id] : ''}" alt="">
-      <div class="cell-footer">
-        <span>${id}</span>
-        <span class="admin-only open-link" style="display:${authenticated ? '' : 'none'}">Click to open full view →</span>
+      <div class="cell-footer" style="font-size:${fs.footer}px">
+        <span class="cell-ips">
+          <span class="ip-line">🖧 ${esc(a.localIP || a.ip || 'N/A')}</span>
+          <span class="ip-line">🌐 ${esc(a.publicIP || 'N/A')}</span>
+          <span class="ip-line">💻 ${esc(a.hostname || id)}</span>
+        </span>
+        <span style="display:flex;gap:8px">
+          ${authenticated ? `<span class="hide-btn" onclick="event.stopPropagation();toggleHide('${id}')">✕ hide</span>` : ''}
+          <span class="open-link">Open →</span>
+        </span>
       </div>`;
-    cell.onclick = () => window.open('/view/' + id, '_blank');
+    cell.addEventListener('click', () => window.open('/view/' + id, '_blank'));
     grid.appendChild(cell);
   });
 
+  if (hiddenCount > 0 && authenticated) {
+    const showDiv = document.createElement('div');
+    showDiv.style.cssText = 'grid-column:1/-1;text-align:center;padding:8px;font-size:12px;color:#4caf50;cursor:pointer';
+    showDiv.textContent = `+ ${hiddenCount} hidden — click to show`;
+    showDiv.onclick = () => { hiddenAgents = []; localStorage.setItem('hiddenAgents', '[]'); renderGrid(); };
+    grid.appendChild(showDiv);
+  }
+
   grid.querySelectorAll('.cctv-cell').forEach(cell => {
     const cid = cell.id.replace('cell-', '');
-    if (!agents[cid]) cell.remove();
+    if (!visibleIds.includes(cid)) cell.remove();
   });
+  grid.querySelectorAll('div[style*="grid-column"]').forEach(el => el.remove());
 }
 
 function esc(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]); }
@@ -299,6 +326,27 @@ function updateFrame(agentId, frame) {
     const img = document.getElementById('frame-' + agentId);
     if (img) img.src = 'data:image/jpeg;base64,' + frame;
   }, 200);
+}
+
+function downloadLogs() {
+  const a = document.createElement('a');
+  a.href = '/api/export-logs';
+  a.download = `agent-logs-${new Date().toISOString().slice(0, 7)}.csv`;
+  a.click();
+}
+
+function compileMonthly() {
+  fetch('/api/compile-monthly-report')
+    .then(r => r.json())
+    .then(d => alert(d.success ? `Monthly report compiled: ${d.agentCount} agents` : 'Failed: ' + JSON.stringify(d)))
+    .catch(e => alert('Error: ' + e.message));
+}
+
+function pushToGitHub() {
+  fetch('/api/push-logs-to-github', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => alert(d.success ? 'Logs pushed to GitHub!' : 'Failed: ' + (d.error || JSON.stringify(d))))
+    .catch(e => alert('Error: ' + e.message));
 }
 
 connect();

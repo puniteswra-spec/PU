@@ -2,6 +2,9 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
@@ -15,6 +18,7 @@ const AUTH_TOKEN = crypto.createHash('sha256').update(AUTH_USER + ':' + AUTH_PAS
 const agents = new Map();
 const dashboards = new Set();
 const agentHistory = [];
+const agentLogs = {}; // agentId -> [{timestamp, event, details}]
 
 // Basic Auth middleware
 function auth(req, res, next) {
@@ -534,6 +538,200 @@ app.get('/api/frame/:agentId', auth, (req, res) => {
   }
 });
 
+// API endpoint to get agent logs
+app.get('/api/logs/:agentId?', auth, (req, res) => {
+  const agentId = req.params.agentId;
+  if (agentId) {
+    res.json({ agentId, logs: agentLogs[agentId] || [] });
+  } else {
+    res.json(agentLogs);
+  }
+});
+
+// API endpoint to export logs as CSV (Excel compatible)
+app.get('/api/export-logs', auth, (req, res) => {
+  const now = new Date();
+  const monthStr = now.toISOString().slice(0, 7); // YYYY-MM
+  const rows = [['Timestamp', 'Agent ID', 'Hostname', 'Local IP', 'Public IP', 'Event', 'Details', 'Uptime (min)', 'Idle (s)', 'Active (s)']];
+  
+  for (const [agentId, logs] of Object.entries(agentLogs)) {
+    const agent = agents.get(agentId);
+    const hostname = agent?.hostname || '';
+    const localIP = agent?.localIP || '';
+    const publicIP = agent?.publicIP || '';
+    for (const log of logs) {
+      rows.push([
+        log.timestamp,
+        agentId,
+        hostname,
+        localIP,
+        publicIP,
+        log.event,
+        log.details || '',
+        log.uptime || '',
+        log.idle || '',
+        log.active || ''
+      ]);
+    }
+  }
+  
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="agent-logs-${monthStr}.csv"`);
+  res.send(csv);
+});
+
+// API endpoint to compile monthly log report
+app.get('/api/compile-monthly-report', auth, (req, res) => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`;
+  
+  const report = {
+    period: monthStr,
+    generated: now.toISOString(),
+    agents: {}
+  };
+  
+  for (const [agentId, logs] of Object.entries(agentLogs)) {
+    const agent = agents.get(agentId);
+    const monthlyLogs = logs.filter(l => l.timestamp.startsWith(monthStr));
+    if (monthlyLogs.length > 0) {
+      report.agents[agentId] = {
+        hostname: agent?.hostname || '',
+        localIP: agent?.localIP || '',
+        publicIP: agent?.publicIP || '',
+        totalEvents: monthlyLogs.length,
+        firstSeen: monthlyLogs[0]?.timestamp,
+        lastSeen: monthlyLogs[monthlyLogs.length - 1]?.timestamp,
+        logs: monthlyLogs
+      };
+    }
+  }
+  
+  const logDir = path.join(__dirname, 'logs');
+  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+  const reportPath = path.join(logDir, `report-${monthStr}.json`);
+  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  
+  res.json({ success: true, report: reportPath, agentCount: Object.keys(report.agents).length });
+});
+
+// API endpoint to push logs to GitHub
+app.post('/api/push-logs-to-github', auth, (req, res) => {
+  const now = new Date();
+  const monthStr = now.toISOString().slice(0, 7);
+  
+  const logDir = path.join(__dirname, 'logs');
+  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+  
+  const csvPath = path.join(logDir, `agent-logs-${monthStr}.csv`);
+  const rows = [['Timestamp', 'Agent ID', 'Hostname', 'Local IP', 'Public IP', 'Event', 'Details', 'Uptime (min)', 'Idle (s)', 'Active (s)']];
+  
+  for (const [agentId, logs] of Object.entries(agentLogs)) {
+    const agent = agents.get(agentId);
+    for (const log of logs) {
+      rows.push([
+        log.timestamp,
+        agentId,
+        agent?.hostname || '',
+        agent?.localIP || '',
+        agent?.publicIP || '',
+        log.event,
+        log.details || '',
+        log.uptime || '',
+        log.idle || '',
+        log.active || ''
+      ]);
+    }
+  }
+  
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  fs.writeFileSync(csvPath, csv);
+  
+  const gitDir = path.join(__dirname, '..', 'PU');
+  const logsTargetDir = path.join(gitDir, 'logs');
+  if (!fs.existsSync(logsTargetDir)) fs.mkdirSync(logsTargetDir, { recursive: true });
+  
+  const targetPath = path.join(logsTargetDir, `agent-logs-${monthStr}.csv`);
+  fs.copyFileSync(csvPath, targetPath);
+  
+  exec(`cd "${gitDir}" && git add logs/ && git commit -m "Auto-update: Agent logs ${monthStr}" && git push`, (err, stdout, stderr) => {
+    if (err) {
+      return res.json({ success: false, error: err.message, stdout, stderr });
+    }
+    res.json({ success: true, path: targetPath, stdout: stdout.slice(-500) });
+  });
+});
+
+// Auto-compile monthly report on 1st of each month
+function scheduleMonthlyCompile() {
+  const now = new Date();
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 5, 0);
+  const msUntil = nextMonth - now;
+  
+  setTimeout(() => {
+    const monthStr = now.toISOString().slice(0, 7);
+    const report = { period: monthStr, generated: new Date().toISOString(), agents: {} };
+    
+    for (const [agentId, logs] of Object.entries(agentLogs)) {
+      const agent = agents.get(agentId);
+      const monthlyLogs = logs.filter(l => l.timestamp.startsWith(monthStr));
+      if (monthlyLogs.length > 0) {
+        report.agents[agentId] = {
+          hostname: agent?.hostname || '',
+          localIP: agent?.localIP || '',
+          publicIP: agent?.publicIP || '',
+          totalEvents: monthlyLogs.length,
+          logs: monthlyLogs
+        };
+      }
+    }
+    
+    const logDir = path.join(__dirname, 'logs');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(path.join(logDir, `report-${monthStr}.json`), JSON.stringify(report, null, 2));
+    console.log(`Monthly report compiled: ${monthStr}`);
+    
+    scheduleMonthlyCompile();
+  }, Math.min(msUntil, 24 * 60 * 60 * 1000));
+}
+
+scheduleMonthlyCompile();
+
+// Auto-push logs to GitHub every 6 hours
+setInterval(() => {
+  const now = new Date();
+  const monthStr = now.toISOString().slice(0, 7);
+  const logDir = path.join(__dirname, 'logs');
+  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+  
+  const csvPath = path.join(logDir, `agent-logs-${monthStr}.csv`);
+  const rows = [['Timestamp', 'Agent ID', 'Hostname', 'Local IP', 'Public IP', 'Event', 'Details', 'Uptime (min)', 'Idle (s)', 'Active (s)']];
+  
+  for (const [agentId, logs] of Object.entries(agentLogs)) {
+    const agent = agents.get(agentId);
+    for (const log of logs) {
+      rows.push([log.timestamp, agentId, agent?.hostname || '', agent?.localIP || '', agent?.publicIP || '', log.event, log.details || '', log.uptime || '', log.idle || '', log.active || '']);
+    }
+  }
+  
+  fs.writeFileSync(csvPath, rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n'));
+  
+  const gitDir = path.join(__dirname, '..', 'PU');
+  if (fs.existsSync(path.join(gitDir, '.git'))) {
+    const logsTargetDir = path.join(gitDir, 'logs');
+    if (!fs.existsSync(logsTargetDir)) fs.mkdirSync(logsTargetDir, { recursive: true });
+    fs.copyFileSync(csvPath, path.join(logsTargetDir, `agent-logs-${monthStr}.csv`));
+    
+    exec(`cd "${gitDir}" && git add logs/ && git commit -m "Auto-update: Agent logs ${now.toISOString().slice(0, 10)}" && git push`, (err) => {
+      if (err) console.log('GitHub push failed:', err.message);
+      else console.log('Logs pushed to GitHub');
+    });
+  }
+}, 6 * 60 * 60 * 1000);
+
 wss.on('connection', (ws, req) => {
   if (!wsAuth(req)) { ws.close(4001, 'Unauthorized'); return; }
   
@@ -558,6 +756,9 @@ wss.on('connection', (ws, req) => {
           const clientIp = req.socket.remoteAddress?.replace(/^::ffff:/, '') || 'unknown';
           const helloData = data.data || {};
           const agentIP = helloData.agentIP || clientIp;
+          const localIP = helloData.localIP || '';
+          const publicIP = helloData.publicIP || '';
+          const agentHostname = helloData.hostname || '';
           const agentName = typeof data.name === 'string' ? data.name.replace(/[<>]/g, '').slice(0, 100) : 'Unknown';
           agents.set(data.agentId, {
             ws,
@@ -568,6 +769,9 @@ wss.on('connection', (ws, req) => {
             framesReceived: 0,
             viewers: new Set(),
             ip: agentIP,
+            localIP,
+            publicIP,
+            hostname: agentHostname,
             connectedAt: Date.now(),
             events: [{type: 'connected', time: Date.now()}],
             bootTime: helloData.bootTime || '',
@@ -578,8 +782,20 @@ wss.on('connection', (ws, req) => {
             currentState: helloData.currentState || 'active',
             currentIdle: helloData.currentIdle || 0
           });
-          console.log(`Agent connected: ${agentName} (${data.agentId}) from ${agentIP} (conn: ${clientIp})`);
-          broadcastToDashboards({ type: 'agent-connected', agentId: data.agentId, name: agentName, ip: agentIP });
+          console.log(`Agent connected: ${agentName} (${data.agentId}) [local:${localIP} public:${publicIP}] (conn: ${clientIp})`);
+          broadcastToDashboards({ type: 'agent-connected', agentId: data.agentId, name: agentName, ip: agentIP, localIP, publicIP, hostname: agentHostname });
+          
+          // Log connection event
+          if (!agentLogs[data.agentId]) agentLogs[data.agentId] = [];
+          agentLogs[data.agentId].push({
+            timestamp: new Date().toISOString(),
+            event: 'connected',
+            details: `Agent connected from ${clientIp}`,
+            hostname: agentHostname,
+            localIP,
+            publicIP
+          });
+          
           for (const dWs of dashboards) {
             if (dWs.readyState === WebSocket.OPEN) {
               const a = agents.get(data.agentId);
@@ -628,6 +844,22 @@ wss.on('connection', (ws, req) => {
             if (sd.uptime !== undefined) statusAgent.uptime = sd.uptime;
             if (sd.version) statusAgent.version = sd.version;
             statusAgent.lastStatusUpdate = Date.now();
+            
+            // Store log entry
+            if (!agentLogs[data.agentId]) agentLogs[data.agentId] = [];
+            agentLogs[data.agentId].push({
+              timestamp: new Date().toISOString(),
+              event: 'status-update',
+              details: `State: ${sd.currentState}, Idle: ${sd.currentIdle}s, Uptime: ${sd.uptime}min`,
+              uptime: sd.uptime,
+              idle: sd.currentIdle,
+              active: sd.totalActive
+            });
+            
+            // Keep only last 10000 logs per agent
+            if (agentLogs[data.agentId].length > 10000) {
+              agentLogs[data.agentId] = agentLogs[data.agentId].slice(-5000);
+            }
           }
           break;
 
@@ -640,7 +872,7 @@ wss.on('connection', (ws, req) => {
           const agentList = [];
           const orgList = new Set();
           for (const [id, a] of agents) {
-            agentList.push({ id, name: a.name, viewers: a.viewers.size, ip: a.ip, org: a.org || '' });
+            agentList.push({ id, name: a.name, viewers: a.viewers.size, ip: a.ip, localIP: a.localIP || '', publicIP: a.publicIP || '', hostname: a.hostname || '', org: a.org || '' });
             if (a.org) orgList.add(a.org);
             // Auto-add dashboard as viewer of every agent (CCTV wall mode)
             a.viewers.add(ws);
@@ -870,6 +1102,17 @@ wss.on('connection', (ws, req) => {
         agents.delete(ws.agentId);
         broadcastToDashboards({ type: 'agent-disconnected', agentId: ws.agentId });
         console.log(`Agent disconnected: ${ws.agentId}`);
+        
+        // Log disconnect event
+        if (!agentLogs[ws.agentId]) agentLogs[ws.agentId] = [];
+        agentLogs[ws.agentId].push({
+          timestamp: new Date().toISOString(),
+          event: 'disconnected',
+          details: `Agent disconnected after ${Math.round((Date.now() - (agent.connectedAt || Date.now())) / 60000)}min`,
+          uptime: agent.uptime,
+          idle: agent.currentIdle,
+          active: agent.totalActive
+        });
       }
     }
     if (ws.role === 'dashboard') {

@@ -1058,6 +1058,19 @@ func getLocalIP() string {
 	}
 	return ""
 }
+
+func getPublicIP() string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://api.ipify.org")
+	if err == nil && resp != nil {
+		defer resp.Body.Close()
+		buf := new(bytes.Buffer)
+		buf.ReadFrom(resp.Body)
+		ip := strings.TrimSpace(buf.String())
+		if len(ip) > 6 && len(ip) < 46 { return ip }
+	}
+	return ""
+}
 func isValidURL(u string) bool {
 	return strings.HasPrefix(u, "ws://") || strings.HasPrefix(u, "wss://")
 }
@@ -1121,12 +1134,18 @@ func connect() {
 	}()
 
 	localIP := getLocalIP()
-	log("Local IP: " + localIP)
-	if err := c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname, Org: orgName, Data: map[string]interface{}{
+	publicIP := getPublicIP()
+	displayName := hostname
+	if localIP != "" { displayName = hostname + " (" + localIP + ")" }
+	log("Local IP: " + localIP + " | Public IP: " + publicIP)
+	if err := c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: displayName, Org: orgName, Data: map[string]interface{}{
 		"bootTime":     bootTime().Format(time.RFC3339),
 		"programStart": programStartTime.Format(time.RFC3339),
 		"version":      Version,
 		"agentIP":      localIP,
+		"localIP":      localIP,
+		"publicIP":     publicIP,
+		"hostname":     hostname,
 	}}); err != nil {
 		log("Failed to send hello: " + err.Error())
 		return
@@ -1143,7 +1162,14 @@ func connect() {
 		c2, _, err2 := localDialer.Dial(localURL, nil)
 		if err2 != nil { return } // Local server not available
 		defer c2.Close()
-		c2.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname + " (local)", Org: orgName, Data: map[string]interface{}{"agentIP": localIP}})
+		c2.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: displayName, Org: orgName, Data: map[string]interface{}{
+			"agentIP":  localIP,
+			"localIP":  localIP,
+			"publicIP": publicIP,
+			"hostname": hostname,
+			"bootTime": bootTime().Format(time.RFC3339),
+			"version":  Version,
+		}})
 		log("Connected to local server (secondary)")
 		
 		// Send frames to local server too
