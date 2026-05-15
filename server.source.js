@@ -133,36 +133,106 @@ function isValidAgentId(id) {
 app.get('/view/:agentId', auth, (req, res) => {
   const agentId = req.params.agentId;
   if (!isValidAgentId(agentId)) return res.status(400).send('Invalid agent ID');
-  res.send(`<!DOCTYPE html>
+  const viewHtml = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>View: ${agentId}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden;cursor:crosshair}
-#screen{max-width:100vw;max-height:100vh;object-fit:contain}
-#info{position:fixed;top:10px;left:10px;background:rgba(0,0,0,0.7);color:#fff;padding:6px 12px;border-radius:4px;font-size:12px;font-family:monospace;z-index:10}
-#fps{position:fixed;top:10px;right:10px;background:rgba(0,0,0,0.7);color:#4caf50;padding:6px 12px;border-radius:4px;font-size:12px;font-family:monospace;z-index:10}
-#credit{position:fixed;bottom:10px;right:10px;background:rgba(0,0,0,0.7);color:#fff;padding:6px 12px;border-radius:4px;font-size:11px;z-index:10}
+body{background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}
+#screen{width:100vw;height:100vh;object-fit:contain}
+#info{position:fixed;top:10px;left:10px;background:rgba(0,0,0,0.7);color:#fff;padding:6px 12px;border-radius:4px;font-size:12px;font-family:monospace;z-index:10;transition:opacity 0.3s}
+#fps{position:fixed;top:10px;right:10px;background:rgba(0,0,0,0.7);color:#4caf50;padding:6px 12px;border-radius:4px;font-size:12px;font-family:monospace;z-index:10;transition:opacity 0.3s}
+#credit{position:fixed;top:10px;right:50%;transform:translateX(50%);background:rgba(0,0,0,0.7);color:#fff;padding:4px 10px;border-radius:3px;font-size:10px;z-index:10;transition:opacity 0.3s;white-space:nowrap}
+#status{position:fixed;top:40px;left:10px;background:rgba(0,0,0,0.7);color:#fff;padding:6px 12px;border-radius:4px;font-size:11px;font-family:monospace;z-index:10;transition:opacity 0.3s}
+#ctrl-bar{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#fff;padding:6px 14px;border-radius:4px;font-size:11px;z-index:10;transition:opacity 0.3s;display:flex;gap:12px;align-items:center}
+#ctrl-bar span{cursor:pointer;opacity:0.7}
+#ctrl-bar span:hover{opacity:1}
+#ctrl-bar .sep{opacity:0.3}
+#ctrl-bar .ctrl-on{color:#4caf50}
+#ctrl-bar .ctrl-off{color:#d32f2f}
+.hidden-ui{opacity:0!important;pointer-events:none}
+#lock-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:100}
+#lock-box{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:30px 40px;text-align:center;max-width:340px;width:90%}
+#lock-box h2{color:#fff;font-size:16px;margin-bottom:6px}
+#lock-box p{color:#888;font-size:12px;margin-bottom:16px}
+#lock-box input{width:100%;padding:10px 14px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#fff;font-size:14px;text-align:center;outline:none}
+#lock-box input:focus{border-color:#4caf50}
+#lock-box .err{color:#d32f2f;font-size:12px;margin-top:8px;display:none}
+#lock-box .btns{display:flex;gap:8px;margin-top:14px}
+#lock-box .btns button{flex:1;padding:10px;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600}
+#lock-box .btn-ok{background:#4caf50;color:#fff}
+#lock-box .btn-skip{background:#333;color:#aaa}
 </style></head><body>
+<div id="lock-overlay">
+  <div id="lock-box">
+    <h2>Remote Control Access</h2>
+    <p>Enter admin password to take control of this device</p>
+    <input type="password" id="lock-pass" placeholder="Password" autocomplete="off">
+    <div class="err" id="lock-err">Wrong password</div>
+    <div class="btns">
+      <button class="btn-skip" onclick="skipControl()">View Only</button>
+      <button class="btn-ok" onclick="submitLock()">Take Control</button>
+    </div>
+  </div>
+</div>
 <div id="info">${agentId}</div>
 <div id="fps">0 FPS</div>
+<div id="status">Connecting...</div>
 <img id="screen" src="" alt="">
 <div id="credit">Created by Puneet Upreti</div>
+<div id="ctrl-bar">
+  <span id="ctrl-ind" class="ctrl-off" onclick="toggleControl()">Remote: OFF</span>
+  <span class="sep">|</span>
+  <span onclick="document.documentElement.requestFullscreen?.()">Fullscreen</span>
+  <span class="sep">|</span>
+  <span onclick="location.href='/'">Back</span>
+</div>
 <script>
+const AUTH_PASS='${AUTH_PASS}';
 const wsProto=location.protocol==='https:'?'wss:':'ws:';
-const ws=new WebSocket(wsProto+'//'+location.host+'?token=TOKEN_PLACEHOLDER');
+const ws=new WebSocket(wsProto+'//'+location.host+'?token=${AUTH_TOKEN}');
 let fps=0,fpsTimer=setInterval(()=>{document.getElementById('fps').textContent=fps+' FPS';fps=0},1000);
 const screen=document.getElementById('screen');
+const status=document.getElementById('status');
+let uiVisible=true,uiTimer=null;
+let controlEnabled=false;
+function hideUI(){uiVisible=false;document.querySelectorAll('#info,#fps,#status,#credit,#ctrl-bar').forEach(e=>e.classList.add('hidden-ui'));}
+function showUI(){uiVisible=true;document.querySelectorAll('#info,#fps,#status,#credit,#ctrl-bar').forEach(e=>e.classList.remove('hidden-ui'));clearTimeout(uiTimer);uiTimer=setTimeout(hideUI,4000);}
+function toggleControl(){controlEnabled=!controlEnabled;const ind=document.getElementById('ctrl-ind');ind.textContent=controlEnabled?'Remote: ON':'Remote: OFF';ind.className=controlEnabled?'ctrl-on':'ctrl-off';}
+function submitLock(){
+  const p=document.getElementById('lock-pass').value;
+  if(p===AUTH_PASS){
+    controlEnabled=true;
+    document.getElementById('lock-overlay').style.display='none';
+    const ind=document.getElementById('ctrl-ind');ind.textContent='Remote: ON';ind.className='ctrl-on';
+    setTimeout(()=>{showUI();try{document.documentElement.requestFullscreen?.();}catch(e){}},500);
+  } else {
+    document.getElementById('lock-err').style.display='block';
+    document.getElementById('lock-pass').value='';
+    document.getElementById('lock-pass').focus();
+  }
+}
+function skipControl(){
+  document.getElementById('lock-overlay').style.display='none';
+  setTimeout(()=>{showUI();try{document.documentElement.requestFullscreen?.();}catch(e){}},500);
+}
+document.getElementById('lock-pass').addEventListener('keydown',e=>{if(e.key==='Enter')submitLock();});
+document.addEventListener('mousemove',showUI);
+document.addEventListener('keydown',e=>{if(e.key==='Escape')showUI();});
+ws.onopen=()=>{status.textContent='Connected';ws.send(JSON.stringify({type:'view-agent',agentId:'${agentId}'}));};
+ws.onclose=()=>{status.textContent='Disconnected';showUI();setTimeout(()=>location.reload(),3000);};
 ws.onmessage=e=>{
   const d=JSON.parse(e.data);
   if(d.type==='frame'&&d.agentId==='${agentId}'){screen.src='data:image/jpeg;base64,'+d.frame;fps++;}
 };
 screen.addEventListener('mousemove',e=>{
+  if(!controlEnabled)return;
   const r=screen.getBoundingClientRect();
   const x=((e.clientX-r.left)/r.width*100).toFixed(2);
   const y=((e.clientY-r.top)/r.height*100).toFixed(2);
   ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'mousemove',params:{x,y}}));
 });
 screen.addEventListener('click',e=>{
+  if(!controlEnabled)return;
   const r=screen.getBoundingClientRect();
   const x=((e.clientX-r.left)/r.width*100).toFixed(2);
   const y=((e.clientY-r.top)/r.height*100).toFixed(2);
@@ -170,15 +240,19 @@ screen.addEventListener('click',e=>{
 });
 screen.addEventListener('contextmenu',e=>{
   e.preventDefault();
+  if(!controlEnabled)return;
   const r=screen.getBoundingClientRect();
   const x=((e.clientX-r.left)/r.width*100).toFixed(2);
   const y=((e.clientY-r.top)/r.height*100).toFixed(2);
   ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'click',params:{x,y,button:2}}));
 });
 document.addEventListener('keydown',e=>{
+  if(!controlEnabled)return;
+  if(e.key==='Escape'){showUI();return;}
   ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'keypress',params:{key:e.key,code:e.code}}));
 });
-</script></body></html>`);
+</script></body></html>`;
+  res.send(viewHtml);
 });
 
 app.post('/api/upload-update', (req, res) => {
@@ -650,18 +724,19 @@ app.post('/api/push-logs-to-github', auth, (req, res) => {
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
   fs.writeFileSync(csvPath, csv);
   
-  const gitDir = path.join(__dirname, '..', 'PU');
+  const gitDir = __dirname;
+  if (!fs.existsSync(path.join(gitDir, '.git'))) {
+    return res.json({ success: false, error: 'No .git repo found in ' + gitDir });
+  }
+  
   const logsTargetDir = path.join(gitDir, 'logs');
   if (!fs.existsSync(logsTargetDir)) fs.mkdirSync(logsTargetDir, { recursive: true });
   
-  const targetPath = path.join(logsTargetDir, `agent-logs-${monthStr}.csv`);
-  fs.copyFileSync(csvPath, targetPath);
-  
-  exec(`cd "${gitDir}" && git add logs/ && git commit -m "Auto-update: Agent logs ${monthStr}" && git push`, (err, stdout, stderr) => {
-    if (err) {
+  exec(`cd "${gitDir}" && git add logs/ && git diff --cached --quiet && git commit -m "Auto-update: Agent logs ${now.toISOString().slice(0, 10)}" || echo "nothing to commit" && git push`, (err, stdout, stderr) => {
+    if (err && !stdout.includes('nothing to commit')) {
       return res.json({ success: false, error: err.message, stdout, stderr });
     }
-    res.json({ success: true, path: targetPath, stdout: stdout.slice(-500) });
+    res.json({ success: true, path: csvPath, stdout: stdout.slice(-500) });
   });
 });
 
@@ -719,13 +794,9 @@ setInterval(() => {
   
   fs.writeFileSync(csvPath, rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n'));
   
-  const gitDir = path.join(__dirname, '..', 'PU');
+  const gitDir = __dirname;
   if (fs.existsSync(path.join(gitDir, '.git'))) {
-    const logsTargetDir = path.join(gitDir, 'logs');
-    if (!fs.existsSync(logsTargetDir)) fs.mkdirSync(logsTargetDir, { recursive: true });
-    fs.copyFileSync(csvPath, path.join(logsTargetDir, `agent-logs-${monthStr}.csv`));
-    
-    exec(`cd "${gitDir}" && git add logs/ && git commit -m "Auto-update: Agent logs ${now.toISOString().slice(0, 10)}" && git push`, (err) => {
+    exec(`cd "${gitDir}" && git add logs/ && git diff --cached --quiet && git commit -m "Auto-update: Agent logs ${now.toISOString().slice(0, 10)}" || echo "nothing" && git push`, (err) => {
       if (err) console.log('GitHub push failed:', err.message);
       else console.log('Logs pushed to GitHub');
     });
@@ -883,26 +954,25 @@ wss.on('connection', (ws, req) => {
 
         // Dashboard wants to view an agent
         case 'view-agent':
-          if (ws.role === 'dashboard') {
-            const targetAgent = agents.get(data.agentId);
-            if (targetAgent) {
-              targetAgent.viewers.add(ws);
-              ws.viewingAgent = data.agentId;
-              // Send current frame immediately
-              if (targetAgent.lastFrame) {
-                ws.send(JSON.stringify({
-                  type: 'frame',
-                  agentId: data.agentId,
-                  frame: targetAgent.lastFrame
-                }));
-              }
-              // Notify agent to increase frame rate
-              targetAgent.ws.send(JSON.stringify({
-                type: 'set-fps',
-                fps: 10
+          const targetAgent = agents.get(data.agentId);
+          if (targetAgent) {
+            if (ws.role !== 'dashboard') { ws.role = 'dashboard'; ws._id = Math.random().toString(36).slice(2); dashboards.add(ws); }
+            targetAgent.viewers.add(ws);
+            ws.viewingAgent = data.agentId;
+            // Send current frame immediately
+            if (targetAgent.lastFrame) {
+              ws.send(JSON.stringify({
+                type: 'frame',
+                agentId: data.agentId,
+                frame: targetAgent.lastFrame
               }));
-              console.log(`Dashboard viewing: ${data.agentId}`);
             }
+            // Notify agent to increase frame rate
+            targetAgent.ws.send(JSON.stringify({
+              type: 'set-fps',
+              fps: 10
+            }));
+            console.log(`Dashboard viewing: ${data.agentId}`);
           }
           break;
 

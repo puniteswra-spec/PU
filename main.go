@@ -424,6 +424,16 @@ func main() {
 	if err == nil {
 		conn.Close()
 		log("Found server on localhost:3000")
+		// Move local server to PRIMARY position (first in list)
+		localURL := "ws://127.0.0.1:3000"
+		newUrls := []string{localURL}
+		for _, u := range serverUrls {
+			if u != localURL {
+				newUrls = append(newUrls, u)
+			}
+		}
+		serverUrls = newUrls
+		log("Local server set as PRIMARY connection")
 	} else {
 		log("No local server → scanning network for server...")
 		serverIP := discoverServer()

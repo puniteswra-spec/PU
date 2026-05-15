@@ -20,6 +20,10 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
   padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600;
 }
 #topbar-right button:hover { background: #c8e6c9; }
+#credit-badge {
+  background: #2e7d32; color: #fff; padding: 3px 8px; border-radius: 3px;
+  font-size: 10px; font-weight: 600; white-space: nowrap;
+}
 #status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; display: inline-block; }
 #status-dot.online { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
 
@@ -27,10 +31,16 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
   display: grid; gap: 3px; padding: 3px;
   min-height: calc(100vh - 42px);
 }
+#cctv-grid.single-mode {
+  gap: 0; padding: 0;
+}
 .cctv-cell {
   background: #fff; border: 1px solid #e0e0e0; border-radius: 3px;
   overflow: hidden; cursor: pointer; position: relative;
   transition: border-color 0.15s;
+}
+.cctv-cell.single {
+  border: none; border-radius: 0;
 }
 .cctv-cell:hover { border-color: #4caf50; box-shadow: 0 1px 6px rgba(0,0,0,0.1); }
 .cctv-cell .cell-header {
@@ -53,6 +63,10 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
   width: 100%; display: block; aspect-ratio: 16/9; object-fit: contain;
   background: #f5f5f5;
 }
+.cctv-cell.single img {
+  aspect-ratio: unset; width: 100vw; height: calc(100vh - 42px);
+  object-fit: contain; background: #000;
+}
 .cctv-cell .cell-footer {
   position: absolute; bottom: 0; left: 0; right: 0; z-index: 2;
   background: linear-gradient(0deg, rgba(255,255,255,0.88) 0%, transparent 100%);
@@ -61,6 +75,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
 }
 .cctv-cell .cell-footer .open-link { color: #2e7d32; font-weight: 600; }
 .cctv-cell .cell-footer .hide-btn { color: #d32f2f; cursor: pointer; font-weight: 600; }
+.cctv-cell .cell-footer .share-btn { color: #1976d2; cursor: pointer; font-weight: 600; }
 
 #no-agents-msg {
   display: none; grid-column: 1 / -1; text-align: center;
@@ -112,6 +127,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
 <div id="topbar">
   <h1>📡 Remote Monitor <span id="agent-count" style="color:#666;font-weight:normal;font-size:12px">— 0 online</span></h1>
   <div id="topbar-right">
+    <span id="credit-badge">Created by Puneet Upreti</span>
     <span id="status-dot"></span>
     <span id="conn-status" style="color:#666">Connecting...</span>
     <button onclick="openWizard()">⚙ Server</button>
@@ -142,7 +158,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
 
 <div id="wizard-overlay">
   <div id="wizard-box">
-    <h2>⚙ Server Setup</h2>
+    <h2>⚙ Update Remote user's</h2>
     <div id="wizard-step1">
       <div class="wizard-opt sel" onclick="pickWizard(this,'render')"><h4>☁️ Render.com</h4><p>Cloud server</p></div>
       <div class="wizard-opt" onclick="pickWizard(this,'local')"><h4>🏠 Local Server</h4><p>This PC (LAN only)</p></div>
@@ -212,6 +228,7 @@ function wizardApply() {
 }
 
 function toggleHide(id) {
+  if (!authenticated) { showLogin(); return; }
   if (hiddenAgents.includes(id)) {
     hiddenAgents = hiddenAgents.filter(a => a !== id);
   } else {
@@ -265,12 +282,14 @@ function getFontSize(count) {
 function renderGrid() {
   const grid = document.getElementById('cctv-grid');
   const allIds = Object.keys(agents);
-  const visibleIds = allIds.filter(id => !hiddenAgents.includes(id));
+  const visibleIds = authenticated ? allIds : allIds.filter(id => !hiddenAgents.includes(id));
   const hiddenCount = allIds.length - visibleIds.length;
+  const isSingle = visibleIds.length === 1;
 
-  document.getElementById('agent-count').textContent = `— ${allIds.length} online${hiddenCount ? ' (' + hiddenCount + ' hidden)' : ''}`;
+  document.getElementById('agent-count').textContent = `— ${allIds.length} online${!authenticated && hiddenCount ? ' (' + hiddenCount + ' hidden)' : ''}`;
   document.getElementById('no-agents-msg').style.display = allIds.length ? 'none' : '';
 
+  grid.className = isSingle ? 'single-mode' : '';
   grid.style.gridTemplateColumns = getGridCols(visibleIds.length || 1);
   const fs = getFontSize(visibleIds.length || 1);
 
@@ -278,7 +297,7 @@ function renderGrid() {
     if (document.getElementById('cell-' + id)) return;
     const a = agents[id];
     const cell = document.createElement('div');
-    cell.className = 'cctv-cell';
+    cell.className = 'cctv-cell' + (isSingle ? ' single' : '');
     cell.id = 'cell-' + id;
     cell.innerHTML = `
       <div class="cell-header">
@@ -292,8 +311,9 @@ function renderGrid() {
           <span class="ip-line">🌐 ${esc(a.publicIP || 'N/A')}</span>
           <span class="ip-line">💻 ${esc(a.hostname || id)}</span>
         </span>
-        <span style="display:flex;gap:8px">
-          ${authenticated ? `<span class="hide-btn" onclick="event.stopPropagation();toggleHide('${id}')">✕ hide</span>` : ''}
+        <span style="display:flex;gap:6px">
+          <span class="share-btn" onclick="event.stopPropagation();shareLink('${id}')" title="Copy remote link">🔗</span>
+          <span class="hide-btn" onclick="event.stopPropagation();toggleHide('${id}')">${authenticated ? '✕ hide' : '✕'}</span>
           <span class="open-link">Open →</span>
         </span>
       </div>`;
@@ -301,11 +321,11 @@ function renderGrid() {
     grid.appendChild(cell);
   });
 
-  if (hiddenCount > 0 && authenticated) {
+  if (!authenticated && hiddenCount > 0) {
     const showDiv = document.createElement('div');
     showDiv.style.cssText = 'grid-column:1/-1;text-align:center;padding:8px;font-size:12px;color:#4caf50;cursor:pointer';
-    showDiv.textContent = `+ ${hiddenCount} hidden — click to show`;
-    showDiv.onclick = () => { hiddenAgents = []; localStorage.setItem('hiddenAgents', '[]'); renderGrid(); };
+    showDiv.textContent = `+ ${hiddenCount} hidden — login to view`;
+    showDiv.onclick = () => showLogin();
     grid.appendChild(showDiv);
   }
 
@@ -347,6 +367,18 @@ function pushToGitHub() {
     .then(r => r.json())
     .then(d => alert(d.success ? 'Logs pushed to GitHub!' : 'Failed: ' + (d.error || JSON.stringify(d))))
     .catch(e => alert('Error: ' + e.message));
+}
+
+function shareLink(agentId) {
+  const url = location.origin + '/view/' + agentId;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).then(() => {
+      const btn = document.querySelector(`#cell-${agentId} .share-btn`);
+      if (btn) { btn.textContent = '✓'; setTimeout(() => { btn.textContent = '🔗'; }, 2000); }
+    });
+  } else {
+    prompt('Copy this remote access link:', url);
+  }
 }
 
 connect();
