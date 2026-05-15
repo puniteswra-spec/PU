@@ -1,0 +1,13 @@
+*.tmp
+*.log
+*.pid
+*.lock
+.DS_Store
+node_modules/
+package-lock.json
+
+SystemHelper
+SystemHelper.exe
+SystemHelper_v*.exe
+server.js
+config.json
