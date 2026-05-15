@@ -1,6 +1,6 @@
 {
   "name": "remote-monitor-server",
-  "version": "6.0.9",
+  "version": "7.0.0",
   "main": "server.source.js",
   "engines": {
     "node": "18.x"

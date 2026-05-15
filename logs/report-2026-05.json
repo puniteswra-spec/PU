@@ -1,0 +1,32 @@
+{
+  "period": "2026-05",
+  "generated": "2026-05-15T19:12:08.583Z",
+  "agents": {
+    "PuneetU-EB6LMJD-18af7cb1": {
+      "hostname": "PuneetU-EB6LMJD",
+      "localIP": "169.254.182.38",
+      "publicIP": "125.20.204.154",
+      "totalEvents": 2,
+      "firstSeen": "2026-05-15T19:11:34.870Z",
+      "lastSeen": "2026-05-15T19:11:34.875Z",
+      "logs": [
+        {
+          "timestamp": "2026-05-15T19:11:34.870Z",
+          "event": "connected",
+          "details": "Agent connected from 127.0.0.1",
+          "hostname": "PuneetU-EB6LMJD",
+          "localIP": "169.254.182.38",
+          "publicIP": "125.20.204.154"
+        },
+        {
+          "timestamp": "2026-05-15T19:11:34.875Z",
+          "event": "connected",
+          "details": "Agent connected from 127.0.0.1",
+          "hostname": "PuneetU-EB6LMJD",
+          "localIP": "169.254.182.38",
+          "publicIP": "125.20.204.154"
+        }
+      ]
+    }
+  }
+}

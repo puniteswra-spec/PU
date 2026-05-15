@@ -39,6 +39,18 @@ var authUser = "puneet"
 var authPass = "puneet12"
 var authToken = ""
 
+// Connection ID for race condition prevention — each reconnect gets a new ID
+var connectionId string
+
+// Rate limiting for control commands
+var controlCmdCount int
+var controlCmdWindowStart time.Time
+const maxControlCmdsPerSec = 30
+
+// Fallback tracking
+var consecutiveFailures int
+var tunnelStarted bool
+
 // Embedded default URLs — zero-config, works out of the box
 const (
 	DefaultServerURL   = "wss://pu-k752.onrender.com"
@@ -423,17 +435,7 @@ func main() {
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:3000", 500*time.Millisecond)
 	if err == nil {
 		conn.Close()
-		log("Found server on localhost:3000")
-		// Move local server to PRIMARY position (first in list)
-		localURL := "ws://127.0.0.1:3000"
-		newUrls := []string{localURL}
-		for _, u := range serverUrls {
-			if u != localURL {
-				newUrls = append(newUrls, u)
-			}
-		}
-		serverUrls = newUrls
-		log("Local server set as PRIMARY connection")
+		log("Found local server on localhost:3000 (will use as secondary for fast local viewing)")
 	} else {
 		log("No local server → scanning network for server...")
 		serverIP := discoverServer()
@@ -451,8 +453,6 @@ func main() {
 			go runServer()
 		}
 	}
-
-	// ALWAYS connect to cloud server as agent
 	log("Agent ID: " + agentId)
 	log("SystemHelper v" + Version + " — Zero-config, self-healing, auto-updating")
 	
@@ -1099,8 +1099,40 @@ func connect() {
 		}
 	}
 	
+	// Fallback: if Render failed multiple times, start tunnel and prepend it
+	if consecutiveFailures >= 3 && !tunnelStarted {
+		log("⚠️ Render failed " + fmt.Sprintf("%d", consecutiveFailures) + " times — starting tunnel for global access")
+		tunnelStarted = true
+		go startTunnel(nil)
+		// Wait up to 30s for tunnel URL
+		for i := 0; i < 30; i++ {
+			tunnelURL, _ := os.ReadFile(filepath.Join(dataDir(), "tunnel.url"))
+			if len(tunnelURL) > 0 {
+				tunnelStr := strings.TrimSpace(string(tunnelURL))
+				if tunnelStr != "" && (strings.HasPrefix(tunnelStr, "http://") || strings.HasPrefix(tunnelStr, "https://")) {
+					wsURL := tunnelStr
+					if strings.HasPrefix(wsURL, "http://") {
+						wsURL = "ws://" + strings.TrimPrefix(wsURL, "http://")
+					} else if strings.HasPrefix(wsURL, "https://") {
+						wsURL = "wss://" + strings.TrimPrefix(wsURL, "https://")
+					}
+					// Prepend tunnel URL to serverUrls
+					found := false
+					for _, u := range serverUrls {
+						if u == wsURL { found = true; break }
+					}
+					if !found {
+						serverUrls = append([]string{wsURL + "/ws"}, serverUrls...)
+						log("🔄 Tunnel URL added as primary: " + wsURL)
+					}
+					break
+				}
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
+	
 	// Periodic re-discovery: check for local server on each retry
-	// If cloud servers become unreachable, switch to local
 	discoveredIP := discoverServer()
 	if discoveredIP != "" {
 		localURL := "ws://" + discoveredIP + ":3000"
@@ -1130,10 +1162,20 @@ func connect() {
 		c, _, err = dialer.Dial(authURL, nil)
 		if err == nil { log("Connected: " + url); break }
 	}
-	if c == nil { log("Disconnected: all URLs failed"); return }
+	if c == nil {
+		consecutiveFailures++
+		log("Disconnected: all URLs failed (failure #" + fmt.Sprintf("%d", consecutiveFailures) + ")")
+		return
+	}
+	// Reset failure counter on successful connection
+	consecutiveFailures = 0
+	
 	log("Connected: " + c.RemoteAddr().String())
 	defer c.Close()
 	wsRef = c
+	
+	// Generate new connection ID — prevents race condition on reconnect
+	connectionId = fmt.Sprintf("%d", time.Now().UnixNano())
 	
 	go func() {
 		for {
@@ -1156,6 +1198,7 @@ func connect() {
 		"localIP":      localIP,
 		"publicIP":     publicIP,
 		"hostname":     hostname,
+		"connectionId": connectionId,
 	}}); err != nil {
 		log("Failed to send hello: " + err.Error())
 		return
@@ -1172,15 +1215,9 @@ func connect() {
 		c2, _, err2 := localDialer.Dial(localURL, nil)
 		if err2 != nil { return } // Local server not available
 		defer c2.Close()
-		c2.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: displayName, Org: orgName, Data: map[string]interface{}{
-			"agentIP":  localIP,
-			"localIP":  localIP,
-			"publicIP": publicIP,
-			"hostname": hostname,
-			"bootTime": bootTime().Format(time.RFC3339),
-			"version":  Version,
-		}})
-		log("Connected to local server (secondary)")
+		// NO agent-hello here — primary connection owns the agent registration.
+		// This connection is frames-only for low-latency local viewing.
+		log("Connected to local server (secondary — frames only)")
 		
 		// Send frames to local server too
 		for {
@@ -1213,7 +1250,20 @@ func connect() {
 				continue
 			}
 			if d.Type == "set-fps" && d.Fps > 0 { fps = d.Fps }
-			if d.Type == "control" { executeControl(d.Command, d.Params) }
+			if d.Type == "control" {
+				// Rate limiting: max 30 control commands per second
+				now := time.Now()
+				if now.Sub(controlCmdWindowStart) > time.Second {
+					controlCmdWindowStart = now
+					controlCmdCount = 0
+				}
+				controlCmdCount++
+				if controlCmdCount <= maxControlCmdsPerSec {
+					executeControl(d.Command, d.Params)
+				} else {
+					// Silently drop excess commands
+				}
+			}
 			if d.Type == "set-server-preference" {
 				saveServerPreference(d.Command == "true")
 				log("Remote: set server preference = " + d.Command)

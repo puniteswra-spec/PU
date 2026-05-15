@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Remote Monitor — CCTV</title>
+<title>Monitor system designed by Puneet Upreti</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: #000; min-height: 100vh; }
@@ -125,12 +125,28 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
 <body>
 
 <div id="topbar">
-  <h1>📡 Remote Monitor <span id="agent-count" style="color:#666;font-weight:normal;font-size:12px">— 0 online</span></h1>
+  <h1>Monitor System <span style="color:#666;font-weight:normal;font-size:11px">designed by Puneet Upreti</span> <span id="agent-count" style="color:#666;font-weight:normal;font-size:12px">— 0 online</span></h1>
   <div id="topbar-right">
+    <a href="/remote-assistant" target="_blank" style="font-size:11px;color:#2e7d32;text-decoration:none;font-weight:600;padding:4px 8px;background:#e8f5e9;border-radius:4px;border:1px solid #a5d6a7" title="Remote Assistant — works on any device, no install needed">🤝 Remote Assistant</a>
     <span id="credit-badge">Created by Puneet Upreti</span>
     <span id="status-dot"></span>
     <span id="conn-status" style="color:#666">Connecting...</span>
     <button id="btn-update" onclick="pushUpdate()" style="display:none">📦 Push Update</button>
+    <div id="remote-dropdown" style="position:relative;display:none">
+      <button onclick="toggleRemoteDropdown()">🖥 Remote Control</button>
+      <div id="remote-panel" style="display:none;position:absolute;top:100%;right:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);padding:8px 12px;min-width:300px;z-index:200">
+        <div style="font-size:11px;font-weight:600;color:#333;margin-bottom:6px">Select Agents to Control</div>
+        <div id="remote-list"></div>
+        <div style="margin-top:8px;padding-top:6px;border-top:1px solid #eee;display:flex;gap:6px">
+          <button onclick="controlSelected()" style="flex:1;font-size:11px;padding:5px;background:#2e7d32;color:#fff;border:none;border-radius:3px;cursor:pointer;font-weight:600">🖥 Take Control</button>
+          <button onclick="openMultiControl()" style="flex:1;font-size:11px;padding:5px;background:#1976d2;color:#fff;border:none;border-radius:3px;cursor:pointer;font-weight:600">🎮 Multi-Control</button>
+        </div>
+        <div style="margin-top:4px;display:flex;gap:6px">
+          <button onclick="selectAllRemote()" style="font-size:10px;padding:2px 6px;background:#eee;border:none;border-radius:3px;cursor:pointer">Select All</button>
+          <button onclick="deselectAllRemote()" style="font-size:10px;padding:2px 6px;background:#eee;border:none;border-radius:3px;cursor:pointer">Deselect All</button>
+        </div>
+      </div>
+    </div>
     <button onclick="openWizard()">⚙ Update Remote</button>
     <div id="hide-dropdown" style="position:relative;display:none">
       <button onclick="toggleHideDropdown()">👁 Show/Hide</button>
@@ -146,7 +162,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
     <button id="btn-logs" onclick="downloadLogs()" style="display:none">📊 Export Logs</button>
     <button id="btn-compile" onclick="compileMonthly()" style="display:none">📅 Compile</button>
     <button id="btn-push" onclick="pushToGitHub()" style="display:none">🚀 Push to GitHub</button>
-    <button id="btn-login" onclick="showLogin()">🔒 Login</button>
+    <button id="btn-login" onclick="showLogin()" style="background:none;border:none;font-size:13px;color:#999;cursor:pointer;padding:2px 4px" title="Admin Login">🔒</button>
     <button id="btn-logout" onclick="logout()" style="display:none">🔓 Logout</button>
   </div>
 </div>
@@ -198,6 +214,7 @@ function doLogin() {
     document.getElementById('btn-login').style.display = 'none';
     document.getElementById('btn-logout').style.display = '';
     document.getElementById('btn-update').style.display = '';
+    document.getElementById('remote-dropdown').style.display = '';
     document.getElementById('hide-dropdown').style.display = '';
     document.getElementById('btn-logs').style.display = '';
     document.getElementById('btn-compile').style.display = '';
@@ -205,6 +222,7 @@ function doLogin() {
     hideLogin();
     renderGrid();
     renderHidePanel();
+    renderRemotePanel();
   } else {
     const err = document.getElementById('login-error');
     err.textContent = 'Wrong password';
@@ -216,6 +234,8 @@ function logout() {
   document.getElementById('btn-login').style.display = '';
   document.getElementById('btn-logout').style.display = 'none';
   document.getElementById('btn-update').style.display = 'none';
+  document.getElementById('remote-dropdown').style.display = 'none';
+  document.getElementById('remote-panel').style.display = 'none';
   document.getElementById('hide-dropdown').style.display = 'none';
   document.getElementById('hide-panel').style.display = 'none';
   document.getElementById('btn-logs').style.display = 'none';
@@ -295,18 +315,83 @@ function showAllAgents() {
   renderHidePanel();
 }
 
+function toggleRemoteDropdown() {
+  const panel = document.getElementById('remote-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  if (panel.style.display === 'block') renderRemotePanel();
+}
+
+function renderRemotePanel() {
+  const list = document.getElementById('remote-list');
+  if (!list) return;
+  const allIds = Object.keys(agents);
+  if (allIds.length === 0) {
+    list.innerHTML = '<div style="font-size:11px;color:#999">No agents online</div>';
+    return;
+  }
+  list.innerHTML = allIds.map(id => {
+    const a = agents[id];
+    const name = a ? (a.name || id) : id;
+    return `<label style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #eee;cursor:pointer">
+      <input type="checkbox" class="remote-cb" value="${id}">
+      <span style="font-size:12px;font-weight:600;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(name)}</span>
+      <span style="font-size:10px;color:#999;cursor:pointer" onclick="event.stopPropagation();copyRemoteLink('${id}')">📋</span>
+    </label>`;
+  }).join('');
+}
+
+function getSelectedAgents() {
+  return Array.from(document.querySelectorAll('.remote-cb:checked')).map(cb => cb.value);
+}
+
+function controlSelected() {
+  const selected = getSelectedAgents();
+  if (selected.length === 0) { alert('Select at least one agent'); return; }
+  selected.forEach(id => window.open('/view/' + id, '_blank'));
+  document.getElementById('remote-panel').style.display = 'none';
+}
+
+function viewSelected() {
+  const selected = getSelectedAgents();
+  if (selected.length === 0) { alert('Select at least one agent'); return; }
+  selected.forEach(id => window.open('/view/' + id, '_blank'));
+  document.getElementById('remote-panel').style.display = 'none';
+}
+
+function selectAllRemote() {
+  document.querySelectorAll('.remote-cb').forEach(cb => cb.checked = true);
+}
+
+function deselectAllRemote() {
+  document.querySelectorAll('.remote-cb').forEach(cb => cb.checked = false);
+}
+
+function copyRemoteLink(agentId) {
+  const url = location.origin + '/view/' + agentId;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).then(() => {
+      alert('Remote link copied! Share this with the user:\n\n' + url + '\n\nThey can view the screen immediately. To take control, they need the password.');
+    });
+  } else {
+    prompt('Copy this remote access link:', url);
+  }
+}
+
 document.addEventListener('click', e => {
   const dd = document.getElementById('hide-dropdown');
   const panel = document.getElementById('hide-panel');
   if (dd && panel && panel.style.display === 'block' && !dd.contains(e.target)) {
     panel.style.display = 'none';
   }
+  const rdd = document.getElementById('remote-dropdown');
+  const rpanel = document.getElementById('remote-panel');
+  if (rdd && rpanel && rpanel.style.display === 'block' && !rdd.contains(e.target)) {
+    rpanel.style.display = 'none';
+  }
 });
-  renderGrid();
-}
 
 const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsUrl = `${wsProto}//${location.host}?token=TOKEN_PLACEHOLDER`;
+const wsUrl = `${wsProto}//${location.host}/ws?token=TOKEN_PLACEHOLDER`;
 let ws, agents = {}, frames = {};
 
 function connect() {
@@ -318,10 +403,25 @@ function connect() {
   };
   ws.onmessage = e => {
     const d = JSON.parse(e.data);
-    if (d.type === 'agent-list') { agents = {}; d.agents.forEach(a => { agents[a.id] = a; }); renderGrid(); }
-    if (d.type === 'agent-connected') { agents[d.agentId] = { id: d.agentId, name: d.name, ip: d.ip, localIP: d.localIP, publicIP: d.publicIP, hostname: d.hostname }; renderGrid(); }
-    if (d.type === 'agent-disconnected') { delete agents[d.agentId]; delete frames[d.agentId]; renderGrid(); }
+    if (d.type === 'agent-list') { agents = {}; d.agents.forEach(a => { agents[a.id] = a; }); renderGrid(); if (authenticated) renderRemotePanel(); }
+    if (d.type === 'agent-connected') { agents[d.agentId] = { id: d.agentId, name: d.name, ip: d.ip, localIP: d.localIP, publicIP: d.publicIP, hostname: d.hostname, uptime: d.uptime || 0, totalIdle: d.totalIdle || 0, totalActive: d.totalActive || 0, currentState: d.currentState || 'unknown' }; renderGrid(); if (authenticated) renderRemotePanel(); }
+    if (d.type === 'agent-disconnected') { delete agents[d.agentId]; delete frames[d.agentId]; renderGrid(); if (authenticated) renderRemotePanel(); }
+    if (d.type === 'agent-status') { if (agents[d.agentId]) { agents[d.agentId].uptime = d.uptime; agents[d.agentId].totalIdle = d.totalIdle; agents[d.agentId].totalActive = d.totalActive; agents[d.agentId].currentState = d.currentState; } updateStats(d.agentId); }
     if (d.type === 'frame') { frames[d.agentId] = d.frame; updateFrame(d.agentId, d.frame); }
+    if (d.type === 'tunnel-status') {
+      const el = document.getElementById('tunnel-' + d.agentId);
+      if (el) {
+        if (d.frame === 'ready' || d.command) {
+          el.textContent = '🔌 ' + (d.command || '').replace(/^https?:\/\//, '').slice(0, 25);
+          el.style.display = '';
+          el.title = 'Tunnel: ' + d.command;
+        } else {
+          el.textContent = '❌ ' + (d.command || '').slice(0, 25);
+          el.style.display = '';
+          el.style.color = '#d32f2f';
+        }
+      }
+    }
   };
   ws.onclose = () => {
     document.getElementById('status-dot').classList.remove('online');
@@ -378,9 +478,11 @@ function renderGrid() {
           <span class="ip-line">🌐 ${esc(a.publicIP || 'N/A')}</span>
           <span class="ip-line">💻 ${esc(a.hostname || id)}</span>
         </span>
-        <span style="display:flex;gap:6px">
+        <span style="display:flex;gap:6px;align-items:center">
+          <span class="tunnel-url" id="tunnel-${id}" style="display:none;font-size:9px;color:#1976d2;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Tunnel URL"></span>
           <span class="share-btn" onclick="event.stopPropagation();shareLink('${id}')" title="Copy remote link">🔗</span>
           <span class="view-btn" onclick="event.stopPropagation();viewAgent('${id}')" title="View Full Screen">🖥 View</span>
+          ${authenticated ? `<span class="view-btn" onclick="event.stopPropagation();exposeAgent('${id}')" title="Expose via tunnel for remote access">🔌</span><span class="view-btn" onclick="event.stopPropagation();generateSupportLink('${id}')" title="Generate shareable support link">🤝</span>` : ''}
         </span>
       </div>`;
     grid.appendChild(cell);
@@ -448,6 +550,57 @@ function shareLink(agentId) {
 
 function viewAgent(agentId) {
   window.open('/view/' + agentId, '_blank');
+}
+
+function exposeAgent(agentId) {
+  if (!authenticated) return;
+  const a = agents[agentId];
+  if (!a) return;
+  ws.send(JSON.stringify({ type: 'start-tunnel', agentId }));
+  const el = document.getElementById('tunnel-' + agentId);
+  if (el) {
+    el.textContent = '⏳ Starting...';
+    el.style.display = '';
+    el.style.color = '#ff9800';
+  }
+  showToast('Starting tunnel for ' + (a.name || agentId) + '...');
+}
+
+function generateSupportLink(agentId) {
+  if (!authenticated) return;
+  const expires = prompt('Session expires in minutes (default 60):', '60');
+  if (expires === null) return;
+  const mins = parseInt(expires) || 60;
+  fetch('/api/support-token', {
+    method: 'POST',
+    headers: {
+      'x-agent-id': agentId,
+      'x-expires': String(mins),
+      'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS)
+    }
+  }).then(r => r.json()).then(d => {
+    if (d.success) {
+      const url = location.origin + d.url;
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(url).then(() => {
+          alert('Support link copied! Share this with the person who needs help:\n\n' + url + '\n\nExpires in ' + d.expiresMinutes + ' minutes.\nThey can view the screen immediately. To take control, they need the password.');
+        });
+      } else {
+        prompt('Copy this support link:', url);
+      }
+    } else {
+      alert('Failed: ' + JSON.stringify(d));
+    }
+  }).catch(e => alert('Error: ' + e.message));
+}
+
+function openMultiControl() {
+  const selected = getSelectedAgents();
+  if (selected.length === 0) { alert('Select agents from Remote Control dropdown first'); return; }
+  // Open unified control panel
+  const url = '/multi-control?' + selected.map(id => 'agent=' + id).join('&');
+  window.open(url, '_blank', 'width=1400,height=900');
+  document.getElementById('remote-panel').style.display = 'none';
 }
 
 function pushUpdate() {

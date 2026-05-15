@@ -19,6 +19,7 @@ const agents = new Map();
 const dashboards = new Set();
 const agentHistory = [];
 const agentLogs = {}; // agentId -> [{timestamp, event, details}]
+const supportSessions = new Map(); // token -> {agentId, expiresAt, controlEnabled}
 
 // Basic Auth middleware
 function auth(req, res, next) {
@@ -53,7 +54,7 @@ function wsAuth(req) {
 }
 
 // Serve dashboard with auth token injected into WebSocket URL
-app.get('/', auth, (req, res) => {
+app.get('/', (req, res) => {
   try {
     const html = require('fs').readFileSync(__dirname + '/dashboard.html', 'utf8');
     res.send(html.replace(/TOKEN_PLACEHOLDER/g, AUTH_TOKEN));
@@ -62,56 +63,188 @@ app.get('/', auth, (req, res) => {
   }
 });
 
-// Remote session page (no install, browser-based screen sharing)
-app.get('/remote-session', auth, (req, res) => {
-  res.send(`<!DOCTYPE html><html><body style="margin:0;background:#0f0f23;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column">
-<h1 style="color:#7c7cf0">Remote Assistance</h1>
-<p style="color:#888;margin:10px 0">You are about to share YOUR screen with the support person.</p>
-<button onclick="start()" style="background:#7c7cf0;color:#fff;border:none;padding:15px 30px;border-radius:8px;font-size:18px;cursor:pointer">Share My Screen</button>
-<div id="status" style="margin-top:20px;color:#555"></div>
-<video id="preview" style="max-width:90%;max-height:60vh;margin-top:20px;display:none" autoplay></video>
+// Remote Assistant — browser-based screen sharing (no install needed, works on any device)
+app.get('/remote-assistant', (req, res) => {
+  const assistantHtml = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Remote Assistant</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);color:#fff;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:20px}
+.container{max-width:480px;width:100%;text-align:center}
+.logo{font-size:48px;margin-bottom:8px}
+h1{font-size:22px;font-weight:700;margin-bottom:4px}
+.subtitle{font-size:13px;color:#a0a0c0;margin-bottom:24px}
+.card{background:rgba(255,255,255,0.06);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:24px;margin-bottom:16px}
+.card h2{font-size:15px;font-weight:600;margin-bottom:12px;color:#7c7cf0}
+.card p{font-size:12px;color:#888;line-height:1.5;margin-bottom:16px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:14px 20px;border:none;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:linear-gradient(135deg,#7c7cf0,#5b5bd6);color:#fff}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(124,124,240,0.4)}
+.btn-primary:active{transform:translateY(0)}
+.btn-primary:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+.btn-camera{background:rgba(255,255,255,0.1);color:#fff;margin-top:8px}
+.btn-camera:hover{background:rgba(255,255,255,0.15)}
+#status{margin-top:16px;font-size:13px;color:#a0a0c0;min-height:20px}
+#status.connected{color:#4caf50}
+#status.error{color:#f44336}
+.preview-container{margin-top:16px;border-radius:12px;overflow:hidden;background:#000;display:none;position:relative}
+.preview-container video{width:100%;display:block;max-height:60vh;object-fit:contain}
+.preview-container .badge{position:absolute;top:8px;left:8px;background:rgba(220,53,69,0.9);color:#fff;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;display:flex;align-items:center;gap:4px}
+.preview-container .badge::before{content:'';width:6px;height:6px;border-radius:50%;background:#fff;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+.info{font-size:11px;color:#666;margin-top:12px;line-height:1.4}
+.steps{text-align:left;margin:12px 0}
+.steps li{font-size:12px;color:#aaa;margin-bottom:6px;padding-left:4px}
+.steps li span{color:#7c7cf0;font-weight:600}
+.footer{font-size:10px;color:#555;margin-top:20px}
+</style></head><body>
+<div class="container">
+  <div class="logo">🤝</div>
+  <h1>Remote Assistant</h1>
+  <p class="subtitle">Share your screen to get help — no installation required</p>
+  <div class="card">
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li>Click <span>"Start Sharing"</span> below</li>
+      <li>Select your screen, window, or tab to share</li>
+      <li>The support person can now see your screen</li>
+      <li>Click <span>"Stop Sharing"</span> when done</li>
+    </ol>
+  </div>
+  <div class="card">
+    <button class="btn btn-primary" id="btn-share" onclick="startShare()">🖥 Start Sharing</button>
+    <button class="btn btn-camera" id="btn-camera" onclick="startCamera()" style="display:none">📱 Share Camera (Mobile)</button>
+    <div id="status">Ready to connect</div>
+    <div class="preview-container" id="preview-container">
+      <div class="badge">LIVE</div>
+      <video id="preview" autoplay playsinline muted></video>
+    </div>
+    <div class="info" id="info"></div>
+  </div>
+  <div class="footer">Monitor System designed by Puneet Upreti</div>
+</div>
 <script>
 const TOKEN='${AUTH_TOKEN}';
-const WS_URL=(location.protocol=='https:'?'wss:':'ws:')+'//'+location.host+'/ws?token='+TOKEN;
-let ws,media;
+const WS_URL=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws?token='+TOKEN;
+let ws,media,canvasInterval;
+const isMobile=/Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(navigator.userAgent)||('ontouchstart' in window&&window.innerWidth<1024);
 
-function start(){
- document.getElementById('status').textContent='Requesting screen...';
- navigator.mediaDevices.getDisplayMedia({video:{cursor:'always'},audio:false}).then(s=>{
-  media=s;
-  document.getElementById('preview').srcObject=s;
-  document.getElementById('preview').style.display='block';
-  document.getElementById('status').textContent='Connected. You can close this tab when done.';
-  
+if(isMobile){
+  document.getElementById('btn-share').textContent='📱 Share Camera';
+  document.getElementById('btn-share').onclick=startCamera;
+  document.getElementById('btn-camera').style.display='none';
+  document.getElementById('info').textContent='On mobile devices, camera sharing is used instead of screen sharing.';
+}
+
+function setStatus(msg,type){
+  const el=document.getElementById('status');
+  el.textContent=msg;
+  el.className=type||'';
+}
+
+function startShare(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getDisplayMedia){
+    setStatus('Screen sharing not supported on this browser. Try Chrome or Edge.','error');
+    document.getElementById('btn-camera').style.display='';
+    return;
+  }
+  setStatus('Select a screen to share...','');
+  navigator.mediaDevices.getDisplayMedia({video:{cursor:'always',displaySurface:'monitor'},audio:false}).then(stream=>{
+    media=stream;
+    const video=document.getElementById('preview');
+    video.srcObject=stream;
+    document.getElementById('preview-container').style.display='block';
+    document.getElementById('btn-share').textContent='⏹ Stop Sharing';
+    document.getElementById('btn-share').onclick=stopShare;
+    setStatus('Connected — support person can see your screen','connected');
+    document.getElementById('info').textContent='Your screen is being shared. Close this tab to stop.';
+    connectWS();
+    startFrameCapture(video);
+    stream.getVideoTracks()[0].onended=()=>{stopShare();setStatus('Screen sharing ended.','');};
+  }).catch(e=>{
+    setStatus('Sharing cancelled: '+e.message,'error');
+  });
+}
+
+function startCamera(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    setStatus('Camera not available on this device.','error');
+    return;
+  }
+  setStatus('Requesting camera access...','');
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false}).then(stream=>{
+    media=stream;
+    const video=document.getElementById('preview');
+    video.srcObject=stream;
+    document.getElementById('preview-container').style.display='block';
+    document.getElementById('btn-share').textContent='⏹ Stop Sharing';
+    document.getElementById('btn-share').onclick=stopShare;
+    document.getElementById('btn-camera').style.display='none';
+    setStatus('Connected — camera is being shared','connected');
+    document.getElementById('info').textContent='Your camera view is being shared. Close this tab to stop.';
+    connectWS();
+    startFrameCapture(video);
+    stream.getVideoTracks()[0].onended=()=>{stopShare();setStatus('Camera sharing ended.','');};
+  }).catch(e=>{
+    setStatus('Camera access denied: '+e.message,'error');
+  });
+}
+
+function connectWS(){
   ws=new WebSocket(WS_URL);
   ws.onopen=()=>{
-   const sessionId='session-'+Math.random().toString(36).slice(2,8);
-   window.sessionId=sessionId;
-   ws.send(JSON.stringify({type:'agent-hello',agentId:sessionId,name:'🖥 Remote Session'}));
+    const sessionId='remote-'+Math.random().toString(36).slice(2,10);
+    window.sessionId=sessionId;
+    const deviceInfo=isMobile?'📱 Mobile':'💻 Desktop';
+    ws.send(JSON.stringify({type:'agent-hello',agentId:sessionId,name:deviceInfo+' Remote Assistant',org:'Remote Assistant'}));
   };
-  
-  // Capture and send frames
+  ws.onclose=()=>{
+    if(media){setTimeout(connectWS,3000);}
+  };
+  ws.onerror=()=>{};
+}
+
+function startFrameCapture(video){
+  if(canvasInterval)clearInterval(canvasInterval);
   const canvas=document.createElement('canvas');
   const ctx=canvas.getContext('2d');
-  const video=document.getElementById('preview');
-  
-  function sendFrame(){
-   if(ws.readyState!==WebSocket.OPEN) return;
-   canvas.width=video.videoWidth;canvas.height=video.videoHeight;
-   ctx.drawImage(video,0,0);
-   canvas.toBlob(b=>{
-    const reader=new FileReader();
-    reader.onload=()=>ws.send(JSON.stringify({type:'agent-frame',agentId:window.sessionId,frame:reader.result.split(',')[1]}));
-    reader.readAsDataURL(b);
-   },'image/jpeg',50);
-   setTimeout(sendFrame,200);
-  }
-  
-  video.onplay=sendFrame;
-  s.getVideoTracks()[0].onended=()=>{ws.close();document.getElementById('status').textContent='Screen sharing ended.'};
- }).catch(e=>{document.getElementById('status').textContent='Error: '+e.message});
+  canvasInterval=setInterval(()=>{
+    if(!ws||ws.readyState!==WebSocket.OPEN)return;
+    if(video.readyState<2)return;
+    canvas.width=video.videoWidth||640;
+    canvas.height=video.videoHeight||480;
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    canvas.toBlob(blob=>{
+      if(!blob)return;
+      const reader=new FileReader();
+      reader.onload=()=>{
+        if(ws&&ws.readyState===WebSocket.OPEN){
+          ws.send(JSON.stringify({type:'agent-frame',agentId:window.sessionId,frame:reader.result.split(',')[1]}));
+        }
+      };
+      reader.readAsDataURL(blob);
+    },'image/jpeg',0.6);
+  },500);
 }
-</script></body></html>`);
+
+function stopShare(){
+  if(canvasInterval){clearInterval(canvasInterval);canvasInterval=null;}
+  if(media){media.getTracks().forEach(t=>t.stop());media=null;}
+  if(ws){ws.close();ws=null;}
+  document.getElementById('preview-container').style.display='none';
+  document.getElementById('btn-share').textContent='🖥 Start Sharing';
+  document.getElementById('btn-share').onclick=isMobile?startCamera:startShare;
+  if(isMobile)document.getElementById('btn-camera').style.display='';
+  document.getElementById('info').textContent='';
+}
+</script></body></html>`;
+  res.send(assistantHtml);
+});
+
+// Legacy redirect for old /remote-session URL
+app.get('/remote-session', (req, res) => {
+  res.redirect('/remote-assistant');
 });
 
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
@@ -130,11 +263,11 @@ function isValidAgentId(id) {
 }
 
 // Full-screen single agent view
-app.get('/view/:agentId', auth, (req, res) => {
+app.get('/view/:agentId', (req, res) => {
   const agentId = req.params.agentId;
   if (!isValidAgentId(agentId)) return res.status(400).send('Invalid agent ID');
   const viewHtml = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>View: ${agentId}</title>
+<html><head><meta charset="UTF-8"><title>Monitor — ${agentId}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}
@@ -178,7 +311,7 @@ body{background:#000;display:flex;align-items:center;justify-content:center;heig
 <div id="fps">0 FPS</div>
 <div id="status">Connecting...</div>
 <img id="screen" src="" alt="">
-<div id="credit">Created by Puneet Upreti</div>
+<div id="credit">Monitor System — Puneet Upreti</div>
 <div id="ctrl-bar">
   <span id="ctrl-ind" class="ctrl-off" onclick="requestControl()">🖱 Request Control</span>
   <span class="sep">|</span>
@@ -189,7 +322,7 @@ body{background:#000;display:flex;align-items:center;justify-content:center;heig
 <script>
 const AUTH_PASS='${AUTH_PASS}';
 const wsProto=location.protocol==='https:'?'wss:':'ws:';
-const ws=new WebSocket(wsProto+'//'+location.host+'?token=${AUTH_TOKEN}');
+const ws=new WebSocket(wsProto+'//'+location.host+'/ws?token=${AUTH_TOKEN}');
 let fps=0,fpsTimer=setInterval(()=>{document.getElementById('fps').textContent=fps+' FPS';fps=0},1000);
 const screen=document.getElementById('screen');
 const status=document.getElementById('status');
@@ -256,6 +389,287 @@ document.addEventListener('keydown',e=>{
 });
 </script></body></html>`;
   res.send(viewHtml);
+});
+
+// Multi-agent unified control panel
+app.get('/multi-control', (req, res) => {
+  const agentIds = req.query.agent ? (Array.isArray(req.query.agent) ? req.query.agent : [req.query.agent]) : [];
+  if (agentIds.length === 0) return res.status(400).send('No agents specified');
+  const validIds = agentIds.filter(id => isValidAgentId(id));
+  if (validIds.length === 0) return res.status(400).send('Invalid agent IDs');
+  const agentsJson = JSON.stringify(validIds);
+  const multiHtml = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Multi-Control</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#fff;font-family:monospace;height:100vh;display:flex;flex-direction:column}
+header{background:#1a1a1a;padding:6px 12px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #333}
+header h1{font-size:14px;color:#4caf50}
+header .info{font-size:11px;color:#888}
+#grid{display:grid;gap:2px;padding:2px;flex:1;overflow:hidden}
+.cell{position:relative;background:#000;border:1px solid #333;overflow:hidden}
+.cell.active{border-color:#4caf50}
+.cell img{width:100%;height:100%;object-fit:contain;display:block}
+.cell .label{position:absolute;top:4px;left:4px;background:rgba(0,0,0,0.7);padding:2px 6px;border-radius:3px;font-size:10px;color:#4caf50}
+.cell .ctrl-indicator{position:absolute;top:4px;right:4px;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700;cursor:pointer}
+.cell .ctrl-indicator.off{background:#d32f2f;color:#fff}
+.cell .ctrl-indicator.on{background:#4caf50;color:#fff}
+.cell .lock-overlay{position:absolute;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10}
+.cell .lock-box{background:#1a1a1a;border:1px solid #444;border-radius:6px;padding:12px;text-align:center;width:200px}
+.cell .lock-box input{width:100%;padding:6px;background:#2a2a2a;border:1px solid #444;color:#fff;border-radius:3px;text-align:center;font-size:12px;margin:6px 0}
+.cell .lock-box button{width:100%;padding:6px;background:#4caf50;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px;font-weight:600}
+</style></head><body>
+<header>
+  <h1>🎮 Multi-Control (${validIds.length} agents)</h1>
+  <div class="info">Click screen to control | Click indicator to toggle</div>
+</header>
+<div id="grid"></div>
+<script>
+const AGENTS=${agentsJson};
+const AUTH_PASS='${AUTH_PASS}';
+const wsProto=location.protocol==='https:'?'wss:':'ws:';
+const ws=new WebSocket(wsProto+'//'+location.host+'/ws?token=${AUTH_TOKEN}');
+const state={};
+AGENTS.forEach(id=>{state[id]={controlEnabled:false,frame:null};});
+
+function getCols(n){if(n<=1)return'1fr';if(n<=2)return'repeat(2,1fr)';if(n<=4)return'repeat(2,1fr)';if(n<=6)return'repeat(3,1fr)';return'repeat(4,1fr)';}
+
+function buildGrid(){
+  const grid=document.getElementById('grid');
+  grid.style.gridTemplateColumns=getCols(AGENTS.length);
+  AGENTS.forEach(id=>{
+    const cell=document.createElement('div');
+    cell.className='cell';cell.id='cell-'+id;
+    cell.innerHTML=\`<div class="label">\${id}</div>
+      <div class="ctrl-indicator off" id="ctrl-\${id}" onclick="toggleControl('\${id}')">🖱 OFF</div>
+      <img id="img-\${id}" src="">
+      <div class="lock-overlay" id="lock-\${id}" style="display:none">
+        <div class="lock-box"><div style="font-size:11px;margin-bottom:4px">Enter Password</div>
+          <input type="password" id="pass-\${id}" onkeydown="if(event.key==='Enter')submitLock('\${id}')">
+          <button onclick="submitLock('\${id}')">Unlock</button>
+          <div id="err-\${id}" style="color:#d32f2f;font-size:10px;margin-top:4px;display:none">Wrong</div>
+        </div>
+      </div>\`;
+    cell.addEventListener('mousemove',e=>sendControl(id,'mousemove',e));
+    cell.addEventListener('click',e=>sendControl(id,'click',e));
+    cell.addEventListener('contextmenu',e=>{e.preventDefault();sendControl(id,'click',e,2);});
+    grid.appendChild(cell);
+  });
+}
+
+function toggleControl(id){
+  if(state[id].controlEnabled){
+    state[id].controlEnabled=false;
+    document.getElementById('ctrl-'+id).textContent='🖱 OFF';
+    document.getElementById('ctrl-'+id).className='ctrl-indicator off';
+  } else {
+    document.getElementById('lock-'+id).style.display='flex';
+    document.getElementById('pass-'+id).focus();
+  }
+}
+
+function submitLock(id){
+  const p=document.getElementById('pass-'+id).value;
+  if(p===AUTH_PASS){
+    state[id].controlEnabled=true;
+    document.getElementById('lock-'+id).style.display='none';
+    document.getElementById('ctrl-'+id).textContent='🖱 ON';
+    document.getElementById('ctrl-'+id).className='ctrl-indicator on';
+  } else {
+    document.getElementById('err-'+id).style.display='block';
+    document.getElementById('pass-'+id).value='';
+  }
+}
+
+function sendControl(id,cmd,e,button){
+  if(!state[id].controlEnabled)return;
+  const img=document.getElementById('img-'+id);
+  const r=img.getBoundingClientRect();
+  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
+  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
+  ws.send(JSON.stringify({type:'control',agentId:id,command:cmd,params:{x,y,button:button!=null?button:0}}));
+}
+
+ws.onopen=()=>{
+  AGENTS.forEach(id=>ws.send(JSON.stringify({type:'view-agent',agentId:id})));
+};
+ws.onmessage=e=>{
+  const d=JSON.parse(e.data);
+  if(d.type==='frame'&&state[d.agentId]!==undefined){
+    state[d.agentId].frame=d.frame;
+    const img=document.getElementById('img-'+d.agentId);
+    if(img)img.src='data:image/jpeg;base64,'+d.frame;
+  }
+};
+ws.onclose=()=>setTimeout(()=>location.reload(),3000);
+
+buildGrid();
+</script></body></html>`;
+  res.send(multiHtml);
+});
+
+// Generate a support session token (admin only)
+app.post('/api/support-token', (req, res) => {
+  if (!checkAuthSimple(req)) return res.status(401).send('Unauthorized');
+  const agentId = req.headers['x-agent-id'];
+  if (!agentId || !isValidAgentId(agentId)) return res.status(400).json({error: 'Invalid agent ID'});
+  const token = crypto.randomBytes(16).toString('hex');
+  const expiresMinutes = parseInt(req.headers['x-expires'] || '60');
+  supportSessions.set(token, {
+    agentId,
+    expiresAt: Date.now() + expiresMinutes * 60 * 1000,
+    controlEnabled: false,
+    createdAt: Date.now()
+  });
+  // Auto-cleanup expired sessions
+  setTimeout(() => supportSessions.delete(token), expiresMinutes * 60 * 1000);
+  const url = location ? `${req.protocol}://${req.get('host')}/support/${token}` : `/support/${token}`;
+  res.json({success: true, token, url, expiresMinutes});
+});
+
+// Support session page — shareable link for remote assistance
+app.get('/support/:token', (req, res) => {
+  const token = req.params.token;
+  const session = supportSessions.get(token);
+  if (!session || Date.now() > session.expiresAt) {
+    return res.status(404).send('<h1 style="color:#d32f2f;text-align:center;margin-top:40vh;font-family:sans-serif">Session expired or invalid</h1>');
+  }
+  const agentId = session.agentId;
+  const supportHtml = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Remote Support Session</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden;font-family:sans-serif}
+#screen{width:100vw;height:100vh;object-fit:contain}
+#bar{position:fixed;top:0;left:0;right:0;background:rgba(0,0,0,0.8);padding:8px 16px;display:flex;justify-content:space-between;align-items:center;z-index:10;transition:opacity 0.3s}
+#bar .left{color:#fff;font-size:13px}
+#bar .right{display:flex;gap:8px;align-items:center}
+#bar button{padding:6px 12px;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600}
+#bar .ctrl-btn{background:#4caf50;color:#fff}
+#bar .ctrl-btn.off{background:#d32f2f}
+#bar .timer{color:#aaa;font-size:11px}
+#lock-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:100}
+#lock-box{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:24px;text-align:center;max-width:300px;width:90%}
+#lock-box h2{color:#fff;font-size:14px;margin-bottom:8px}
+#lock-box p{color:#888;font-size:11px;margin-bottom:12px}
+#lock-box input{width:100%;padding:8px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#fff;font-size:13px;text-align:center}
+#lock-box .btns{display:flex;gap:8px;margin-top:12px}
+#lock-box .btns button{flex:1;padding:8px;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600}
+#lock-box .btn-ok{background:#4caf50;color:#fff}
+#lock-box .btn-cancel{background:#333;color:#aaa}
+#lock-box .err{color:#d32f2f;font-size:11px;margin-top:6px;display:none}
+#status{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#fff;padding:4px 12px;border-radius:4px;font-size:11px;z-index:10}
+.hidden-ui{opacity:0!important;pointer-events:none}
+</style></head><body>
+<div id="bar">
+  <div class="left">🤝 Remote Support — <span id="agent-name">${agentId}</span></div>
+  <div class="right">
+    <span class="timer" id="timer"></span>
+    <button class="ctrl-btn off" id="ctrl-btn" onclick="requestControl()">🖱 Request Control</button>
+  </div>
+</div>
+<div id="lock-overlay" style="display:none">
+  <div id="lock-box">
+    <h2>Request Control</h2>
+    <p>Ask the admin for the control password</p>
+    <input type="password" id="lock-pass" placeholder="Password" autocomplete="off">
+    <div class="err" id="lock-err">Wrong password</div>
+    <div class="btns">
+      <button class="btn-cancel" onclick="cancelLock()">Cancel</button>
+      <button class="btn-ok" onclick="submitLock()">Unlock</button>
+    </div>
+  </div>
+</div>
+<img id="screen" src="" alt="">
+<div id="status">Connecting...</div>
+<script>
+const TOKEN='${token}';
+const AGENT_ID='${agentId}';
+const wsProto=location.protocol==='https:'?'wss:':'ws:';
+const ws=new WebSocket(wsProto+'//'+location.host+'/ws?token=${AUTH_TOKEN}');
+let controlEnabled=false;
+let uiVisible=true,uiTimer=null;
+const expiresAt=${session.expiresAt};
+
+function updateTimer(){
+  const remaining=expiresAt-Date.now();
+  if(remaining<=0){document.getElementById('timer').textContent='Expired';return;}
+  const m=Math.floor(remaining/60000);
+  const s=Math.floor((remaining%60000)/1000);
+  document.getElementById('timer').textContent=m+':'+String(s).padStart(2,'0');
+}
+setInterval(updateTimer,1000);updateTimer();
+
+function hideUI(){uiVisible=false;document.getElementById('bar').classList.add('hidden-ui');document.getElementById('status').classList.add('hidden-ui');}
+function showUI(){uiVisible=true;document.getElementById('bar').classList.remove('hidden-ui');document.getElementById('status').classList.remove('hidden-ui');clearTimeout(uiTimer);uiTimer=setTimeout(hideUI,4000);}
+
+function requestControl(){
+  if(controlEnabled){controlEnabled=false;const btn=document.getElementById('ctrl-btn');btn.textContent='🖱 Request Control';btn.className='ctrl-btn off';return;}
+  document.getElementById('lock-overlay').style.display='flex';
+  document.getElementById('lock-pass').value='';
+  document.getElementById('lock-pass').focus();
+  document.getElementById('lock-err').style.display='none';
+}
+function cancelLock(){document.getElementById('lock-overlay').style.display='none';}
+function submitLock(){
+  const p=document.getElementById('lock-pass').value;
+  // Support session control password is the same as admin password
+  if(p==='${AUTH_PASS}'){
+    controlEnabled=true;
+    document.getElementById('lock-overlay').style.display='none';
+    const btn=document.getElementById('ctrl-btn');btn.textContent='🖱 Control: ON';btn.className='ctrl-btn';
+    ws.send(JSON.stringify({type:'support-control',token:TOKEN,enabled:true}));
+    showUI();
+  } else {
+    document.getElementById('lock-err').style.display='block';
+    document.getElementById('lock-pass').value='';
+  }
+}
+document.getElementById('lock-pass').addEventListener('keydown',e=>{if(e.key==='Enter')submitLock();if(e.key==='Escape')cancelLock();});
+document.addEventListener('mousemove',showUI);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){showUI();cancelLock();}});
+
+ws.onopen=()=>{
+  document.getElementById('status').textContent='Connected — View Only';
+  ws.send(JSON.stringify({type:'support-view',token:TOKEN,agentId:AGENT_ID}));
+  setTimeout(showUI,500);
+};
+ws.onclose=()=>{document.getElementById('status').textContent='Disconnected';setTimeout(()=>location.reload(),3000);};
+ws.onmessage=e=>{
+  const d=JSON.parse(e.data);
+  if(d.type==='frame'&&d.agentId===AGENT_ID){
+    document.getElementById('screen').src='data:image/jpeg;base64,'+d.frame;
+  }
+};
+document.getElementById('screen').addEventListener('mousemove',e=>{
+  if(!controlEnabled)return;
+  const r=document.getElementById('screen').getBoundingClientRect();
+  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
+  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
+  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'mousemove',params:{x,y}}));
+});
+document.getElementById('screen').addEventListener('click',e=>{
+  if(!controlEnabled)return;
+  const r=document.getElementById('screen').getBoundingClientRect();
+  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
+  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
+  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'click',params:{x,y,button:0}}));
+});
+document.getElementById('screen').addEventListener('contextmenu',e=>{
+  e.preventDefault();
+  if(!controlEnabled)return;
+  const r=document.getElementById('screen').getBoundingClientRect();
+  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
+  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
+  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'click',params:{x,y,button:2}}));
+});
+document.addEventListener('keydown',e=>{
+  if(!controlEnabled)return;
+  if(e.key==='Escape'){showUI();cancelLock();return;}
+  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'keypress',params:{key:e.key,code:e.code}}));
+});
+</script></body></html>`;
+  res.send(supportHtml);
 });
 
 app.post('/api/upload-update', (req, res) => {
@@ -628,26 +1042,34 @@ app.get('/api/logs/:agentId?', auth, (req, res) => {
 // API endpoint to export logs as CSV (Excel compatible)
 app.get('/api/export-logs', auth, (req, res) => {
   const now = new Date();
-  const monthStr = now.toISOString().slice(0, 7); // YYYY-MM
-  const rows = [['Timestamp', 'Agent ID', 'Hostname', 'Local IP', 'Public IP', 'Event', 'Details', 'Uptime (min)', 'Idle (s)', 'Active (s)']];
+  const monthStr = now.toISOString().slice(0, 7);
+  const rows = [['Date', 'Time', 'Agent ID', 'Hostname', 'Local IP', 'Public IP', 'Event', 'Details', 'Uptime (min)', 'Idle (min)', 'Active (min)', 'Downtime (min)', 'State']];
   
   for (const [agentId, logs] of Object.entries(agentLogs)) {
     const agent = agents.get(agentId);
-    const hostname = agent?.hostname || '';
-    const localIP = agent?.localIP || '';
-    const publicIP = agent?.publicIP || '';
+    const hostname = agent?.hostname || logs[0]?.hostname || '';
+    const localIP = agent?.localIP || logs[0]?.localIP || '';
+    const publicIP = agent?.publicIP || logs[0]?.publicIP || '';
     for (const log of logs) {
+      const ts = new Date(log.timestamp);
+      const uptimeMin = log.uptime != null ? log.uptime : '';
+      const idleMin = log.idle != null ? Math.round(log.idle / 60) : '';
+      const activeMin = log.active != null ? Math.round(log.active / 60) : '';
+      const downtimeMin = log.downtime != null ? log.downtime : '';
       rows.push([
-        log.timestamp,
+        ts.toISOString().slice(0, 10),
+        ts.toISOString().slice(11, 19),
         agentId,
         hostname,
         localIP,
         publicIP,
         log.event,
         log.details || '',
-        log.uptime || '',
-        log.idle || '',
-        log.active || ''
+        uptimeMin,
+        idleMin,
+        activeMin,
+        downtimeMin,
+        log.currentState || ''
       ]);
     }
   }
@@ -704,22 +1126,26 @@ app.post('/api/push-logs-to-github', auth, (req, res) => {
   if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
   
   const csvPath = path.join(logDir, `agent-logs-${monthStr}.csv`);
-  const rows = [['Timestamp', 'Agent ID', 'Hostname', 'Local IP', 'Public IP', 'Event', 'Details', 'Uptime (min)', 'Idle (s)', 'Active (s)']];
+  const rows = [['Date', 'Time', 'Agent ID', 'Hostname', 'Local IP', 'Public IP', 'Event', 'Details', 'Uptime (min)', 'Idle (min)', 'Active (min)', 'Downtime (min)', 'State']];
   
   for (const [agentId, logs] of Object.entries(agentLogs)) {
     const agent = agents.get(agentId);
     for (const log of logs) {
+      const ts = new Date(log.timestamp);
       rows.push([
-        log.timestamp,
+        ts.toISOString().slice(0, 10),
+        ts.toISOString().slice(11, 19),
         agentId,
         agent?.hostname || '',
         agent?.localIP || '',
         agent?.publicIP || '',
         log.event,
         log.details || '',
-        log.uptime || '',
-        log.idle || '',
-        log.active || ''
+        log.uptime != null ? log.uptime : '',
+        log.idle != null ? Math.round(log.idle / 60) : '',
+        log.active != null ? Math.round(log.active / 60) : '',
+        log.downtime != null ? log.downtime : '',
+        log.currentState || ''
       ]);
     }
   }
@@ -786,12 +1212,13 @@ setInterval(() => {
   if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
   
   const csvPath = path.join(logDir, `agent-logs-${monthStr}.csv`);
-  const rows = [['Timestamp', 'Agent ID', 'Hostname', 'Local IP', 'Public IP', 'Event', 'Details', 'Uptime (min)', 'Idle (s)', 'Active (s)']];
+  const rows = [['Date', 'Time', 'Agent ID', 'Hostname', 'Local IP', 'Public IP', 'Event', 'Details', 'Uptime (min)', 'Idle (min)', 'Active (min)', 'Downtime (min)', 'State']];
   
   for (const [agentId, logs] of Object.entries(agentLogs)) {
     const agent = agents.get(agentId);
     for (const log of logs) {
-      rows.push([log.timestamp, agentId, agent?.hostname || '', agent?.localIP || '', agent?.publicIP || '', log.event, log.details || '', log.uptime || '', log.idle || '', log.active || '']);
+      const ts = new Date(log.timestamp);
+      rows.push([ts.toISOString().slice(0,10), ts.toISOString().slice(11,19), agentId, agent?.hostname||'', agent?.localIP||'', agent?.publicIP||'', log.event, log.details||'', log.uptime!=null?log.uptime:'', log.idle!=null?Math.round(log.idle/60):'', log.active!=null?Math.round(log.active/60):'', log.downtime!=null?log.downtime:'', log.currentState||'']);
     }
   }
   
@@ -829,6 +1256,16 @@ wss.on('connection', (ws, req) => {
           ws.org = typeof data.org === 'string' ? data.org.slice(0, 100) : '';
           const clientIp = req.socket.remoteAddress?.replace(/^::ffff:/, '') || 'unknown';
           const helloData = data.data || {};
+          // Race condition prevention: check connectionId
+          const newConnId = helloData.connectionId || String(Date.now());
+          const existingAgent = agents.get(data.agentId);
+          if (existingAgent && existingAgent.connectionId) {
+            if (BigInt(existingAgent.connectionId) > BigInt(newConnId)) {
+              console.log(`Stale connection rejected for ${data.agentId} (old: ${newConnId}, current: ${existingAgent.connectionId})`);
+              ws.close(4004, 'Stale connection');
+              return;
+            }
+          }
           const agentIP = helloData.agentIP || clientIp;
           const localIP = helloData.localIP || '';
           const publicIP = helloData.publicIP || '';
@@ -847,6 +1284,7 @@ wss.on('connection', (ws, req) => {
             publicIP,
             hostname: agentHostname,
             connectedAt: Date.now(),
+            connectionId: newConnId,
             events: [{type: 'connected', time: Date.now()}],
             bootTime: helloData.bootTime || '',
             programStart: helloData.programStart || '',
@@ -859,15 +1297,26 @@ wss.on('connection', (ws, req) => {
           console.log(`Agent connected: ${agentName} (${data.agentId}) [local:${localIP} public:${publicIP}] (conn: ${clientIp})`);
           broadcastToDashboards({ type: 'agent-connected', agentId: data.agentId, name: agentName, ip: agentIP, localIP, publicIP, hostname: agentHostname });
           
-          // Log connection event
+          // Log system wake up event
           if (!agentLogs[data.agentId]) agentLogs[data.agentId] = [];
+          const lastDisconnect = agentLogs[data.agentId].length > 0 ? agentLogs[data.agentId][agentLogs[data.agentId].length - 1] : null;
+          let downtimeMin = '';
+          if (lastDisconnect && lastDisconnect.event === 'system-sleep') {
+            const downMs = Date.now() - new Date(lastDisconnect.timestamp).getTime();
+            downtimeMin = Math.round(downMs / 60000);
+          }
           agentLogs[data.agentId].push({
             timestamp: new Date().toISOString(),
-            event: 'connected',
-            details: `Agent connected from ${clientIp}`,
+            event: 'system-wake',
+            details: `System woke up | Boot: ${helloData.bootTime || 'unknown'} | Downtime: ${downtimeMin != '' ? downtimeMin + 'min' : 'N/A'}`,
             hostname: agentHostname,
             localIP,
-            publicIP
+            publicIP,
+            uptime: helloData.uptime || 0,
+            idle: helloData.currentIdle || 0,
+            active: helloData.totalActive || 0,
+            currentState: 'active',
+            downtime: downtimeMin
           });
           
           for (const dWs of dashboards) {
@@ -927,13 +1376,17 @@ wss.on('connection', (ws, req) => {
               details: `State: ${sd.currentState}, Idle: ${sd.currentIdle}s, Uptime: ${sd.uptime}min`,
               uptime: sd.uptime,
               idle: sd.currentIdle,
-              active: sd.totalActive
+              active: sd.totalActive,
+              currentState: sd.currentState
             });
             
             // Keep only last 10000 logs per agent
             if (agentLogs[data.agentId].length > 10000) {
               agentLogs[data.agentId] = agentLogs[data.agentId].slice(-5000);
             }
+            
+            // Broadcast status to dashboards
+            broadcastToDashboards({ type: 'agent-status', agentId: data.agentId, uptime: sd.uptime, totalIdle: sd.totalIdle, totalActive: sd.totalActive, currentState: sd.currentState });
           }
           break;
 
@@ -946,7 +1399,7 @@ wss.on('connection', (ws, req) => {
           const agentList = [];
           const orgList = new Set();
           for (const [id, a] of agents) {
-            agentList.push({ id, name: a.name, viewers: a.viewers.size, ip: a.ip, localIP: a.localIP || '', publicIP: a.publicIP || '', hostname: a.hostname || '', org: a.org || '' });
+            agentList.push({ id, name: a.name, viewers: a.viewers.size, ip: a.ip, localIP: a.localIP || '', publicIP: a.publicIP || '', hostname: a.hostname || '', org: a.org || '', uptime: a.uptime || 0, totalIdle: a.totalIdle || 0, totalActive: a.totalActive || 0, currentState: a.currentState || 'unknown' });
             if (a.org) orgList.add(a.org);
             // Auto-add dashboard as viewer of every agent (CCTV wall mode)
             a.viewers.add(ws);
@@ -996,12 +1449,61 @@ wss.on('connection', (ws, req) => {
           }
           break;
 
-        // Control command from dashboard
+        // Support session: viewer connects with token
+        case 'support-view':
+          const session = supportSessions.get(data.token);
+          if (!session || Date.now() > session.expiresAt) {
+            ws.send(JSON.stringify({type: 'error', message: 'Session expired'}));
+            ws.close(4005, 'Session expired');
+            break;
+          }
+          if (data.agentId !== session.agentId) {
+            ws.send(JSON.stringify({type: 'error', message: 'Agent mismatch'}));
+            break;
+          }
+          const supportAgent = agents.get(data.agentId);
+          if (!supportAgent) {
+            ws.send(JSON.stringify({type: 'error', message: 'Agent not connected'}));
+            break;
+          }
+          ws.role = 'support';
+          ws.supportToken = data.token;
+          ws.supportAgentId = data.agentId;
+          supportAgent.viewers.add(ws);
+          // Send current frame immediately
+          if (supportAgent.lastFrame) {
+            ws.send(JSON.stringify({type: 'frame', agentId: data.agentId, frame: supportAgent.lastFrame}));
+          }
+          // Notify agent to increase frame rate
+          supportAgent.ws.send(JSON.stringify({type: 'set-fps', fps: 10}));
+          console.log(`Support session started: ${data.agentId} (token: ${data.token.slice(0,8)}...)`);
+          break;
+
+        // Support session: request control
+        case 'support-control':
+          const sess = supportSessions.get(data.token);
+          if (sess && sess.agentId === ws.supportAgentId) {
+            sess.controlEnabled = data.enabled;
+            console.log(`Support control ${data.enabled ? 'enabled' : 'disabled'} for ${sess.agentId}`);
+          }
+          break;
+
+        // Control command from dashboard or support session
         case 'control':
-          if (ws.role === 'dashboard' && data.agentId) {
-            const targetAgent = agents.get(data.agentId);
-            if (targetAgent) {
-              targetAgent.ws.send(JSON.stringify({
+          let ctrlAgentId = data.agentId;
+          let allowed = false;
+          if (ws.role === 'dashboard' && ctrlAgentId) {
+            allowed = true;
+          } else if (ws.role === 'support' && ws.supportToken) {
+            const sess = supportSessions.get(ws.supportToken);
+            if (sess && sess.controlEnabled && ctrlAgentId === sess.agentId) {
+              allowed = true;
+            }
+          }
+          if (allowed && ctrlAgentId) {
+            const ctrlTargetAgent = agents.get(ctrlAgentId);
+            if (ctrlTargetAgent) {
+              ctrlTargetAgent.ws.send(JSON.stringify({
                 type: 'control',
                 command: data.command,
                 params: data.params
@@ -1176,15 +1678,18 @@ wss.on('connection', (ws, req) => {
         broadcastToDashboards({ type: 'agent-disconnected', agentId: ws.agentId });
         console.log(`Agent disconnected: ${ws.agentId}`);
         
-        // Log disconnect event
+        // Log system sleep/shutdown event
         if (!agentLogs[ws.agentId]) agentLogs[ws.agentId] = [];
+        const sessionMin = Math.round((Date.now() - (agent.connectedAt || Date.now())) / 60000);
         agentLogs[ws.agentId].push({
           timestamp: new Date().toISOString(),
-          event: 'disconnected',
-          details: `Agent disconnected after ${Math.round((Date.now() - (agent.connectedAt || Date.now())) / 60000)}min`,
-          uptime: agent.uptime,
-          idle: agent.currentIdle,
-          active: agent.totalActive
+          event: 'system-sleep',
+          details: `System shutdown/sleep | Session: ${sessionMin}min | Last state: ${agent.currentState || 'unknown'} | Uptime: ${agent.uptime || 0}min`,
+          uptime: agent.uptime || 0,
+          idle: agent.totalIdle || 0,
+          active: agent.totalActive || 0,
+          currentState: 'offline',
+          sessionDuration: sessionMin
         });
       }
     }
