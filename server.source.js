@@ -160,17 +160,17 @@ body{background:#000;display:flex;align-items:center;justify-content:center;heig
 #lock-box .btns{display:flex;gap:8px;margin-top:14px}
 #lock-box .btns button{flex:1;padding:10px;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600}
 #lock-box .btn-ok{background:#4caf50;color:#fff}
-#lock-box .btn-skip{background:#333;color:#aaa}
+#lock-box .btn-cancel{background:#333;color:#aaa}
 </style></head><body>
-<div id="lock-overlay">
+<div id="lock-overlay" style="display:none">
   <div id="lock-box">
-    <h2>Remote Control Access</h2>
-    <p>Enter admin password to take control of this device</p>
+    <h2>Take Remote Control</h2>
+    <p>Enter admin password to control this device</p>
     <input type="password" id="lock-pass" placeholder="Password" autocomplete="off">
     <div class="err" id="lock-err">Wrong password</div>
     <div class="btns">
-      <button class="btn-skip" onclick="skipControl()">View Only</button>
-      <button class="btn-ok" onclick="submitLock()">Take Control</button>
+      <button class="btn-cancel" onclick="cancelLock()">Cancel</button>
+      <button class="btn-ok" onclick="submitLock()">Unlock Control</button>
     </div>
   </div>
 </div>
@@ -180,7 +180,7 @@ body{background:#000;display:flex;align-items:center;justify-content:center;heig
 <img id="screen" src="" alt="">
 <div id="credit">Created by Puneet Upreti</div>
 <div id="ctrl-bar">
-  <span id="ctrl-ind" class="ctrl-off" onclick="toggleControl()">Remote: OFF</span>
+  <span id="ctrl-ind" class="ctrl-off" onclick="requestControl()">🖱 Request Control</span>
   <span class="sep">|</span>
   <span onclick="document.documentElement.requestFullscreen?.()">Fullscreen</span>
   <span class="sep">|</span>
@@ -197,28 +197,31 @@ let uiVisible=true,uiTimer=null;
 let controlEnabled=false;
 function hideUI(){uiVisible=false;document.querySelectorAll('#info,#fps,#status,#credit,#ctrl-bar').forEach(e=>e.classList.add('hidden-ui'));}
 function showUI(){uiVisible=true;document.querySelectorAll('#info,#fps,#status,#credit,#ctrl-bar').forEach(e=>e.classList.remove('hidden-ui'));clearTimeout(uiTimer);uiTimer=setTimeout(hideUI,4000);}
-function toggleControl(){controlEnabled=!controlEnabled;const ind=document.getElementById('ctrl-ind');ind.textContent=controlEnabled?'Remote: ON':'Remote: OFF';ind.className=controlEnabled?'ctrl-on':'ctrl-off';}
+function requestControl(){
+  if(controlEnabled){controlEnabled=false;const ind=document.getElementById('ctrl-ind');ind.textContent='🖱 Request Control';ind.className='ctrl-off';return;}
+  document.getElementById('lock-overlay').style.display='flex';
+  document.getElementById('lock-pass').value='';
+  document.getElementById('lock-pass').focus();
+  document.getElementById('lock-err').style.display='none';
+}
+function cancelLock(){document.getElementById('lock-overlay').style.display='none';}
 function submitLock(){
   const p=document.getElementById('lock-pass').value;
   if(p===AUTH_PASS){
     controlEnabled=true;
     document.getElementById('lock-overlay').style.display='none';
-    const ind=document.getElementById('ctrl-ind');ind.textContent='Remote: ON';ind.className='ctrl-on';
-    setTimeout(()=>{showUI();try{document.documentElement.requestFullscreen?.();}catch(e){}},500);
+    const ind=document.getElementById('ctrl-ind');ind.textContent='🖱 Control: ON';ind.className='ctrl-on';
+    showUI();
   } else {
     document.getElementById('lock-err').style.display='block';
     document.getElementById('lock-pass').value='';
     document.getElementById('lock-pass').focus();
   }
 }
-function skipControl(){
-  document.getElementById('lock-overlay').style.display='none';
-  setTimeout(()=>{showUI();try{document.documentElement.requestFullscreen?.();}catch(e){}},500);
-}
-document.getElementById('lock-pass').addEventListener('keydown',e=>{if(e.key==='Enter')submitLock();});
+document.getElementById('lock-pass').addEventListener('keydown',e=>{if(e.key==='Enter')submitLock();if(e.key==='Escape')cancelLock();});
 document.addEventListener('mousemove',showUI);
-document.addEventListener('keydown',e=>{if(e.key==='Escape')showUI();});
-ws.onopen=()=>{status.textContent='Connected';ws.send(JSON.stringify({type:'view-agent',agentId:'${agentId}'}));};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){showUI();cancelLock();}});
+ws.onopen=()=>{status.textContent='Connected — View Only';ws.send(JSON.stringify({type:'view-agent',agentId:'${agentId}'}));setTimeout(()=>{showUI();try{document.documentElement.requestFullscreen?.();}catch(e){}},500);};
 ws.onclose=()=>{status.textContent='Disconnected';showUI();setTimeout(()=>location.reload(),3000);};
 ws.onmessage=e=>{
   const d=JSON.parse(e.data);
@@ -248,7 +251,7 @@ screen.addEventListener('contextmenu',e=>{
 });
 document.addEventListener('keydown',e=>{
   if(!controlEnabled)return;
-  if(e.key==='Escape'){showUI();return;}
+  if(e.key==='Escape'){showUI();cancelLock();return;}
   ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'keypress',params:{key:e.key,code:e.code}}));
 });
 </script></body></html>`;

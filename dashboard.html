@@ -74,8 +74,8 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
   display: flex; justify-content: space-between; align-items: center;
 }
 .cctv-cell .cell-footer .open-link { color: #2e7d32; font-weight: 600; }
-.cctv-cell .cell-footer .hide-btn { color: #d32f2f; cursor: pointer; font-weight: 600; }
 .cctv-cell .cell-footer .share-btn { color: #1976d2; cursor: pointer; font-weight: 600; }
+.cctv-cell .cell-footer .view-btn { color: #2e7d32; cursor: pointer; font-weight: 600; }
 
 #no-agents-msg {
   display: none; grid-column: 1 / -1; text-align: center;
@@ -130,7 +130,19 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
     <span id="credit-badge">Created by Puneet Upreti</span>
     <span id="status-dot"></span>
     <span id="conn-status" style="color:#666">Connecting...</span>
-    <button onclick="openWizard()">⚙ Server</button>
+    <button id="btn-update" onclick="pushUpdate()" style="display:none">📦 Push Update</button>
+    <button onclick="openWizard()">⚙ Update Remote</button>
+    <div id="hide-dropdown" style="position:relative;display:none">
+      <button onclick="toggleHideDropdown()">👁 Show/Hide</button>
+      <div id="hide-panel" style="display:none;position:absolute;top:100%;right:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);padding:8px 12px;min-width:220px;z-index:200">
+        <div style="font-size:11px;font-weight:600;color:#333;margin-bottom:6px">Hide Agents</div>
+        <div id="hide-list"></div>
+        <div style="margin-top:6px;padding-top:6px;border-top:1px solid #eee;display:flex;gap:6px">
+          <button onclick="hideAllAgents()" style="font-size:10px;padding:2px 6px;background:#eee;border:none;border-radius:3px;cursor:pointer">Hide All</button>
+          <button onclick="showAllAgents()" style="font-size:10px;padding:2px 6px;background:#eee;border:none;border-radius:3px;cursor:pointer">Show All</button>
+        </div>
+      </div>
+    </div>
     <button id="btn-logs" onclick="downloadLogs()" style="display:none">📊 Export Logs</button>
     <button id="btn-compile" onclick="compileMonthly()" style="display:none">📅 Compile</button>
     <button id="btn-push" onclick="pushToGitHub()" style="display:none">🚀 Push to GitHub</button>
@@ -185,11 +197,14 @@ function doLogin() {
     authenticated = true;
     document.getElementById('btn-login').style.display = 'none';
     document.getElementById('btn-logout').style.display = '';
+    document.getElementById('btn-update').style.display = '';
+    document.getElementById('hide-dropdown').style.display = '';
     document.getElementById('btn-logs').style.display = '';
     document.getElementById('btn-compile').style.display = '';
     document.getElementById('btn-push').style.display = '';
     hideLogin();
     renderGrid();
+    renderHidePanel();
   } else {
     const err = document.getElementById('login-error');
     err.textContent = 'Wrong password';
@@ -200,6 +215,9 @@ function logout() {
   authenticated = false;
   document.getElementById('btn-login').style.display = '';
   document.getElementById('btn-logout').style.display = 'none';
+  document.getElementById('btn-update').style.display = 'none';
+  document.getElementById('hide-dropdown').style.display = 'none';
+  document.getElementById('hide-panel').style.display = 'none';
   document.getElementById('btn-logs').style.display = 'none';
   document.getElementById('btn-compile').style.display = 'none';
   document.getElementById('btn-push').style.display = 'none';
@@ -228,13 +246,62 @@ function wizardApply() {
 }
 
 function toggleHide(id) {
-  if (!authenticated) { showLogin(); return; }
   if (hiddenAgents.includes(id)) {
     hiddenAgents = hiddenAgents.filter(a => a !== id);
   } else {
     hiddenAgents.push(id);
   }
   localStorage.setItem('hiddenAgents', JSON.stringify(hiddenAgents));
+  renderGrid();
+  renderHidePanel();
+}
+
+function toggleHideDropdown() {
+  const panel = document.getElementById('hide-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  if (panel.style.display === 'block') renderHidePanel();
+}
+
+function renderHidePanel() {
+  const list = document.getElementById('hide-list');
+  if (!list) return;
+  const allIds = Object.keys(agents);
+  if (allIds.length === 0) {
+    list.innerHTML = '<div style="font-size:11px;color:#999">No agents online</div>';
+    return;
+  }
+  list.innerHTML = allIds.map(id => {
+    const a = agents[id];
+    const checked = hiddenAgents.includes(id) ? 'checked' : '';
+    const name = a ? (a.name || id) : id;
+    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;cursor:pointer">
+      <input type="checkbox" ${checked} onchange="toggleHide('${id}')">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span>
+    </label>`;
+  }).join('');
+}
+
+function hideAllAgents() {
+  hiddenAgents = Object.keys(agents);
+  localStorage.setItem('hiddenAgents', JSON.stringify(hiddenAgents));
+  renderGrid();
+  renderHidePanel();
+}
+
+function showAllAgents() {
+  hiddenAgents = [];
+  localStorage.setItem('hiddenAgents', '[]');
+  renderGrid();
+  renderHidePanel();
+}
+
+document.addEventListener('click', e => {
+  const dd = document.getElementById('hide-dropdown');
+  const panel = document.getElementById('hide-panel');
+  if (dd && panel && panel.style.display === 'block' && !dd.contains(e.target)) {
+    panel.style.display = 'none';
+  }
+});
   renderGrid();
 }
 
@@ -313,11 +380,9 @@ function renderGrid() {
         </span>
         <span style="display:flex;gap:6px">
           <span class="share-btn" onclick="event.stopPropagation();shareLink('${id}')" title="Copy remote link">🔗</span>
-          <span class="hide-btn" onclick="event.stopPropagation();toggleHide('${id}')">${authenticated ? '✕ hide' : '✕'}</span>
-          <span class="open-link">Open →</span>
+          <span class="view-btn" onclick="event.stopPropagation();viewAgent('${id}')" title="View Full Screen">🖥 View</span>
         </span>
       </div>`;
-    cell.addEventListener('click', () => window.open('/view/' + id, '_blank'));
     grid.appendChild(cell);
   });
 
@@ -379,6 +444,34 @@ function shareLink(agentId) {
   } else {
     prompt('Copy this remote access link:', url);
   }
+}
+
+function viewAgent(agentId) {
+  window.open('/view/' + agentId, '_blank');
+}
+
+function pushUpdate() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.exe';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.name.endsWith('.exe')) { alert('Only .exe files allowed'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result.split(',')[1];
+      fetch('/api/upload-update', {
+        method: 'POST',
+        headers: { 'x-filename': file.name, 'content-type': 'application/octet-stream' },
+        body: base64
+      }).then(r => r.json()).then(d => {
+        alert(d.success ? `Update pushed to ${d.pushedTo} agents` : 'Failed: ' + JSON.stringify(d));
+      }).catch(err => alert('Error: ' + err.message));
+    };
+    reader.readAsDataURL(file);
+  };
+  input.click();
 }
 
 connect();
