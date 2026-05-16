@@ -19,7 +19,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [1/8] Checking system requirements...
+echo [1/9] Checking system requirements...
 echo.
 
 :: Check Node.js
@@ -54,7 +54,7 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [2/8] Setting up server directory...
+echo [2/9] Setting up server directory...
 echo.
 
 :: Ask for install directory
@@ -124,7 +124,7 @@ if not exist "package.json" (
 )
 
 echo.
-echo [3/8] Installing dependencies...
+echo [3/9] Installing dependencies...
 echo.
 
 :: Check if node_modules exists
@@ -151,7 +151,7 @@ echo.
 echo [OK] Dependencies installed.
 
 echo.
-echo [4/8] Creating data directories...
+echo [4/9] Creating data directories...
 echo.
 
 if not exist "data" mkdir "data"
@@ -159,18 +159,48 @@ if not exist "logs" mkdir "logs"
 echo [OK] Created: data\, logs\
 
 echo.
-echo [5/8] Detecting network configuration...
+echo [5/9] Detecting network configuration...
 echo.
 
-:: Get Local IP
-echo Detecting local IP address...
+:: Detect Active Interface Name
+echo Detecting active network adapter...
+set "INTERFACE_NAME="
+for /f "tokens=4*" %%a in ('netsh interface show interface ^| findstr "Connected"') do (
+    set "INTERFACE_NAME=%%b"
+    goto interface_found
+)
+:interface_found
+
+if "!INTERFACE_NAME!"=="" (
+    echo [!] Could not detect active network adapter.
+    set /p "INTERFACE_NAME=Please enter your adapter name (e.g., Wi-Fi, Ethernet): "
+)
+echo [OK] Detected Adapter: !INTERFACE_NAME!
+
+:: Detect IP and Gateway
+echo Detecting IP and Gateway...
+set "LOCAL_IP="
+set "GATEWAY_IP="
+
 for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4"') do (
     set "LOCAL_IP=%%a"
-    goto :ip_found
+    goto ip_found
 )
 :ip_found
-set "LOCAL_IP=%LOCAL_IP:~1%"
-echo [OK] Local IP: %LOCAL_IP%
+set "LOCAL_IP=!LOCAL_IP:~1!"
+
+for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"Default Gateway"') do (
+    set "GATEWAY_IP=%%a"
+    goto gw_found
+)
+:gw_found
+set "GATEWAY_IP=!GATEWAY_IP:~1!"
+
+if "!LOCAL_IP!"=="" set "LOCAL_IP=192.168.0.100"
+if "!GATEWAY_IP!"=="" set "GATEWAY_IP=192.168.0.1"
+
+echo [OK] Detected IP: !LOCAL_IP!
+echo [OK] Detected Gateway: !GATEWAY_IP!
 
 :: Get Public IP
 echo Detecting public IP address...
@@ -182,19 +212,28 @@ if "%PUBLIC_IP%"=="" (
     echo [OK] Public IP: %PUBLIC_IP%
 )
 
-:: Get Default Gateway (Router IP)
-echo Detecting router IP...
-for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"Default Gateway"') do (
-    set "ROUTER_IP=%%a"
-    goto :gw_found
+echo.
+echo [6/9] Configure Static IP Address...
+echo.
+echo Current IP: !LOCAL_IP!
+echo Current Gateway: !GATEWAY_IP!
+echo.
+echo It is recommended to set a Static IP so port forwarding never breaks.
+set /p "SET_STATIC=Lock IP !LOCAL_IP! as Static? (Y/N): "
+
+if /i "!SET_STATIC!"=="Y" (
+    echo Locking IP address...
+    netsh interface ip set address name="!INTERFACE_NAME!" static !LOCAL_IP! 255.255.255.0 !GATEWAY_IP! >nul 2>&1
+    netsh interface ip set dns name="!INTERFACE_NAME!" static !GATEWAY_IP! >nul 2>&1
+    netsh interface ip add dns name="!INTERFACE_NAME!" 8.8.8.8 index=2 >nul 2>&1
+    echo [OK] Static IP configured successfully.
+) else (
+    echo [!] Skipping Static IP configuration.
+    echo Note: If your IP changes, port forwarding will break.
 )
-:gw_found
-set "ROUTER_IP=%ROUTER_IP:~1%"
-if "!ROUTER_IP!"=="" set "ROUTER_IP=192.168.1.1"
-echo [OK] Router IP: %ROUTER_IP%
 
 echo.
-echo [6/8] Configuring Windows Firewall...
+echo [7/9] Configuring Windows Firewall...
 echo.
 
 :: Check if firewall rule exists
@@ -208,7 +247,7 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [7/8] Setting up auto-start service...
+echo [8/9] Setting up auto-start service...
 echo.
 
 :: Check if scheduled task exists
@@ -228,7 +267,7 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [8/8] Generating setup report...
+echo [9/9] Generating setup report...
 echo.
 
 :: Create setup report
@@ -238,9 +277,10 @@ echo        Remote Monitor Server - Setup Complete
 echo ============================================================
 echo.
 echo Server Location: !INSTALL_DIR!
-echo Local IP: %LOCAL_IP%
+echo Network Adapter: !INTERFACE_NAME!
+echo Local IP: !LOCAL_IP!
 echo Public IP: %PUBLIC_IP%
-echo Router IP: %ROUTER_IP%
+echo Router IP: !GATEWAY_IP!
 echo Server Port: 3000
 echo.
 echo ============================================================
@@ -252,7 +292,7 @@ echo set up port forwarding on your router.
 echo.
 echo STEP 1: Access Your Router Admin Panel
 echo ----------------------------------------
-echo Open browser and go to: http://%ROUTER_IP%
+echo Open browser and go to: http://!GATEWAY_IP!
 echo Login with your router username/password.
 echo (Default is often admin/admin or check router sticker)
 echo.
@@ -265,7 +305,7 @@ echo   Service Name: RemoteMonitor
 echo   External Port: 3000
 echo   Internal Port: 3000
 echo   Protocol: TCP
-echo   Internal IP: %LOCAL_IP%
+echo   Internal IP: !LOCAL_IP!
 echo   Enable: YES
 echo.
 echo STEP 3: Save and Restart Router
@@ -342,6 +382,18 @@ echo 3. Agents will try your server first, fallback to Render if down.
 echo.
 echo Or use the dashboard "Switch Server" button to switch all agents
 echo remotely with one click.
+echo.
+echo ============================================================
+echo        REFERENCE COMMANDS FOR OTHER NETWORKS
+echo ============================================================
+echo.
+echo To manually detect network info on another PC:
+echo   Get-NetIPConfiguration ^| Where-Object { $_.IPv4Address -ne $null } ^| ForEach-Object { "Interface: $($_.InterfaceAlias)"; "IP: $($_.IPv4Address.IPAddress)"; "Gateway: $($_.IPv4DefaultGateway.NextHop)" }
+echo.
+echo To manually set Static IP:
+echo   netsh interface ip set address name="Wi-Fi" static [IP] 255.255.255.0 [Gateway]
+echo   netsh interface ip set dns name="Wi-Fi" static [Gateway]
+echo   netsh interface ip add dns name="Wi-Fi" 8.8.8.8 index=2
 echo.
 echo ============================================================
 echo Setup completed on: %date% %time%
