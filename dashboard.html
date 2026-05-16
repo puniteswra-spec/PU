@@ -147,6 +147,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
         </div>
       </div>
     </div>
+    <button id="btn-switch" onclick="openSwitchModal()" style="display:none;background:#2e7d32;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer" title="Switch all agents to different server">🌐 Switch Server</button>
     <button onclick="openWizard()">⚙ Update Remote</button>
     <div id="hide-dropdown" style="position:relative;display:none">
       <button onclick="toggleHideDropdown()">👁 Show/Hide</button>
@@ -200,6 +201,41 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
   </div>
 </div>
 
+<div id="switch-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:700;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:500px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.3)">
+    <h2 style="margin:0 0 16px;color:#2e7d32;font-size:18px">🌐 Switch All Agents Server</h2>
+    <p style="font-size:13px;color:#666;margin:0 0 16px">All connected agents will immediately switch to the selected server</p>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <label style="display:flex;align-items:center;gap:12px;padding:12px;border:2px solid #e0e0e0;border-radius:8px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='#4caf50'" onmouseout="this.style.borderColor='#e0e0e0'">
+        <input type="radio" name="switch-server" value="render" checked style="width:18px;height:18px">
+        <div>
+          <div style="font-weight:600;font-size:14px">☁️ Render.com (Cloud)</div>
+          <div style="font-size:12px;color:#888">wss://pu-k752.onrender.com — Works from anywhere</div>
+        </div>
+      </label>
+      <label style="display:flex;align-items:center;gap:12px;padding:12px;border:2px solid #e0e0e0;border-radius:8px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='#4caf50'" onmouseout="this.style.borderColor='#e0e0e0'">
+        <input type="radio" name="switch-server" value="local" style="width:18px;height:18px">
+        <div>
+          <div style="font-weight:600;font-size:14px">🏠 Local Server (This PC)</div>
+          <div style="font-size:12px;color:#888">ws://192.168.x.x:3000 — LAN only, fastest speed</div>
+        </div>
+      </label>
+      <label style="display:flex;align-items:center;gap:12px;padding:12px;border:2px solid #e0e0e0;border-radius:8px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='#4caf50'" onmouseout="this.style.borderColor='#e0e0e0'">
+        <input type="radio" name="switch-server" value="custom" style="width:18px;height:18px">
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:14px">🌐 Custom Server</div>
+          <input type="text" id="custom-server-url" placeholder="ws://your-server.com:3000" style="width:100%;margin-top:6px;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px">
+        </div>
+      </label>
+    </div>
+    <div id="switch-status" style="margin-top:12px;font-size:13px;display:none;padding:8px 12px;border-radius:6px"></div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button onclick="applySwitch()" style="flex:1;padding:10px;background:#2e7d32;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔄 Switch Now</button>
+      <button onclick="closeSwitchModal()" style="padding:10px 20px;background:#eee;color:#333;border:none;border-radius:6px;font-size:14px;cursor:pointer">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const AUTH_PASS = 'puneet12';
 let authenticated = false;
@@ -219,6 +255,7 @@ function doLogin() {
     document.getElementById('btn-logs').style.display = '';
     document.getElementById('btn-compile').style.display = '';
     document.getElementById('btn-push').style.display = '';
+    document.getElementById('btn-switch').style.display = '';
     hideLogin();
     renderGrid();
     renderHidePanel();
@@ -240,7 +277,8 @@ function logout() {
   document.getElementById('hide-panel').style.display = 'none';
   document.getElementById('btn-logs').style.display = 'none';
   document.getElementById('btn-compile').style.display = 'none';
-  document.getElementById('btn-push').style.display = 'none';
+    document.getElementById('btn-push').style.display = 'none';
+    document.getElementById('btn-switch').style.display = 'none';
   renderGrid();
 }
 document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
@@ -263,6 +301,47 @@ function wizardApply() {
   fetch('/api/switch-server', { method: 'POST', headers: { 'x-server-url': url, 'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS) } })
     .then(r => r.json()).then(d => { st.textContent = '✅ ' + d.agentsNotified + ' agents switched'; st.className = 'ok'; })
     .catch(e => { st.textContent = '❌ ' + e.message; st.className = 'err'; });
+}
+
+function openSwitchModal() { document.getElementById('switch-overlay').style.display = 'flex'; }
+function closeSwitchModal() {
+  document.getElementById('switch-overlay').style.display = 'none';
+  document.getElementById('switch-status').style.display = 'none';
+}
+function applySwitch() {
+  const selected = document.querySelector('input[name="switch-server"]:checked').value;
+  let url = '';
+  if (selected === 'render') url = 'wss://pu-k752.onrender.com';
+  else if (selected === 'local') url = 'ws://' + (window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname) + ':3000';
+  else {
+    url = document.getElementById('custom-server-url').value.trim();
+    if (!url) { alert('Please enter a server URL'); return; }
+    if (!url.startsWith('ws://') && !url.startsWith('wss://')) { alert('URL must start with ws:// or wss://'); return; }
+  }
+  const st = document.getElementById('switch-status');
+  st.style.display = 'block';
+  st.style.background = '#e8f5e9';
+  st.style.color = '#2e7d32';
+  st.textContent = '🔄 Sending switch command to all agents...';
+  fetch('/api/switch-server', { method: 'POST', headers: { 'x-server-url': url, 'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS) } })
+    .then(r => r.json())
+    .then(d => {
+      if (d.success) {
+        st.style.background = '#e8f5e9';
+        st.style.color = '#2e7d32';
+        st.textContent = '✅ ' + d.agentsNotified + ' agents switched to ' + (selected === 'render' ? 'Render.com' : selected === 'local' ? 'Local Server' : url);
+        setTimeout(closeSwitchModal, 3000);
+      } else {
+        st.style.background = '#ffebee';
+        st.style.color = '#c62828';
+        st.textContent = '❌ Failed: ' + (d.error || 'Unknown error');
+      }
+    })
+    .catch(e => {
+      st.style.background = '#ffebee';
+      st.style.color = '#c62828';
+      st.textContent = '❌ Error: ' + e.message;
+    });
 }
 
 function toggleHide(id) {
