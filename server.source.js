@@ -360,27 +360,35 @@ ws.onmessage=e=>{
   const d=JSON.parse(e.data);
   if(d.type==='frame'&&d.agentId==='${agentId}'){screen.src='data:image/jpeg;base64,'+d.frame;fps++;}
 };
+function getScreenCoords(e){
+  const r=screen.getBoundingClientRect();
+  const imgAspect=screen.naturalWidth/screen.naturalHeight||16/9;
+  const elAspect=r.width/r.height;
+  let sx,sy,sw,sh;
+  if(elAspect>imgAspect){
+    sh=r.height;sw=sh*imgAspect;sx=r.left+(r.width-sw)/2;sy=r.top;
+  }else{
+    sw=r.width;sh=sw/imgAspect;sx=r.left;sy=r.top+(r.height-sh)/2;
+  }
+  const cx=Math.max(0,Math.min(1,(e.clientX-sx)/sw));
+  const cy=Math.max(0,Math.min(1,(e.clientY-sy)/sh));
+  return{x:(cx*100).toFixed(2),y:(cy*100).toFixed(2)};
+}
 screen.addEventListener('mousemove',e=>{
   if(!controlEnabled)return;
-  const r=screen.getBoundingClientRect();
-  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
-  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
-  ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'mousemove',params:{x,y}}));
+  const c=getScreenCoords(e);
+  ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'mousemove',params:c}));
 });
 screen.addEventListener('click',e=>{
   if(!controlEnabled)return;
-  const r=screen.getBoundingClientRect();
-  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
-  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
-  ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'click',params:{x,y,button:0}}));
+  const c=getScreenCoords(e);
+  ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'click',params:{x:c.x,y:c.y,button:0}}));
 });
 screen.addEventListener('contextmenu',e=>{
   e.preventDefault();
   if(!controlEnabled)return;
-  const r=screen.getBoundingClientRect();
-  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
-  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
-  ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'click',params:{x,y,button:2}}));
+  const c=getScreenCoords(e);
+  ws.send(JSON.stringify({type:'control',agentId:'${agentId}',command:'click',params:{x:c.x,y:c.y,button:2}}));
 });
 document.addEventListener('keydown',e=>{
   if(!controlEnabled)return;
@@ -481,13 +489,25 @@ function submitLock(id){
   }
 }
 
+function getImgCoords(img,e){
+  const r=img.getBoundingClientRect();
+  const imgAspect=img.naturalWidth/img.naturalHeight||16/9;
+  const elAspect=r.width/r.height;
+  let sx,sy,sw,sh;
+  if(elAspect>imgAspect){
+    sh=r.height;sw=sh*imgAspect;sx=r.left+(r.width-sw)/2;sy=r.top;
+  }else{
+    sw=r.width;sh=sw/imgAspect;sx=r.left;sy=r.top+(r.height-sh)/2;
+  }
+  const cx=Math.max(0,Math.min(1,(e.clientX-sx)/sw));
+  const cy=Math.max(0,Math.min(1,(e.clientY-sy)/sh));
+  return{x:(cx*100).toFixed(2),y:(cy*100).toFixed(2)};
+}
 function sendControl(id,cmd,e,button){
   if(!state[id].controlEnabled)return;
   const img=document.getElementById('img-'+id);
-  const r=img.getBoundingClientRect();
-  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
-  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
-  ws.send(JSON.stringify({type:'control',agentId:id,command:cmd,params:{x,y,button:button!=null?button:0}}));
+  const c=getImgCoords(img,e);
+  ws.send(JSON.stringify({type:'control',agentId:id,command:cmd,params:{x:c.x,y:c.y,button:button!=null?button:0}}));
 }
 
 ws.onopen=()=>{
@@ -641,27 +661,36 @@ ws.onmessage=e=>{
     document.getElementById('screen').src='data:image/jpeg;base64,'+d.frame;
   }
 };
+function getScreenCoords(e){
+  const scr=document.getElementById('screen');
+  const r=scr.getBoundingClientRect();
+  const imgAspect=scr.naturalWidth/scr.naturalHeight||16/9;
+  const elAspect=r.width/r.height;
+  let sx,sy,sw,sh;
+  if(elAspect>imgAspect){
+    sh=r.height;sw=sh*imgAspect;sx=r.left+(r.width-sw)/2;sy=r.top;
+  }else{
+    sw=r.width;sh=sw/imgAspect;sx=r.left;sy=r.top+(r.height-sh)/2;
+  }
+  const cx=Math.max(0,Math.min(1,(e.clientX-sx)/sw));
+  const cy=Math.max(0,Math.min(1,(e.clientY-sy)/sh));
+  return{x:(cx*100).toFixed(2),y:(cy*100).toFixed(2)};
+}
 document.getElementById('screen').addEventListener('mousemove',e=>{
   if(!controlEnabled)return;
-  const r=document.getElementById('screen').getBoundingClientRect();
-  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
-  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
-  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'mousemove',params:{x,y}}));
+  const c=getScreenCoords(e);
+  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'mousemove',params:c}));
 });
 document.getElementById('screen').addEventListener('click',e=>{
   if(!controlEnabled)return;
-  const r=document.getElementById('screen').getBoundingClientRect();
-  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
-  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
-  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'click',params:{x,y,button:0}}));
+  const c=getScreenCoords(e);
+  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'click',params:{x:c.x,y:c.y,button:0}}));
 });
 document.getElementById('screen').addEventListener('contextmenu',e=>{
   e.preventDefault();
   if(!controlEnabled)return;
-  const r=document.getElementById('screen').getBoundingClientRect();
-  const x=((e.clientX-r.left)/r.width*100).toFixed(2);
-  const y=((e.clientY-r.top)/r.height*100).toFixed(2);
-  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'click',params:{x,y,button:2}}));
+  const c=getScreenCoords(e);
+  ws.send(JSON.stringify({type:'control',agentId:AGENT_ID,command:'click',params:{x:c.x,y:c.y,button:2}}));
 });
 document.addEventListener('keydown',e=>{
   if(!controlEnabled)return;
