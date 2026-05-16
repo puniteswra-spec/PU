@@ -766,6 +766,64 @@ app.post('/api/switch-server', (req, res) => {
   res.json({success: true, agentsNotified: count, newUrl});
 });
 
+// Manage global server list (fallback chain)
+const SERVER_LIST_FILE = path.join(__dirname, 'server-list.ini');
+
+app.get('/api/server-list', (req, res) => {
+  let urls = [];
+  try {
+    if (fs.existsSync(SERVER_LIST_FILE)) {
+      const content = fs.readFileSync(SERVER_LIST_FILE, 'utf8');
+      urls = content.split('\n').map(u => u.trim()).filter(u => u && !u.startsWith('#'));
+    }
+  } catch (e) {
+    console.error('Error reading server list:', e.message);
+  }
+  if (urls.length === 0) {
+    urls = ['wss://pu-k752.onrender.com']; // Default fallback
+  }
+  res.json({ urls });
+});
+
+app.post('/api/update-server-list', (req, res) => {
+  if (!checkAuthSimple(req)) return res.status(401).send('Unauthorized');
+  
+  const urls = req.body.urls;
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({error: 'Invalid URL list'});
+  }
+
+  // Validate URLs
+  for (const url of urls) {
+    if (typeof url !== 'string' || (!url.startsWith('ws://') && !url.startsWith('wss://'))) {
+      return res.status(400).json({error: `Invalid URL: ${url}`});
+    }
+  }
+
+  // Save to file
+  try {
+    fs.writeFileSync(SERVER_LIST_FILE, urls.join('\n') + '\n', 'utf8');
+  } catch (e) {
+    console.error('Error saving server list:', e.message);
+    return res.status(500).json({error: 'Failed to save server list'});
+  }
+
+  // Broadcast to agents
+  let count = 0;
+  for (const [, agent] of agents) {
+    if (agent.ws && agent.ws.readyState === WebSocket.OPEN) {
+      try {
+        agent.ws.send(JSON.stringify({type: 'update-server-list', urls}));
+        count++;
+      } catch (e) {
+        console.error(`Update-server-list send failed: ${e.message}`);
+      }
+    }
+  }
+  console.log(`Server list updated for ${count} agents`);
+  res.json({success: true, agentsNotified: count});
+});
+
 app.post('/api/make-server/:agentId', auth, (req, res) => {
   const agentId = req.params.agentId;
   if (!isValidAgentId(agentId)) {

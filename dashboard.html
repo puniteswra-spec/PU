@@ -148,6 +148,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
       </div>
     </div>
     <button id="btn-switch" onclick="openSwitchModal()" style="display:none;background:#2e7d32;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer" title="Switch all agents to different server">🌐 Switch Server</button>
+    <button id="btn-manage-servers" onclick="openManageServersModal()" style="display:none;background:#1976d2;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer" title="Manage fallback server list">📋 Manage Servers</button>
     <button onclick="openWizard()">⚙ Update Remote</button>
     <div id="hide-dropdown" style="position:relative;display:none">
       <button onclick="toggleHideDropdown()">👁 Show/Hide</button>
@@ -232,6 +233,20 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
     <div style="display:flex;gap:10px;margin-top:16px">
       <button onclick="applySwitch()" style="flex:1;padding:10px;background:#2e7d32;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔄 Switch Now</button>
       <button onclick="closeSwitchModal()" style="padding:10px 20px;background:#eee;color:#333;border:none;border-radius:6px;font-size:14px;cursor:pointer">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="manage-servers-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:700;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:600px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.3)">
+    <h2 style="margin:0 0 16px;color:#1976d2;font-size:18px">📋 Manage Fallback Server List</h2>
+    <p style="font-size:13px;color:#666;margin:0 0 16px">Agents will try these servers in order. If the first fails, they try the next.</p>
+    <textarea id="server-list-textarea" style="width:100%;height:200px;padding:12px;border:1px solid #ddd;border-radius:6px;font-family:monospace;font-size:13px;resize:vertical" placeholder="wss://pu-k752.onrender.com&#10;wss://your-backup-server.com&#10;http://192.168.0.164:3000"></textarea>
+    <div style="font-size:11px;color:#888;margin-top:8px">One URL per line. Must start with ws:// or wss://</div>
+    <div id="manage-servers-status" style="margin-top:12px;font-size:13px;display:none;padding:8px 12px;border-radius:6px"></div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button onclick="saveServerList()" style="flex:1;padding:10px;background:#1976d2;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">💾 Save & Push to Agents</button>
+      <button onclick="closeManageServersModal()" style="padding:10px 20px;background:#eee;color:#333;border:none;border-radius:6px;font-size:14px;cursor:pointer">Cancel</button>
     </div>
   </div>
 </div>

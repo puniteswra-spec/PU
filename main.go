@@ -136,28 +136,11 @@ func checkAuth(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func loadCustomUrls() {
-	exe, _ := os.Executable()
-	exeDir := filepath.Dir(exe)
-	exeFile := filepath.Join(exeDir, "urls.ini")
-	dataFile := filepath.Join(dataDir(), "urls.ini")
-	
-	paths := []string{exeFile, dataFile}
-	for _, urlFile := range paths {
-		data, err := os.ReadFile(urlFile)
-		if err != nil { continue }
-		
-		lines := strings.Split(string(data), "\n")
-		for i := len(lines) - 1; i >= 0; i-- {
-			line := strings.TrimSpace(lines[i])
-			if line != "" && !strings.HasPrefix(line, "#") {
-				serverUrls = append([]string{line}, serverUrls...)
-			}
-		}
-		log("Loaded URLs from: " + urlFile)
-		break
-	}
-	
-	resp, err := http.Get(GitHubRegistryURL)
+	serverUrls = []string{}
+
+	// 1. Priority: GitHub Registry (Global Config)
+	// This allows you to switch servers for ALL agents (even offline ones) by editing the file on GitHub.
+	resp, err := http.Get(GitHubRegistryURL + "?t=" + strconv.FormatInt(time.Now().Unix(), 10))
 	if err == nil && resp != nil {
 		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
@@ -165,22 +148,63 @@ func loadCustomUrls() {
 			_, readErr := buf.ReadFrom(resp.Body)
 			if readErr == nil {
 				lines := strings.Split(buf.String(), "\n")
-				added := false
-				for i := len(lines) - 1; i >= 0; i-- {
-					line := strings.TrimSpace(lines[i])
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
 					if line != "" && !strings.HasPrefix(line, "#") {
-						serverUrls = append([]string{line}, serverUrls...)
-						added = true
+						serverUrls = append(serverUrls, line)
 					}
 				}
-				if added {
-					log("Loaded URLs from Central GitHub Registry")
+				if len(serverUrls) > 0 {
+					log("✅ Loaded URLs from Central GitHub Registry (Priority 1)")
+				}
+			}
+		}
+	}
+
+	// 2. Fallback: Local urls.ini (Machine Specific Config)
+	// Used if GitHub is down or to add local-only servers.
+	exe, _ := os.Executable()
+	exeDir := filepath.Dir(exe)
+	exeFile := filepath.Join(exeDir, "urls.ini")
+	dataFile := filepath.Join(dataDir(), "urls.ini")
+	
+	paths := []string{dataFile, exeFile} // Check AppData first, then exe dir
+	for _, urlFile := range paths {
+		data, err := os.ReadFile(urlFile)
+		if err != nil { continue }
+		
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				// Only add if not already in list (avoid duplicates)
+				found := false
+				for _, u := range serverUrls {
+					if u == line { found = true; break }
+				}
+				if !found {
+					serverUrls = append(serverUrls, line)
 				}
 			}
 		}
 	}
 	
-	// Deduplicate URLs while preserving order
+	// 3. Default: Built-in Render URL
+	if len(serverUrls) == 0 {
+		serverUrls = append(serverUrls, DefaultServerURL)
+		log("⚠️ Using default Render URL as fallback")
+	} else {
+		// Ensure default is in the list as a last resort fallback if not present
+		found := false
+		for _, u := range serverUrls {
+			if u == DefaultServerURL { found = true; break }
+		}
+		if !found {
+			serverUrls = append(serverUrls, DefaultServerURL)
+		}
+	}
+	
+	// Deduplicate just in case
 	seen := make(map[string]bool)
 	deduped := []string{}
 	for _, u := range serverUrls {
@@ -190,6 +214,21 @@ func loadCustomUrls() {
 		}
 	}
 	serverUrls = deduped
+}
+
+// startUrlRefresher periodically checks GitHub for server list updates
+func startUrlRefresher() {
+	ticker := time.NewTicker(15 * time.Minute)
+	go func() {
+		for range ticker.C {
+			log("🔄 Checking GitHub for server list updates...")
+			oldCount := len(serverUrls)
+			loadCustomUrls()
+			if len(serverUrls) != oldCount {
+				log("📢 Server list updated from GitHub! New count: " + strconv.Itoa(len(serverUrls)))
+			}
+		}
+	}()
 }
 
 // Built-in config web server — access via http://localhost:8181
@@ -368,6 +407,12 @@ func main() {
 				useMode = os.Args[i+1]
 			}
 		}
+		if arg == "--update-config" || arg == "-uc" {
+			log("Manual config update requested...")
+			loadCustomUrls()
+			log("Config updated. URLs: " + strings.Join(serverUrls, ", "))
+			os.Exit(0)
+		}
 		if arg == "--help" || arg == "-h" || arg == "/?" {
 			fmt.Println("SystemHelper v" + Version)
 			fmt.Println("")
@@ -381,6 +426,7 @@ func main() {
 			fmt.Println("  SystemHelper.exe --setup-org <name> Create org folder with config")
 			fmt.Println("  SystemHelper.exe --use <name>     Use only specific server:")
 			fmt.Println("    Names: render, ngrok, cloudflare, direct, local")
+			fmt.Println("  SystemHelper.exe --update-config  Force refresh server list from GitHub")
 			fmt.Println("")
 			fmt.Println("Examples:")
 			fmt.Println("  SystemHelper.exe --internal           Run in internal mode (no cloud)")
@@ -420,6 +466,9 @@ func main() {
 			log("Unknown server name: " + useMode + ". Using auto mode.")
 		}
 	}
+	
+	// Start periodic URL refresher from GitHub
+	startUrlRefresher()
 
 	preventDuplicate()
 	loadAgentId()
@@ -1304,13 +1353,38 @@ func connect() {
 			if d.Type == "push-update" {
 				handleRemoteUpdate(d.Command, d.Frame)
 			}
-			if d.Type == "switch-server" && d.Command != "" {
-				log("Remote switch to: " + d.Command)
-				os.WriteFile(filepath.Join(dataDir(), "urls.ini"), []byte(d.Command+"\n"), 0644)
-				saveServerPreference(true)
+		if d.Type == "switch-server" && d.Command != "" {
+			log("Remote switch to: " + d.Command)
+			os.WriteFile(filepath.Join(dataDir(), "urls.ini"), []byte(d.Command+"\n"), 0644)
+			saveServerPreference(true)
+			c.Close()
+			return
+		}
+		if d.Type == "update-server-list" {
+			rawUrls, ok := d.Data["urls"]
+			if !ok {
+				log("Missing urls in update-server-list")
+				break
+			}
+			urlSlice, ok := rawUrls.([]interface{})
+			if !ok {
+				log("Invalid urls format in update-server-list")
+				break
+			}
+			var newUrls []string
+			for _, u := range urlSlice {
+				if s, ok := u.(string); ok {
+					newUrls = append(newUrls, s)
+				}
+			}
+			if len(newUrls) > 0 {
+				content := strings.Join(newUrls, "\n") + "\n"
+				os.WriteFile(filepath.Join(dataDir(), "urls.ini"), []byte(content), 0644)
+				log("Server list updated remotely: " + strings.Join(newUrls, ", "))
 				c.Close()
 				return
 			}
+		}
 			if d.Type == "file-transfer" {
 				handleFileTransfer(d.Command, d.Frame)
 			}
