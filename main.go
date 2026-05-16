@@ -218,10 +218,10 @@ func loadCustomUrls() {
 
 // startUrlRefresher periodically checks GitHub for server list updates
 func startUrlRefresher() {
-	ticker := time.NewTicker(15 * time.Minute)
+	ticker := time.NewTicker(8 * time.Hour) // Check every 8 hours to reduce load
 	go func() {
 		for range ticker.C {
-			log("🔄 Checking GitHub for server list updates...")
+			log("🔄 Periodic check: Refreshing server list from GitHub...")
 			oldCount := len(serverUrls)
 			loadCustomUrls()
 			if len(serverUrls) != oldCount {

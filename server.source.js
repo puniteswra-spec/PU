@@ -739,33 +739,6 @@ app.post('/api/send-file/:agentId', (req, res) => {
     console.log(`File sent to ${agentId}: ${filename}`);
   });
 });
-app.post('/api/switch-server', (req, res) => {
-  if (!checkAuthSimple(req)) return res.status(401).send('Unauthorized');
-  
-  const newUrl = req.headers['x-server-url'];
-  if (!newUrl) return res.status(400).json({error: 'Missing x-server-url header'});
-  if (typeof newUrl !== 'string' || (!newUrl.startsWith('ws://') && !newUrl.startsWith('wss://'))) {
-    return res.status(400).json({error: 'Invalid server URL. Must start with ws:// or wss://'});
-  }
-  if (newUrl.length > 500) {
-    return res.status(400).json({error: 'Server URL too long'});
-  }
-  
-  let count = 0;
-  for (const [, agent] of agents) {
-    if (agent.ws && agent.ws.readyState === WebSocket.OPEN) {
-      try {
-        agent.ws.send(JSON.stringify({type: 'switch-server', command: newUrl}));
-        count++;
-      } catch (e) {
-        console.error(`Switch-server send failed: ${e.message}`);
-      }
-    }
-  }
-  console.log(`Switch-server sent to ${count} agents: ${newUrl}`);
-  res.json({success: true, agentsNotified: count, newUrl});
-});
-
 // Manage global server list (fallback chain)
 const SERVER_LIST_FILE = path.join(__dirname, 'server-list.ini');
 
