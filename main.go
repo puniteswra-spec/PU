@@ -1931,41 +1931,37 @@ func connect() {
 		}(c, name, done)
 	}
 	
-	// Frame sender: capture once, distribute to each connection independently
-	lastFrameTime := time.Now()
-	
-	// Per-connection frame senders with independent rate limiting
-	type connSender struct {
-		conn      *websocket.Conn
-		name      string
-		isLocal   bool
-		fps       int
-		lastSend  time.Time
-		frameCount int
-		dropped   int
+	// Frame sender: simple single loop, send to all alive connections
+	// Each connection gets independent rate limiting to prevent flickering
+	type connState struct {
+		conn     *websocket.Conn
+		name     string
+		isLocal  bool
+		lastSend time.Time
+		interval time.Duration
 	}
 	
-	var senders []connSender
+	var conns []connState
 	for i, c := range connections {
 		name := connNames[i]
 		isLocal := strings.Contains(name, "local") || strings.Contains(name, "127.0.0.1")
-		senders = append(senders, connSender{
-			conn:    c,
-			name:    name,
-			isLocal: isLocal,
-			fps:     10, // Default
+		conns = append(conns, connState{
+			conn:     c,
+			name:     name,
+			isLocal:  isLocal,
 			lastSend: time.Now(),
+			interval: time.Second / 10, // Local: 10 FPS
 		})
+		if !isLocal {
+			conns[i].interval = time.Second / 3 // Remote: 3 FPS
+		}
 	}
 	
-	// Frame capture goroutine (runs at fixed rate)
-	frameChan := make(chan []Message, 10) // Buffer up to 10 frames
+	// WebRTC frame sender (separate goroutine)
 	go func() {
-		captureTick := time.NewTicker(time.Second / 5) // Capture at 5 FPS max
-		defer captureTick.Stop()
+		webRTCTicker := time.NewTicker(time.Second / 3)
+		defer webRTCTicker.Stop()
 		for {
-			<-captureTick.C
-			// Check if any connection is still alive
 			allDead := true
 			for _, done := range allDone {
 				select {
@@ -1976,96 +1972,25 @@ func connect() {
 			}
 			if allDead { return }
 			
+			<-webRTCTicker.C
 			func() {
 				defer func() {
-					if r := recover(); r != nil {
-						log("Frame capture panic: " + fmt.Sprintf("%v", r))
-					}
+					if r := recover(); r != nil {}
 				}()
 				frames := captureFrames()
-				if len(frames) > 0 {
-					select {
-					case frameChan <- frames:
-					default:
-						// Channel full, drop frame (better than blocking)
-					}
+				for _, m := range frames {
+					sendFrameOverWebRTC(m.Frame)
 				}
 			}()
 		}
 	}()
 	
-	// Per-connection frame sender goroutines
-	for i := range senders {
-		s := &senders[i]
-		go func(s *connSender) {
-			ticker := time.NewTicker(time.Second / time.Duration(s.fps))
-			defer ticker.Stop()
-			
-			for {
-				select {
-				case <-ticker.C:
-					// Check if connection is still alive
-					connAlive := false
-					for _, done := range allDone {
-						select {
-						case <-done:
-						default:
-							connAlive = true
-						}
-					}
-					if !connAlive { return }
-					
-					// Get latest frame (non-blocking)
-					select {
-					case frames := <-frameChan:
-						for _, m := range frames {
-							m.Type = "agent-frame"
-							m.AgentId = agentId
-							if err := s.conn.WriteJSON(m); err != nil {
-								s.dropped++
-								if s.dropped%10 == 0 {
-									log("[" + s.name + "] dropped " + strconv.Itoa(s.dropped) + " frames")
-								}
-								return
-							}
-							s.frameCount++
-						}
-					default:
-						// No new frame, skip
-					}
-				}
-			}
-		}(s)
-	}
+	fc := 0
+	ticker := time.NewTicker(time.Second / 5) // Capture at 5 FPS
+	defer ticker.Stop()
 	
-	// WebRTC frame sender (separate goroutine)
-	go func() {
-		ticker := time.NewTicker(time.Second / 3) // WebRTC at 3 FPS
-		defer ticker.Stop()
-		for {
-			<-ticker.C
-			allDead := true
-			for _, done := range allDone {
-				select {
-				case <-done:
-				default:
-					allDead = false
-				}
-			}
-			if allDead { return }
-			
-			select {
-			case frames := <-frameChan:
-				for _, m := range frames {
-					sendFrameOverWebRTC(m.Frame)
-				}
-			default:
-			}
-		}
-	}()
-	
-	// Main loop: just keep alive and monitor
 	for {
+		// Check if all connections are dead
 		allClosed := true
 		for _, done := range allDone {
 			select {
@@ -2079,23 +2004,53 @@ func connect() {
 			return
 		}
 		
-		// Adaptive FPS adjustment based on connection health
-		now := time.Now()
-		if now.Sub(lastFrameTime) > 10*time.Second {
-			lastFrameTime = now
-			for i := range senders {
-				s := &senders[i]
-				// If local connection, use higher FPS
-				if s.isLocal {
-					s.fps = 10
-				} else {
-					// Remote connections: lower FPS to reduce bandwidth
-					s.fps = 3
-				}
-			}
-		}
+		<-ticker.C
 		
-		time.Sleep(time.Second)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log("Frame capture panic: " + fmt.Sprintf("%v", r))
+				}
+			}()
+			
+			frames := captureFrames()
+			if len(frames) == 0 { return }
+			
+			now := time.Now()
+			for i := range conns {
+				cs := &conns[i]
+				// Skip if not enough time has passed (rate limiting)
+				if now.Sub(cs.lastSend) < cs.interval {
+					continue
+				}
+				
+				// Check if this connection is still alive
+				connAlive := false
+				for j, done := range allDone {
+					if j == i {
+						select {
+						case <-done:
+						default:
+							connAlive = true
+						}
+						break
+					}
+				}
+				if !connAlive { continue }
+				
+				for _, m := range frames {
+					m.Type = "agent-frame"
+					m.AgentId = agentId
+					if err := cs.conn.WriteJSON(m); err != nil {
+						// Connection dead, mark interval to max to stop trying
+						cs.interval = time.Hour
+						continue
+					}
+				}
+				cs.lastSend = now
+			}
+			fc++
+		}()
 	}
 }
 
