@@ -1102,13 +1102,13 @@ func connect() {
 		}
 	}
 	
-	// Fallback: if Render failed multiple times, start tunnel and prepend it
-	if consecutiveFailures >= 3 && !tunnelStarted {
-		log("⚠️ Render failed " + fmt.Sprintf("%d", consecutiveFailures) + " times — starting tunnel for global access")
+	// Start tunnel FIRST for fast remote access (primary connection)
+	if !tunnelStarted {
+		log("🚀 Starting tunnel for fast remote access...")
 		tunnelStarted = true
 		go startTunnel(nil)
-		// Wait up to 30s for tunnel URL
-		for i := 0; i < 30; i++ {
+		// Wait up to 20s for tunnel URL
+		for i := 0; i < 20; i++ {
 			tunnelURL, _ := os.ReadFile(filepath.Join(dataDir(), "tunnel.url"))
 			if len(tunnelURL) > 0 {
 				tunnelStr := strings.TrimSpace(string(tunnelURL))
@@ -1119,19 +1119,22 @@ func connect() {
 					} else if strings.HasPrefix(wsURL, "https://") {
 						wsURL = "wss://" + strings.TrimPrefix(wsURL, "https://")
 					}
-					// Prepend tunnel URL to serverUrls
+					// Prepend tunnel URL as PRIMARY
 					found := false
 					for _, u := range serverUrls {
-						if u == wsURL { found = true; break }
+						if u == wsURL+"/ws" { found = true; break }
 					}
 					if !found {
 						serverUrls = append([]string{wsURL + "/ws"}, serverUrls...)
-						log("🔄 Tunnel URL added as primary: " + wsURL)
+						log("✅ Tunnel URL set as PRIMARY: " + wsURL)
 					}
 					break
 				}
 			}
 			time.Sleep(1 * time.Second)
+		}
+		if len(serverUrls) == 0 || !strings.Contains(serverUrls[0], "tunnel") {
+			log("⚠️ Tunnel not ready — using Render as primary")
 		}
 	}
 	

