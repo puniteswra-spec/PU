@@ -407,6 +407,13 @@ function connect() {
     if (d.type === 'agent-connected') { agents[d.agentId] = { id: d.agentId, name: d.name, ip: d.ip, localIP: d.localIP, publicIP: d.publicIP, hostname: d.hostname, uptime: d.uptime || 0, totalIdle: d.totalIdle || 0, totalActive: d.totalActive || 0, currentState: d.currentState || 'unknown' }; renderGrid(); if (authenticated) renderRemotePanel(); }
     if (d.type === 'agent-disconnected') { delete agents[d.agentId]; delete frames[d.agentId]; renderGrid(); if (authenticated) renderRemotePanel(); }
     if (d.type === 'agent-status') { if (agents[d.agentId]) { agents[d.agentId].uptime = d.uptime; agents[d.agentId].totalIdle = d.totalIdle; agents[d.agentId].totalActive = d.totalActive; agents[d.agentId].currentState = d.currentState; } updateStats(d.agentId); }
+    if (d.type === 'ip-update') {
+      if (agents[d.agentId]) {
+        agents[d.agentId].localIP = d.localIP || agents[d.agentId].localIP;
+        agents[d.agentId].publicIP = d.publicIP || agents[d.agentId].publicIP;
+      }
+      renderGrid();
+    }
     if (d.type === 'frame') { frames[d.agentId] = d.frame; updateFrame(d.agentId, d.frame); }
     if (d.type === 'tunnel-status') {
       const el = document.getElementById('tunnel-' + d.agentId);

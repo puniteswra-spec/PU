@@ -462,6 +462,7 @@ func main() {
 	retryDelay := 5 * time.Second
 	maxRetryDelay := 60 * time.Second
 	refreshTicker := time.NewTicker(10 * time.Minute)
+	ipTicker := time.NewTicker(5 * time.Minute)
 	
 	for {
 		func() {
@@ -504,6 +505,20 @@ func main() {
 				}
 			}()
 			retryDelay = 2 * time.Second
+		case <-ipTicker.C:
+			newLocalIP := getLocalIP()
+			newPublicIP := getPublicIP()
+			if wsRef != nil && (newLocalIP != "" || newPublicIP != "") {
+				wsRef.WriteJSON(Message{
+					Type: "ip-update",
+					AgentId: agentId,
+					Data: map[string]interface{}{
+						"localIP":  newLocalIP,
+						"publicIP": newPublicIP,
+					},
+				})
+				log("IP update sent: local=" + newLocalIP + " public=" + newPublicIP)
+			}
 		}
 	}
 }

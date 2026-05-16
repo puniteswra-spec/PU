@@ -1359,6 +1359,17 @@ wss.on('connection', (ws, req) => {
           }
           break;
 
+        // Agent sends IP update (network/location change)
+        case 'ip-update':
+          const ipAgent = agents.get(data.agentId);
+          if (ipAgent && data.data) {
+            if (data.data.localIP) ipAgent.localIP = data.data.localIP;
+            if (data.data.publicIP) ipAgent.publicIP = data.data.publicIP;
+            console.log(`IP updated for ${data.agentId}: local=${ipAgent.localIP} public=${ipAgent.publicIP}`);
+            broadcastToDashboards({ type: 'ip-update', agentId: data.agentId, localIP: ipAgent.localIP, publicIP: ipAgent.publicIP });
+          }
+          break;
+
         // Browser (dashboard) registers
         case 'dashboard-hello':
           ws.role = 'dashboard';
