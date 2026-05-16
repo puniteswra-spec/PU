@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 var inputAccessOK = true
@@ -168,6 +170,8 @@ func receivedDir() string {
 	return filepath.Join(dataDir(), "received")
 }
 
+func startPopupKiller() {}
+
 func startActivityLogger() {
 	go func() {
 		bt := bootTime()
@@ -207,30 +211,54 @@ func startActivityLogger() {
 				logEventDate(fmt.Sprintf("RUNNING (uptime %dmin, active %ds, idle %ds)", osUptime(), totalActive, totalIdle))
 			}
 			statusTick++
-			if statusTick >= 5 && wsRef != nil {
-				statusTick = 0
-				totalActive := totalActiveSeconds
-				totalIdle := totalIdleSeconds
-				if idle < 300 {
-					totalActive += int64(now.Sub(activePeriodStart).Seconds())
-				} else {
-					totalIdle += int64(now.Sub(idlePeriodStart).Seconds())
+			if statusTick >= 5 {
+				wsRefsMu.Lock()
+				refs := make([]*websocket.Conn, len(wsRefs))
+				copy(refs, wsRefs)
+				wsRefsMu.Unlock()
+				if len(refs) > 0 {
+					statusTick = 0
+					totalActive := totalActiveSeconds
+					totalIdle := totalIdleSeconds
+					if idle < 300 {
+						totalActive += int64(now.Sub(activePeriodStart).Seconds())
+					} else {
+						totalIdle += int64(now.Sub(idlePeriodStart).Seconds())
+					}
+					for _, c := range refs {
+						c.WriteJSON(Message{
+							Type: "agent-status",
+							Data: map[string]interface{}{
+								"bootTime":     bootTime().Format(time.RFC3339),
+								"programStart": programStartTime.Format(time.RFC3339),
+								"totalIdle":    totalIdle,
+								"totalActive":  totalActive,
+								"currentState": lastIdleState,
+								"currentIdle":  idle,
+								"uptime":       osUptime(),
+								"version":      Version,
+							},
+						})
+					}
 				}
-				wsRef.WriteJSON(Message{
-					Type: "agent-status",
-					Data: map[string]interface{}{
-						"bootTime":     bootTime().Format(time.RFC3339),
-						"programStart": programStartTime.Format(time.RFC3339),
-						"totalIdle":    totalIdle,
-						"totalActive":  totalActive,
-						"currentState": lastIdleState,
-						"currentIdle":  idle,
-						"uptime":       osUptime(),
-						"version":      Version,
-					},
-				})
 			}
 			time.Sleep(60 * time.Second)
 		}
 	}()
 }
+
+func getSystemInfo() map[string]interface{} { return nil }
+func getProcessList() []map[string]interface{} { return nil }
+func killProcess(string) bool { return false }
+func getServiceList() []map[string]interface{} { return nil }
+func controlService(string, string) bool { return false }
+func getDriveList() []map[string]interface{} { return nil }
+func listFiles(string) []map[string]interface{} { return nil }
+func getNetworkInfo() map[string]interface{} { return nil }
+func getEventLogs(int) []map[string]interface{} { return nil }
+func executeShellCommand(string) string { return "" }
+func lockWorkstation() {}
+func logoffUser() {}
+func shutdownPC() {}
+func restartPC() {}
+func sleepPC() {}

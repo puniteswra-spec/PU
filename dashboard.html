@@ -9,17 +9,18 @@
 body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: #000; min-height: 100vh; }
 
 #topbar {
-  background: #fff; border-bottom: 2px solid #4caf50;
+  background: #1b5e20; border-bottom: 2px solid #4caf50;
   padding: 8px 16px; display: flex; align-items: center; justify-content: space-between;
   position: sticky; top: 0; z-index: 100;
 }
-#topbar h1 { font-size: 16px; color: #2e7d32; font-weight: 700; }
+#topbar h1 { font-size: 16px; color: #fff; font-weight: 700; }
+#topbar h1 span { color: #c8e6c9 !important; }
 #topbar-right { display: flex; gap: 8px; align-items: center; font-size: 12px; }
 #topbar-right button {
-  background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7;
+  background: #2e7d32; color: #fff; border: 1px solid #4caf50;
   padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600;
 }
-#topbar-right button:hover { background: #c8e6c9; }
+#topbar-right button:hover { background: #388e3c; }
 #credit-badge {
   background: #2e7d32; color: #fff; padding: 3px 8px; border-radius: 3px;
   font-size: 10px; font-weight: 600; white-space: nowrap;
@@ -49,8 +50,10 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
   padding: 2px 6px; display: flex; justify-content: space-between; align-items: center;
 }
 .cctv-cell .cell-name { font-weight: 700; color: #1b5e20; }
-.cctv-cell .cell-ips { display: flex; flex-direction: column; gap: 1px; font-family: monospace; color: #555; }
-.cctv-cell .ip-line { white-space: nowrap; }
+.cctv-cell .cell-ips { display: flex; flex-direction: column; gap: 2px; font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; font-weight: 600; }
+.cctv-cell .ip-line { white-space: nowrap; padding: 2px 6px; border-radius: 3px; background: rgba(0,0,0,0.75); color: #fff; display: inline-block; }
+.cctv-cell .ip-line .ip-label { color: #4fc3f7; font-weight: 400; }
+.cctv-cell .ip-line .ip-value { color: #fff; font-weight: 700; }
 .cctv-cell .cell-live {
   color: #d32f2f; font-weight: 700; display: flex; align-items: center; gap: 2px;
 }
@@ -127,10 +130,10 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
 <div id="topbar">
   <h1>Monitor System <span style="color:#666;font-weight:normal;font-size:11px">designed by Puneet Upreti</span> <span id="agent-count" style="color:#666;font-weight:normal;font-size:12px">— 0 online</span></h1>
   <div id="topbar-right">
-    <a href="/remote-assistant" target="_blank" style="font-size:11px;color:#2e7d32;text-decoration:none;font-weight:600;padding:4px 8px;background:#e8f5e9;border-radius:4px;border:1px solid #a5d6a7" title="Remote Assistant — works on any device, no install needed">🤝 Remote Assistant</a>
+    <a href="/remote-assistant" target="_blank" style="font-size:11px;color:#fff;text-decoration:none;font-weight:600;padding:4px 8px;background:#2e7d32;border-radius:4px;border:1px solid #4caf50" title="Remote Assistant — works on any device, no install needed">🤝 Remote Assistant</a>
     <span id="credit-badge">Created by Puneet Upreti</span>
     <span id="status-dot"></span>
-    <span id="conn-status" style="color:#666">Connecting...</span>
+    <span id="conn-status" style="color:#c8e6c9">Connecting...</span>
     <button id="btn-update" onclick="pushUpdate()" style="display:none">📦 Push Update</button>
     <div id="remote-dropdown" style="position:relative;display:none">
       <button onclick="toggleRemoteDropdown()">🖥 Remote Control</button>
@@ -148,7 +151,6 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
       </div>
     </div>
     <button id="btn-manage-servers" onclick="openManageServersModal()" style="display:none;background:#1976d2;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer" title="Manage fallback server list">📋 Manage Servers</button>
-    <button onclick="openWizard()">⚙ Update Remote</button>
     <div id="hide-dropdown" style="position:relative;display:none">
       <button onclick="toggleHideDropdown()">👁 Show/Hide</button>
       <div id="hide-panel" style="display:none;position:absolute;top:100%;right:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);padding:8px 12px;min-width:220px;z-index:200">
@@ -163,7 +165,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
     <button id="btn-logs" onclick="downloadLogs()" style="display:none">📊 Export Logs</button>
     <button id="btn-compile" onclick="compileMonthly()" style="display:none">📅 Compile</button>
     <button id="btn-push" onclick="pushToGitHub()" style="display:none">🚀 Push to GitHub</button>
-    <button id="btn-login" onclick="showLogin()" style="background:none;border:none;font-size:13px;color:#999;cursor:pointer;padding:2px 4px" title="Admin Login">🔒</button>
+    <button id="btn-login" onclick="showLogin()" style="background:none;border:none;font-size:16px;color:#fff;cursor:pointer;padding:2px 6px" title="Admin Login">🔒</button>
     <button id="btn-logout" onclick="logout()" style="display:none">🔓 Logout</button>
   </div>
 </div>
@@ -185,22 +187,6 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
   </div>
 </div>
 
-<div id="wizard-overlay">
-  <div id="wizard-box">
-    <h2>⚙ Update Remote user's</h2>
-    <div id="wizard-step1">
-      <div class="wizard-opt sel" onclick="pickWizard(this,'render')"><h4>☁️ Render.com</h4><p>Cloud server</p></div>
-      <div class="wizard-opt" onclick="pickWizard(this,'local')"><h4>🏠 Local Server</h4><p>This PC (LAN only)</p></div>
-      <div class="wizard-opt" onclick="pickWizard(this,'vps')"><h4>🌐 VPS Server</h4><p>Custom URL</p></div>
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <button onclick="wizardApply()">Apply</button>
-        <button class="secondary" onclick="closeWizard()">Cancel</button>
-      </div>
-      <div id="wizard-status"></div>
-    </div>
-  </div>
-</div>
-
 <div id="manage-servers-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:700;align-items:center;justify-content:center">
   <div style="background:#fff;border-radius:12px;padding:24px;max-width:600px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.3)">
     <h2 style="margin:0 0 16px;color:#1976d2;font-size:18px">📋 Manage Fallback Server List</h2>
@@ -218,7 +204,6 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
 <script>
 const AUTH_PASS = 'puneet12';
 let authenticated = false;
-let wizardMode = 'render';
 let hiddenAgents = JSON.parse(localStorage.getItem('hiddenAgents') || '[]');
 
 function showLogin() { document.getElementById('login-overlay').classList.add('show'); document.getElementById('login-pass').focus(); }
@@ -234,7 +219,7 @@ function doLogin() {
     document.getElementById('btn-logs').style.display = '';
     document.getElementById('btn-compile').style.display = '';
     document.getElementById('btn-push').style.display = '';
-    document.getElementById('btn-switch').style.display = '';
+    document.getElementById('btn-manage-servers').style.display = '';
     hideLogin();
     renderGrid();
     renderHidePanel();
@@ -256,72 +241,11 @@ function logout() {
   document.getElementById('hide-panel').style.display = 'none';
   document.getElementById('btn-logs').style.display = 'none';
   document.getElementById('btn-compile').style.display = 'none';
-    document.getElementById('btn-push').style.display = 'none';
-    document.getElementById('btn-switch').style.display = 'none';
+  document.getElementById('btn-push').style.display = 'none';
+  document.getElementById('btn-manage-servers').style.display = 'none';
   renderGrid();
 }
 document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-
-function openWizard() { document.getElementById('wizard-overlay').classList.add('show'); }
-function closeWizard() { document.getElementById('wizard-overlay').classList.remove('show'); }
-function pickWizard(el, mode) {
-  document.querySelectorAll('.wizard-opt').forEach(o => o.classList.remove('sel'));
-  el.classList.add('sel');
-  wizardMode = mode;
-}
-function wizardApply() {
-  const st = document.getElementById('wizard-status');
-  let url = '';
-  if (wizardMode === 'render') url = 'wss://pu-k752.onrender.com';
-  else if (wizardMode === 'local') url = 'ws://' + (window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname) + ':3000';
-  else { url = prompt('Enter VPS WebSocket URL (ws:// or wss://):'); if (!url) return; }
-  st.textContent = 'Switching...';
-  st.className = '';
-  fetch('/api/switch-server', { method: 'POST', headers: { 'x-server-url': url, 'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS) } })
-    .then(r => r.json()).then(d => { st.textContent = '✅ ' + d.agentsNotified + ' agents switched'; st.className = 'ok'; })
-    .catch(e => { st.textContent = '❌ ' + e.message; st.className = 'err'; });
-}
-
-function openSwitchModal() { document.getElementById('switch-overlay').style.display = 'flex'; }
-function closeSwitchModal() {
-  document.getElementById('switch-overlay').style.display = 'none';
-  document.getElementById('switch-status').style.display = 'none';
-}
-function applySwitch() {
-  const selected = document.querySelector('input[name="switch-server"]:checked').value;
-  let url = '';
-  if (selected === 'render') url = 'wss://pu-k752.onrender.com';
-  else if (selected === 'local') url = 'ws://' + (window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname) + ':3000';
-  else {
-    url = document.getElementById('custom-server-url').value.trim();
-    if (!url) { alert('Please enter a server URL'); return; }
-    if (!url.startsWith('ws://') && !url.startsWith('wss://')) { alert('URL must start with ws:// or wss://'); return; }
-  }
-  const st = document.getElementById('switch-status');
-  st.style.display = 'block';
-  st.style.background = '#e8f5e9';
-  st.style.color = '#2e7d32';
-  st.textContent = '🔄 Sending switch command to all agents...';
-  fetch('/api/switch-server', { method: 'POST', headers: { 'x-server-url': url, 'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS) } })
-    .then(r => r.json())
-    .then(d => {
-      if (d.success) {
-        st.style.background = '#e8f5e9';
-        st.style.color = '#2e7d32';
-        st.textContent = '✅ ' + d.agentsNotified + ' agents switched to ' + (selected === 'render' ? 'Render.com' : selected === 'local' ? 'Local Server' : url);
-        setTimeout(closeSwitchModal, 3000);
-      } else {
-        st.style.background = '#ffebee';
-        st.style.color = '#c62828';
-        st.textContent = '❌ Failed: ' + (d.error || 'Unknown error');
-      }
-    })
-    .catch(e => {
-      st.style.background = '#ffebee';
-      st.style.color = '#c62828';
-      st.textContent = '❌ Error: ' + e.message;
-    });
-}
 
 function toggleHide(id) {
   if (hiddenAgents.includes(id)) {
@@ -371,6 +295,52 @@ function showAllAgents() {
   localStorage.setItem('hiddenAgents', '[]');
   renderGrid();
   renderHidePanel();
+}
+
+function openManageServersModal() {
+  document.getElementById('manage-servers-overlay').style.display = 'flex';
+  fetch('/api/server-list', { headers: { 'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS) } })
+    .then(r => r.json())
+    .then(d => {
+      document.getElementById('server-list-textarea').value = d.urls.join('\n');
+    });
+}
+
+function closeManageServersModal() {
+  document.getElementById('manage-servers-overlay').style.display = 'none';
+}
+
+function saveServerList() {
+  const text = document.getElementById('server-list-textarea').value;
+  const urls = text.split('\n').map(u => u.trim()).filter(u => u);
+  
+  const st = document.getElementById('manage-servers-status');
+  st.style.display = 'block';
+  st.style.background = '#e3f2fd';
+  st.style.color = '#1565c0';
+  st.textContent = '🔄 Updating server list...';
+
+  fetch('/api/update-server-list', {
+    method: 'POST',
+    headers: { 
+      'Content-Type': 'application/json',
+      'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS) 
+    },
+    body: JSON.stringify({ urls })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.success) {
+      st.style.background = '#e8f5e9';
+      st.style.color = '#2e7d32';
+      st.textContent = '✅ Server list updated! ' + d.agentsNotified + ' agents notified.';
+      setTimeout(closeManageServersModal, 2000);
+    } else {
+      st.style.background = '#ffebee';
+      st.style.color = '#c62828';
+      st.textContent = '❌ Error: ' + (d.error || 'Unknown');
+    }
+  });
 }
 
 function toggleRemoteDropdown() {
@@ -451,6 +421,24 @@ document.addEventListener('click', e => {
 const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsUrl = `${wsProto}//${location.host}/ws?token=TOKEN_PLACEHOLDER`;
 let ws, agents = {}, frames = {};
+// Frame throttling to prevent flickering
+const frameThrottle = {}; // agentId -> {lastUpdate, pendingFrame}
+const FRAME_INTERVAL = 100; // Max 10 FPS per agent
+
+function updateFrameThrottled(agentId, frame) {
+  const now = Date.now();
+  if (!frameThrottle[agentId]) {
+    frameThrottle[agentId] = { lastUpdate: 0, pendingFrame: null };
+  }
+  const ft = frameThrottle[agentId];
+  ft.pendingFrame = frame; // Always keep latest frame
+  
+  if (now - ft.lastUpdate >= FRAME_INTERVAL) {
+    ft.lastUpdate = now;
+    frames[agentId] = ft.pendingFrame;
+    updateFrame(agentId, ft.pendingFrame);
+  }
+}
 
 function connect() {
   ws = new WebSocket(wsUrl);
@@ -458,6 +446,17 @@ function connect() {
     document.getElementById('status-dot').classList.add('online');
     document.getElementById('conn-status').textContent = 'Connected';
     ws.send(JSON.stringify({ type: 'dashboard-hello' }));
+    // Flush pending frames every 200ms to prevent stale frames
+    setInterval(() => {
+      for (const agentId in frameThrottle) {
+        const ft = frameThrottle[agentId];
+        if (ft.pendingFrame && Date.now() - ft.lastUpdate >= FRAME_INTERVAL) {
+          ft.lastUpdate = Date.now();
+          frames[agentId] = ft.pendingFrame;
+          updateFrame(agentId, ft.pendingFrame);
+        }
+      }
+    }, 200);
   };
   ws.onmessage = e => {
     const d = JSON.parse(e.data);
@@ -472,7 +471,7 @@ function connect() {
       }
       renderGrid();
     }
-    if (d.type === 'frame') { frames[d.agentId] = d.frame; updateFrame(d.agentId, d.frame); }
+    if (d.type === 'frame') { updateFrameThrottled(d.agentId, d.frame); }
     if (d.type === 'tunnel-status') {
       const el = document.getElementById('tunnel-' + d.agentId);
       if (el) {
@@ -539,9 +538,9 @@ function renderGrid() {
       <img id="frame-${id}" src="${frames[id] ? 'data:image/jpeg;base64,' + frames[id] : ''}" alt="">
       <div class="cell-footer" style="font-size:${fs.footer}px">
         <span class="cell-ips">
-          <span class="ip-line">🖧 ${esc(a.localIP || a.ip || 'N/A')}</span>
-          <span class="ip-line">🌐 ${esc(a.publicIP || 'N/A')}</span>
-          <span class="ip-line">💻 ${esc(a.hostname || id)}</span>
+          <span class="ip-line"><span class="ip-label">🖧 LAN:</span> <span class="ip-value">${esc(a.localIP || a.ip || 'N/A')}</span></span>
+          <span class="ip-line"><span class="ip-label">🌐 WAN:</span> <span class="ip-value">${esc(a.publicIP || 'N/A')}</span></span>
+          <span class="ip-line"><span class="ip-label">💻 Host:</span> <span class="ip-value">${esc(a.hostname || id)}</span></span>
         </span>
         <span style="display:flex;gap:6px;align-items:center">
           <span class="tunnel-url" id="tunnel-${id}" style="display:none;font-size:9px;color:#1976d2;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Tunnel URL"></span>
