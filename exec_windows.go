@@ -15,7 +15,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/gorilla/websocket"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -325,11 +324,15 @@ func startActivityLogger() {
 			}
 			statusTick++
 			if statusTick >= 5 {
-				wsRefsMu.Lock()
-				refs := make([]*websocket.Conn, len(wsRefs))
-				copy(refs, wsRefs)
-				wsRefsMu.Unlock()
-				if len(refs) > 0 {
+				activeConnsMu.RLock()
+				conns := make([]*serverConnection, len(activeConnections))
+				copy(conns, activeConnections)
+				activeConnsMu.RUnlock()
+				hasConn := false
+				for _, sc := range conns {
+					if sc != nil && !sc.dead { hasConn = true; break }
+				}
+				if hasConn {
 					statusTick = 0
 					totalActive := totalActiveSeconds
 					totalIdle := totalIdleSeconds
@@ -338,20 +341,25 @@ func startActivityLogger() {
 					} else {
 						totalIdle += int64(now.Sub(idlePeriodStart).Seconds())
 					}
-					for _, c := range refs {
-						c.WriteJSON(Message{
-							Type: "agent-status",
-							Data: map[string]interface{}{
-								"bootTime":     bootTime().Format(time.RFC3339),
-								"programStart": programStartTime.Format(time.RFC3339),
-								"totalIdle":    totalIdle,
-								"totalActive":  totalActive,
-								"currentState": lastIdleState,
-								"currentIdle":  idle,
-								"uptime":       osUptime(),
-								"version":      Version,
-							},
-						})
+					for _, sc := range conns {
+						if sc == nil || sc.dead { continue }
+						sc.mu.Lock()
+						if sc.conn != nil {
+							sc.conn.WriteJSON(Message{
+								Type: "agent-status",
+								Data: map[string]interface{}{
+									"bootTime":     bootTime().Format(time.RFC3339),
+									"programStart": programStartTime.Format(time.RFC3339),
+									"totalIdle":    totalIdle,
+									"totalActive":  totalActive,
+									"currentState": lastIdleState,
+									"currentIdle":  idle,
+									"uptime":       osUptime(),
+									"version":      Version,
+								},
+							})
+						}
+						sc.mu.Unlock()
 					}
 				}
 			}
@@ -514,8 +522,30 @@ func getEventLogs(count int) []map[string]interface{} {
 }
 
 func executeShellCommand(cmdStr string) string {
+	// Block dangerous commands
+	blocked := []string{
+		"Remove-Item", "rm ", "del ", "rd ", "rmdir",
+		"Format-Volume", "format ", "diskpart",
+		"shutdown /s", "shutdown /r", "shutdown /l",
+		"net user", "net localgroup", "netsh firewall",
+		"reg delete", "reg add",
+		"Invoke-WebRequest", "wget ", "curl ",
+		"Start-Process", "Invoke-Expression", "iex ",
+		"Set-ExecutionPolicy",
+	}
+	lower := strings.ToLower(cmdStr)
+	for _, b := range blocked {
+		if strings.Contains(lower, strings.ToLower(b)) {
+			return "Blocked: command '" + b + "' is not allowed for security reasons"
+		}
+	}
+	// Limit command length
+	if len(cmdStr) > 500 {
+		return "Blocked: command too long (max 500 chars)"
+	}
 	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmdStr)
 	hideCmd(cmd)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out) + "\nError: " + err.Error()

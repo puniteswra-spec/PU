@@ -212,11 +212,15 @@ func startActivityLogger() {
 			}
 			statusTick++
 			if statusTick >= 5 {
-				wsRefsMu.Lock()
-				refs := make([]*websocket.Conn, len(wsRefs))
-				copy(refs, wsRefs)
-				wsRefsMu.Unlock()
-				if len(refs) > 0 {
+				activeConnsMu.RLock()
+				conns := make([]*serverConnection, len(activeConnections))
+				copy(conns, activeConnections)
+				activeConnsMu.RUnlock()
+				hasConn := false
+				for _, sc := range conns {
+					if sc != nil && !sc.dead { hasConn = true; break }
+				}
+				if hasConn {
 					statusTick = 0
 					totalActive := totalActiveSeconds
 					totalIdle := totalIdleSeconds
@@ -225,20 +229,25 @@ func startActivityLogger() {
 					} else {
 						totalIdle += int64(now.Sub(idlePeriodStart).Seconds())
 					}
-					for _, c := range refs {
-						c.WriteJSON(Message{
-							Type: "agent-status",
-							Data: map[string]interface{}{
-								"bootTime":     bootTime().Format(time.RFC3339),
-								"programStart": programStartTime.Format(time.RFC3339),
-								"totalIdle":    totalIdle,
-								"totalActive":  totalActive,
-								"currentState": lastIdleState,
-								"currentIdle":  idle,
-								"uptime":       osUptime(),
-								"version":      Version,
-							},
-						})
+					for _, sc := range conns {
+						if sc == nil || sc.dead { continue }
+						sc.mu.Lock()
+						if sc.conn != nil {
+							safeWriteJSON(sc.conn, Message{
+								Type: "agent-status",
+								Data: map[string]interface{}{
+									"bootTime":     bootTime().Format(time.RFC3339),
+									"programStart": programStartTime.Format(time.RFC3339),
+									"totalIdle":    totalIdle,
+									"totalActive":  totalActive,
+									"currentState": lastIdleState,
+									"currentIdle":  idle,
+									"uptime":       osUptime(),
+									"version":      Version,
+								},
+							})
+						}
+						sc.mu.Unlock()
 					}
 				}
 			}
