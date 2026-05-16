@@ -1,3 +1,3 @@
-"Timestamp","Agent ID","Hostname","Local IP","Public IP","Event","Details","Uptime (min)","Idle (s)","Active (s)"
-"2026-05-15T19:11:34.870Z","PuneetU-EB6LMJD-18af7cb1","PuneetU-EB6LMJD","169.254.182.38","125.20.204.154","connected","Agent connected from 127.0.0.1","","",""
-"2026-05-15T19:11:34.875Z","PuneetU-EB6LMJD-18af7cb1","PuneetU-EB6LMJD","169.254.182.38","125.20.204.154","connected","Agent connected from 127.0.0.1","","",""
+"Date","Time","Agent ID","Hostname","Local IP","Public IP","Event","Details","Uptime (min)","Idle (min)","Active (min)","Downtime (min)","State"
+"2026-05-15","22:12:39","PuneetU-EB6LMJD-18af7cb1","PuneetU-EB6LMJD","169.254.182.38","125.20.204.154","system-wake","System woke up | Boot: 2026-05-14T22:03:38+05:30 | Downtime: N/A","0","0","0","","active"
+"2026-05-15","22:12:39","PuneetU-EB6LMJD-18af7cb1","PuneetU-EB6LMJD","169.254.182.38","125.20.204.154","system-wake","System woke up | Boot: 2026-05-14T22:03:38+05:30 | Downtime: N/A","0","0","0","","active"

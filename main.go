@@ -33,6 +33,9 @@ var isServerMode = false
 var isInternalMode = false
 var orgName = ""
 var fps = 1
+var jpegQuality = 50
+var isRemoteConnection = false
+var frameSkipCounter = 0
 var logFile *os.File
 var hostname string
 var authUser = "puneet"
@@ -441,7 +444,7 @@ func main() {
 		serverIP := discoverServer()
 		if serverIP != "" {
 			log("Found server at: " + serverIP)
-			serverUrls = append([]string{"ws://" + serverIP + ":3000"}, serverUrls...)
+			serverUrls = append(serverUrls, "ws://"+serverIP+":3000")
 		} else if !isServerMode && !preferredServer {
 			ln, listenErr := net.Listen("tcp", "0.0.0.0:3000")
 			if listenErr == nil {
@@ -1141,8 +1144,8 @@ func connect() {
 			if u == localURL { found = true; break }
 		}
 		if !found {
-			serverUrls = append([]string{localURL}, serverUrls...)
-			log("Local server discovered: " + localURL + " (added to priority)")
+			serverUrls = append(serverUrls, localURL)
+			log("Local server discovered: " + localURL + " (added as fallback)")
 		}
 	}
 	
@@ -1249,7 +1252,19 @@ func connect() {
 				log("Invalid message: " + err.Error())
 				continue
 			}
-			if d.Type == "set-fps" && d.Fps > 0 { fps = d.Fps }
+			if d.Type == "set-fps" && d.Fps > 0 {
+			fps = d.Fps
+			if fps <= 2 {
+				jpegQuality = 50
+				isRemoteConnection = false
+			} else if fps <= 5 {
+				jpegQuality = 40
+				isRemoteConnection = true
+			} else {
+				jpegQuality = 30
+				isRemoteConnection = true
+			}
+		}
 			if d.Type == "control" {
 				// Rate limiting: max 30 control commands per second
 				now := time.Now()
@@ -1339,6 +1354,11 @@ func connect() {
 						log("Frame capture panic: " + fmt.Sprintf("%v", r))
 					}
 				}()
+				frameSkipCounter++
+				if isRemoteConnection && frameSkipCounter%2 == 0 {
+					time.Sleep(time.Second / time.Duration(fps))
+					return
+				}
 				frames := captureFrames()
 				for _, m := range frames {
 					sentToWebRTC := sendFrameOverWebRTC(m.Frame)
@@ -1414,7 +1434,7 @@ func captureDisplay(n int) (result string) {
 	img, err := screenshot.CaptureRect(screenshot.GetDisplayBounds(n))
 	if err != nil { return "" }
 	b := new(bytes.Buffer)
-	if err := jpeg.Encode(b, img, &jpeg.Options{Quality: 50}); err != nil {
+	if err := jpeg.Encode(b, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(b.Bytes())

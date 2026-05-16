@@ -1494,21 +1494,28 @@ wss.on('connection', (ws, req) => {
           let allowed = false;
           if (ws.role === 'dashboard' && ctrlAgentId) {
             allowed = true;
+            console.log(`Dashboard control allowed: ${ctrlAgentId} command: ${data.command}`);
           } else if (ws.role === 'support' && ws.supportToken) {
             const sess = supportSessions.get(ws.supportToken);
             if (sess && sess.controlEnabled && ctrlAgentId === sess.agentId) {
               allowed = true;
+              console.log(`Support control allowed: ${ctrlAgentId} command: ${data.command}`);
             }
           }
           if (allowed && ctrlAgentId) {
             const ctrlTargetAgent = agents.get(ctrlAgentId);
-            if (ctrlTargetAgent) {
+            if (ctrlTargetAgent && ctrlTargetAgent.ws && ctrlTargetAgent.ws.readyState === WebSocket.OPEN) {
               ctrlTargetAgent.ws.send(JSON.stringify({
                 type: 'control',
                 command: data.command,
                 params: data.params
               }));
+              console.log(`Control sent to ${ctrlAgentId}: ${data.command}`);
+            } else {
+              console.log(`Control failed: agent ${ctrlAgentId} not connected or ws closed`);
             }
+          } else {
+            console.log(`Control denied: role=${ws.role} agentId=${ctrlAgentId} allowed=${allowed}`);
           }
           break;
 
