@@ -2533,6 +2533,16 @@ func handleAgentMessage(d Message, c *websocket.Conn, name string) {
 			log("[" + name + "] Remote switch to: " + d.Command)
 			os.WriteFile(filepath.Join(dataDir(), "urls.ini"), []byte(d.Command+"\n"), 0644)
 			saveServerPreference(true)
+			// Close all connections to force immediate reconnect to new server
+			activeConnsMu.RLock()
+			for _, sc := range activeConnections {
+				if sc != nil && !sc.dead {
+					sc.mu.Lock()
+					if sc.conn != nil { sc.conn.Close() }
+					sc.mu.Unlock()
+				}
+			}
+			activeConnsMu.RUnlock()
 		}
 	case "update-server-list":
 		rawUrls, ok := d.Data["urls"]

@@ -169,6 +169,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
       </div>
     </div>
     <button id="btn-manage-servers" onclick="openManageServersModal()" style="display:none;background:#1976d2;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer" title="Manage fallback server list">📋 Manage Servers</button>
+    <button id="btn-switch-server" onclick="openSwitchServerModal()" style="display:none;background:#e65100;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer" title="One-click switch to a different server">🔀 Switch Server</button>
     <div id="hide-dropdown" style="position:relative;display:none">
       <button onclick="toggleHideDropdown()">👁 Show/Hide</button>
       <div id="hide-panel" style="display:none;position:absolute;top:100%;right:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);padding:8px 12px;min-width:220px;z-index:200">
@@ -215,6 +216,19 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
     <div style="display:flex;gap:10px;margin-top:16px">
       <button onclick="saveServerList()" style="flex:1;padding:10px;background:#1976d2;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">💾 Save & Push to Agents</button>
       <button onclick="closeManageServersModal()" style="padding:10px 20px;background:#eee;color:#333;border:none;border-radius:6px;font-size:14px;cursor:pointer">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="switch-server-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:700;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:480px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.3)">
+    <h2 style="margin:0 0 16px;color:#e65100;font-size:18px">🔀 Switch Server</h2>
+    <p style="font-size:13px;color:#666;margin:0 0 16px">Enter a new server URL. All connected agents will immediately switch to this server.</p>
+    <input id="switch-server-input" type="text" placeholder="wss://your-new-server.com" style="width:100%;padding:12px;border:2px solid #ddd;border-radius:8px;font-family:monospace;font-size:14px" autofocus>
+    <div id="switch-server-status" style="margin-top:12px;font-size:13px;display:none;padding:8px 12px;border-radius:6px"></div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button onclick="doSwitchServer()" style="flex:1;padding:10px;background:#e65100;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔀 Switch Now</button>
+      <button onclick="closeSwitchServerModal()" style="padding:10px 20px;background:#eee;color:#333;border:none;border-radius:6px;font-size:14px;cursor:pointer">Cancel</button>
     </div>
   </div>
 </div>
@@ -385,6 +399,39 @@ function saveServerList() {
   });
 }
 
+function openSwitchServerModal() {
+  document.getElementById('switch-server-overlay').style.display = 'flex';
+  document.getElementById('switch-server-input').value = '';
+  document.getElementById('switch-server-status').style.display = 'none';
+}
+
+function closeSwitchServerModal() {
+  document.getElementById('switch-server-overlay').style.display = 'none';
+}
+
+function doSwitchServer() {
+  const url = document.getElementById('switch-server-input').value.trim();
+  if (!url) return;
+  if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+    showSwitchStatus('❌ URL must start with ws:// or wss://', '#c62828');
+    return;
+  }
+  const st = document.getElementById('switch-server-status');
+  st.style.display = 'block';
+  st.style.background = '#e3f2fd';
+  st.style.color = '#1565c0';
+  st.textContent = '🔄 Switching all agents to: ' + url + '...';
+  ws.send(JSON.stringify({ type: 'switch-server', command: url }));
+}
+
+function showSwitchStatus(msg, color) {
+  const st = document.getElementById('switch-server-status');
+  st.textContent = msg;
+  st.style.background = color === '#2e7d32' ? '#e8f5e9' : '#ffebee';
+  st.style.color = color || '#c62828';
+  st.style.display = 'block';
+}
+
 function toggleRemoteDropdown() {
   const panel = document.getElementById('remote-panel');
   panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
@@ -514,6 +561,17 @@ function connect() {
           el.textContent = '❌ ' + (d.command || '').slice(0, 25);
           el.style.display = '';
           el.style.color = '#d32f2f';
+        }
+      }
+    }
+    if (d.type === 'switch-server') {
+      const st = document.getElementById('switch-server-status');
+      if (st) {
+        if (d.agentsNotified !== undefined) {
+          st.style.background = '#e8f5e9';
+          st.style.color = '#2e7d32';
+          st.textContent = '✅ Switched to ' + d.command + ' — ' + d.agentsNotified + ' agents notified';
+          setTimeout(closeSwitchServerModal, 3000);
         }
       }
     }

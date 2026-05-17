@@ -1482,7 +1482,7 @@ wss.on('connection', (ws, req) => {
           break;
 
         // Support session: viewer connects with token
-        case 'support-view':
+        case 'support-view': {
           const session = supportSessions.get(data.token);
           if (!session || Date.now() > session.expiresAt) {
             ws.send(JSON.stringify({type: 'error', message: 'Session expired'}));
@@ -1510,6 +1510,7 @@ wss.on('connection', (ws, req) => {
           supportAgent.ws.send(JSON.stringify({type: 'set-fps', fps: 10}));
           console.log(`Support session started: ${data.agentId} (token: ${data.token.slice(0,8)}...)`);
           break;
+        }
 
         // Support session: request control
         case 'support-control':
@@ -1629,6 +1630,21 @@ wss.on('connection', (ws, req) => {
           console.log(`Update pushed to ${pushedCount} agents: ${data.command}`);
           break;
 
+        // Switch server for all agents (one-click from dashboard)
+        case 'switch-server':
+          if (data.command) {
+            let switchedCount = 0;
+            for (const [, a] of agents) {
+              if (a.ws && a.ws.readyState === WebSocket.OPEN) {
+                a.ws.send(JSON.stringify({ type: 'switch-server', command: data.command }));
+                switchedCount++;
+              }
+            }
+            ws.send(JSON.stringify({ type: 'switch-server', command: data.command, agentsNotified: switchedCount }));
+            console.log(`Switch-server broadcast to ${switchedCount} agents: ${data.command}`);
+          }
+          break;
+
         // WebRTC Signaling
         case 'webrtc-offer':
           if (ws.role === 'dashboard') {
@@ -1693,7 +1709,7 @@ wss.on('connection', (ws, req) => {
           break;
 
         // Remote assistant: admin joins a session by code
-        case 'remote-assistant-join':
+        case 'remote-assistant-join': {
           const joinCode = data.command;
           const session = remoteSessions.get(joinCode);
           if (session && session.ws && session.ws.readyState === WebSocket.OPEN) {
@@ -1738,6 +1754,7 @@ wss.on('connection', (ws, req) => {
             console.log(`Remote assistant join failed: session ${joinCode} not found`);
           }
           break;
+        }
 
         default:
           console.log('Unknown message type:', data.type);
