@@ -53,6 +53,7 @@ const maxControlCmdsPerSec = 30
 // Fallback tracking
 var consecutiveFailures int
 var tunnelStarted bool
+var isLanMode bool // mode=lan: skip GitHub fetch + cloud defaults
 
 // Deployment defaults — overridden by config.ini
 var (
@@ -142,27 +143,30 @@ func checkAuth(w http.ResponseWriter, r *http.Request) bool {
 func loadCustomUrls() {
 	serverUrls = []string{}
 
-	// 1. Priority: GitHub Registry (Global Config)
-	// This allows you to switch servers for ALL agents (even offline ones) by editing the file on GitHub.
-	resp, err := http.Get(GitHubRegistryURL + "?t=" + strconv.FormatInt(time.Now().Unix(), 10))
-	if err == nil && resp != nil {
-		defer resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			buf := new(bytes.Buffer)
-			_, readErr := buf.ReadFrom(resp.Body)
-			if readErr == nil {
-				lines := strings.Split(buf.String(), "\n")
-				for _, line := range lines {
-					line = strings.TrimSpace(line)
-					if line != "" && !strings.HasPrefix(line, "#") {
-						serverUrls = append(serverUrls, line)
+	if !isLanMode {
+		// 1. Priority: GitHub Registry (Global Config) — skipped in LAN mode
+		resp, err := http.Get(GitHubRegistryURL + "?t=" + strconv.FormatInt(time.Now().Unix(), 10))
+		if err == nil && resp != nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				buf := new(bytes.Buffer)
+				_, readErr := buf.ReadFrom(resp.Body)
+				if readErr == nil {
+					lines := strings.Split(buf.String(), "\n")
+					for _, line := range lines {
+						line = strings.TrimSpace(line)
+						if line != "" && !strings.HasPrefix(line, "#") {
+							serverUrls = append(serverUrls, line)
+						}
 					}
-				}
-				if len(serverUrls) > 0 {
-					log("✅ Loaded URLs from Central GitHub Registry (Priority 1)")
+					if len(serverUrls) > 0 {
+						log("✅ Loaded URLs from Central GitHub Registry (Priority 1)")
+					}
 				}
 			}
 		}
+	} else {
+		log("🔒 LAN mode: skipping GitHub registry")
 	}
 
 	// 2. Fallback: Local urls.ini (Machine Specific Config)
@@ -235,6 +239,8 @@ func loadCustomUrls() {
 
 // startUrlRefresher periodically checks GitHub for server list updates
 func startUrlRefresher() {
+	if isLanMode { return } // No GitHub to refresh in LAN mode
+
 	ticker := time.NewTicker(8 * time.Hour) // Check every 8 hours to reduce load
 	go func() {
 		for range ticker.C {
@@ -277,9 +283,31 @@ func startConfigServer() {
 			"agentId":   agentId,
 			"hostname":  hostname,
 			"urls":      urlsCopy,
+			"mode":      map[string]interface{}{"lan": isLanMode, "label": map[bool]string{true: "LAN", false: "Cloud"}[isLanMode]},
 			"uptime":    time.Since(programStartTime).String(),
 			"connected": connected,
 		})
+	})
+	mux.HandleFunc("/api/mode", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			var body struct {
+				Mode string `json:"mode"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			if body.Mode == "lan" || body.Mode == "cloud" {
+				os.WriteFile(filepath.Join(dataDir(), "mode.ini"), []byte("mode="+body.Mode+"\n"), 0644)
+				log("Mode changed to: " + body.Mode + " — restart to apply")
+				w.Write([]byte(`{"ok":true,"message":"Mode saved. Restart agent to apply."}`))
+				return
+			}
+			w.Write([]byte(`{"error":"invalid mode"}`))
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"mode":  map[bool]string{true: "lan", false: "cloud"}[isLanMode],
+				"label": map[bool]string{true: "LAN (offline)", false: "Cloud (GitHub + Render)"}[isLanMode],
+			})
+		}
 	})
 	mux.HandleFunc("/api/urls", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
@@ -305,6 +333,25 @@ func startConfigServer() {
 				activeConnsMu.RUnlock()
 			}
 			w.Write([]byte(`{"ok":true}`))
+		} else if r.Method == "DELETE" {
+			var body struct {
+				URL string `json:"url"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			if body.URL != "" {
+				serverUrlsMu.Lock()
+				var filtered []string
+				for _, u := range serverUrls {
+					if u != body.URL { filtered = append(filtered, u) }
+				}
+				serverUrls = filtered
+				serverUrlsMu.Unlock()
+				dataFile := filepath.Join(dataDir(), "urls.ini")
+				content := strings.Join(filtered, "\n")
+				os.WriteFile(dataFile, []byte(content+"\n"), 0644)
+				log("URL removed via config panel: " + body.URL)
+			}
+			w.Write([]byte(`{"ok":true}`))
 		} else {
 			w.Header().Set("Content-Type", "application/json")
 			serverUrlsMu.RLock()
@@ -318,7 +365,7 @@ func startConfigServer() {
 		w.Write([]byte(`{"ok":true}`))
 		go func() { time.Sleep(500 * time.Millisecond); os.Exit(0) }()
 	})
-	
+
 	addr := fmt.Sprintf("127.0.0.1:%d", ConfigPort)
 	go func() {
 		if err := http.ListenAndServe(addr, mux); err != nil {
@@ -329,53 +376,192 @@ func startConfigServer() {
 }
 
 const configPageHTML = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>SystemHelper Config</title>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SystemHelper Setup Wizard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:system-ui;background:#0a0a1a;color:#ccc;min-height:100vh;display:flex;align-items:center;justify-content:center}
-.box{background:#111;border:1px solid #222;border-radius:12px;padding:24px;max-width:500px;width:90%}
-h2{color:#7c7cf0;margin-bottom:16px;font-size:18px}
-.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1a1a1a;font-size:13px}
-.row span:first-child{color:#666}
-input{width:100%;padding:8px;background:#0a0a0a;border:1px solid #333;color:#fff;border-radius:6px;margin:8px 0;font-size:13px}
-button{background:#7c7cf0;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;margin-top:8px}
-button:hover{background:#6a6ae0}
-#status{margin-top:12px;font-size:12px;color:#4caf50;display:none}
+body{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh;padding:20px}
+.wiz{max-width:640px;margin:0 auto}
+h1{font-size:20px;color:#fff;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.sub{color:#8b949e;font-size:13px;margin-bottom:20px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin-bottom:16px}
+.card h3{font-size:14px;color:#fff;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #21262d;font-size:13px}
+.row:last-child{border:0}
+.lbl{color:#8b949e}
+.val{color:#c9d1d9;word-break:break-all}
+.connected{color:#3fb950}
+.disconnected{color:#f85149}
+label{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid #30363d;border-radius:6px;margin-bottom:8px;cursor:pointer;transition:.15s}
+label:hover{background:#1c2128}
+label.selected{border-color:#58a6ff;background:#1c2128}
+label input[type=radio]{accent-color:#58a6ff;width:16px;height:16px}
+label .mode-title{font-size:14px;color:#fff;font-weight:500}
+label .mode-desc{font-size:12px;color:#8b949e;margin-top:2px}
+.url-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #21262d;font-size:13px}
+.url-row:last-child{border:0}
+.url-row .url-text{flex:1;color:#c9d1d9;word-break:break-all}
+.url-row button{background:0;border:1px solid #30363d;color:#f85149;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px}
+.url-row button:hover{background:#f85149;color:#fff}
+.presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.presets button{background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+.presets button:hover{background:#30363d;border-color:#58a6ff}
+input[type=text]{width:100%;padding:8px 12px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;font-size:13px;font-family:monospace}
+input[type=text]:focus{border-color:#58a6ff;outline:0}
+.btn{background:#238636;border:0;color:#fff;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500}
+.btn:hover{background:#2ea043}
+.btn.danger{background:#da3633}
+.btn.danger:hover{background:#f85149}
+.btn.secondary{background:#21262d;border:1px solid #30363d}
+.btn.secondary:hover{background:#30363d}
+.actions{display:flex;gap:8px;margin-top:16px}
+#status{padding:8px 12px;border-radius:6px;font-size:13px;margin-top:12px;display:none}
+#status.ok{display:block;background:#1c2128;border:1px solid #238636;color:#3fb950}
+#status.err{display:block;background:#1c2128;border:1px solid #da3633;color:#f85149}
 </style></head><body>
-<div class="box">
-<h2>⚙ SystemHelper Config</h2>
-<div id="info"></div>
-<h3 style="color:#888;font-size:13px;margin:16px 0 8px">Add Server URL</h3>
-<input id="new-url" placeholder="ws://your-server:3000">
-<button onclick="addUrl()">Add & Reconnect</button>
-<button onclick="restart()" style="background:#333;margin-left:8px">Restart Agent</button>
+<div class="wiz">
+<h1>🔧 SystemHelper Setup Wizard</h1>
+<div class="sub">Configure deployment mode and server URLs for this agent</div>
+
+<div class="card" id="status-card">
+<h3>📊 Agent Status</h3>
+<div id="status-info"></div>
+</div>
+
+<div class="card">
+<h3>🌐 Step 1: Choose Deployment Mode</h3>
+<label id="mode-cloud" onclick="setMode('cloud')">
+  <input type="radio" name="mode" value="cloud">
+  <div><div class="mode-title">☁️ Cloud Mode</div>
+  <div class="mode-desc">Fetch server list from GitHub, use Render cloud. Best for multi-location / remote access.</div></div>
+</label>
+<label id="mode-lan" onclick="setMode('lan')">
+  <input type="radio" name="mode" value="lan">
+  <div><div class="mode-title">🏠 LAN Mode (Offline)</div>
+  <div class="mode-desc">Fully local — no GitHub, no cloud. Only uses the server URLs listed below. No internet needed.</div></div>
+</label>
+</div>
+
+<div class="card">
+<h3>🔗 Step 2: Server URLs</h3>
+<div class="presets">
+  <button onclick="addPreset('wss://pu-k752.onrender.com')">Render</button>
+  <button onclick="addPreset('ws://oracle-vps:3000')">Oracle VPS</button>
+  <button onclick="addPreset('ws://192.168.1.100:3000')">LAN Server</button>
+  <button onclick="addPreset('ws://127.0.0.1:3000')">Localhost</button>
+</div>
+<div id="url-list"></div>
+<div style="display:flex;gap:8px;margin-top:8px">
+  <input type="text" id="new-url" placeholder="wss://your-server:3000" onkeydown="if(event.key==='Enter')addUrl()">
+  <button class="btn" onclick="addUrl()" style="white-space:nowrap">+ Add</button>
+</div>
+</div>
+
+<div class="actions">
+  <button class="btn" onclick="saveAndRestart()">💾 Save &amp; Restart Agent</button>
+  <button class="btn secondary" onclick="location.reload()">🔄 Refresh</button>
+</div>
 <div id="status"></div>
 </div>
+
 <script>
-async function load(){
-  const r=await fetch('/api/status');const d=await r.json();
-  document.getElementById('info').innerHTML=
-    '<div class="row"><span>Version</span><span>'+d.version+'</span></div>'+
-    '<div class="row"><span>Agent</span><span>'+d.agentId+'</span></div>'+
-    '<div class="row"><span>Host</span><span>'+d.hostname+'</span></div>'+
-    '<div class="row"><span>Uptime</span><span>'+d.uptime+'</span></div>'+
-    '<div class="row"><span>Connected</span><span style="color:'+(d.connected?'#4caf50':'#f44336')+'">'+(d.connected?'Yes':'No')+'</span></div>'+
-    '<div class="row"><span>Server URLs</span><span>'+d.urls.join(', ')+'</span></div>';
+var currentUrls = [];
+
+function load() {
+  Promise.all([fetch('/api/status').then(r=>r.json()), fetch('/api/mode').then(r=>r.json())]).then(function(d){
+    var status = d[0], modeData = d[1];
+
+    document.getElementById('status-info').innerHTML =
+      '<div class="row"><span class="lbl">Version</span><span class="val">' + status.version + '</span></div>' +
+      '<div class="row"><span class="lbl">Agent</span><span class="val">' + status.agentId + '</span></div>' +
+      '<div class="row"><span class="lbl">Host</span><span class="val">' + status.hostname + '</span></div>' +
+      '<div class="row"><span class="lbl">Uptime</span><span class="val">' + status.uptime + '</span></div>' +
+      '<div class="row"><span class="lbl">Mode</span><span class="val">' + (status.mode.lan ? '🏠 LAN' : '☁️ Cloud') + '</span></div>' +
+      '<div class="row"><span class="lbl">Connected</span><span class="val ' + (status.connected ? 'connected' : 'disconnected') + '">' + (status.connected ? '✅ Yes' : '❌ No') + '</span></div>';
+
+    document.getElementById('mode-cloud').classList.remove('selected');
+    document.getElementById('mode-lan').classList.remove('selected');
+    if (modeData.mode === 'lan') {
+      document.getElementById('mode-lan').classList.add('selected');
+      document.querySelector('#mode-lan input').checked = true;
+    } else {
+      document.getElementById('mode-cloud').classList.add('selected');
+      document.querySelector('#mode-cloud input').checked = true;
+    }
+
+    currentUrls = status.urls || [];
+    renderUrls();
+  }).catch(function(){ document.getElementById('status-info').innerHTML = '<div style="color:#f85149">Failed to load status</div>'; });
 }
-async function addUrl(){
-  const url=document.getElementById('new-url').value;
-  if(!url)return;
-  await fetch('/api/urls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
-  document.getElementById('status').textContent='✅ URL added — reconnecting...';
-  document.getElementById('status').style.display='block';
-  setTimeout(()=>location.reload(),2000);
+
+function renderUrls() {
+  var html = '';
+  if (currentUrls.length === 0) { html = '<div style="color:#8b949e;font-size:13px">No URLs configured</div>'; }
+  else {
+    currentUrls.forEach(function(u){
+      var isBaked = u === 'ws://127.0.0.1:3000';
+      html += '<div class="url-row"><span class="url-text">' + u + '</span>' +
+        (isBaked ? '<span style="color:#8b949e;font-size:11px">built-in</span>' : '<button onclick="removeUrl(\'' + u.replace(/'/g, "\\'") + '\')">✕</button>') +
+        '</div>';
+    });
+  }
+  document.getElementById('url-list').innerHTML = html;
 }
-async function restart(){
-  await fetch('/api/restart');
-  document.getElementById('status').textContent='🔄 Restarting...';
-  document.getElementById('status').style.display='block';
+
+function setMode(m) {
+  fetch('/api/mode', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode:m})})
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    showStatus(d.ok ? '✅ Mode saved to ' + m + '. Restart agent to apply.' : '❌ ' + (d.error||'Failed'), d.ok);
+    load();
+  });
 }
-load();setInterval(load,5000);
+
+function addPreset(url) {
+  document.getElementById('new-url').value = url;
+}
+
+function addUrl() {
+  var url = document.getElementById('new-url').value.trim();
+  if (!url) return;
+  if (!url.startsWith('ws://') && !url.startsWith('wss://')) { showStatus('❌ URL must start with ws:// or wss://', false); return; }
+  fetch('/api/urls', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:url})})
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if (d.ok) {
+      document.getElementById('new-url').value = '';
+      showStatus('✅ URL added: ' + url, true);
+      setTimeout(load, 1000);
+    }
+  });
+}
+
+function removeUrl(url) {
+  fetch('/api/urls', {method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:url})})
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if (d.ok) {
+      showStatus('🗑️ URL removed: ' + url, true);
+      setTimeout(load, 1000);
+    }
+  });
+}
+
+function saveAndRestart() {
+  var mode = document.querySelector('input[name="mode"]:checked');
+  if (!mode) { showStatus('❌ Select a deployment mode first', false); return; }
+  showStatus('🔄 Saving and restarting agent...', true);
+  fetch('/api/restart', {method:'POST'});
+}
+
+function showStatus(msg, ok) {
+  var s = document.getElementById('status');
+  s.textContent = msg;
+  s.className = ok ? 'ok' : 'err';
+  s.style.display = 'block';
+  setTimeout(function(){ s.style.display = 'none'; }, 5000);
+}
+
+load();
 </script></body></html>`
 
 // Agent info for server mode
@@ -433,17 +619,29 @@ const embeddedConfig = `# ======================================================
 auth_user=puneet
 auth_pass=puneet12
 
+# ── Deployment Mode ────────────────────────────────────────────
+# mode=cloud → uses GitHub registry + Render cloud (default)
+# mode=lan   → fully offline, only urls= below, no external calls
+# ───────────────────────────────────────────────────────────────
+mode=cloud
+
 # Baked-in server URLs — built into the binary, no external file needed
-# These are used as the AUTHORITATIVE FALLBACK when GitHub is unreachable
-# and no local urls.ini exists.
+# In cloud mode:  fallback when GitHub is unreachable
+# In LAN mode:    the ONLY URLs used (GitHub is skipped entirely)
 # Format: one URL per line, wss:// for secure, ws:// for plain
+# ───────────────────────────────────────────────────────────────
+# For Render / cloud:
+#   urls=wss://pu-k752.onrender.com
+# For LAN / Oracle / VPS:
+#   urls=ws://192.168.1.100:3000
+#   urls=ws://10.0.0.5:3000
+# ───────────────────────────────────────────────────────────────
 urls=wss://pu-k752.onrender.com
 urls=ws://43.247.40.101:3000
 
-# GitHub URL for centralized server list management
+# GitHub URL for centralized server list management (cloud mode only)
 # Agents fetch this file to get updated server URLs
 # Format: one URL per line, # for comments
-# Example: https://raw.githubusercontent.com/YOUR-ORG/REPO/main/urls.ini
 github_config_url=https://raw.githubusercontent.com/puniteswra-spec/PU/main/urls.ini
 
 # Configuration panel port (http://localhost:PORT)
@@ -508,11 +706,18 @@ func loadDeploymentConfig() {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") { continue }
 		
-		if strings.HasPrefix(line, "urls=") {
+		if strings.HasPrefix(line, "mode=") {
+			m := strings.TrimSpace(strings.TrimPrefix(line, "mode="))
+			isLanMode = m == "lan"
+		} else if strings.HasPrefix(line, "urls=") {
 			u := strings.TrimSpace(strings.TrimPrefix(line, "urls="))
 			if u != "" {
 				embeddedServerUrls = append(embeddedServerUrls, u)
 			}
+		} else if strings.HasPrefix(line, "default_server=") {
+			DefaultServerURL = strings.TrimSpace(strings.TrimPrefix(line, "default_server="))
+		} else if strings.HasPrefix(line, "direct_server=") {
+			DirectServerIP = strings.TrimSpace(strings.TrimPrefix(line, "direct_server="))
 		} else if strings.HasPrefix(line, "auth_user=") {
 			authUser = strings.TrimSpace(strings.TrimPrefix(line, "auth_user="))
 		} else if strings.HasPrefix(line, "auth_pass=") {
@@ -531,6 +736,16 @@ func loadDeploymentConfig() {
 		}
 	}
 	
+	// Backward compat: if no urls= in config, use legacy fields
+	if len(embeddedServerUrls) == 0 {
+		if DefaultServerURL != "" {
+			embeddedServerUrls = append(embeddedServerUrls, DefaultServerURL)
+		}
+		if DirectServerIP != "" {
+			embeddedServerUrls = append(embeddedServerUrls, DirectServerIP)
+		}
+	}
+
 	// Populate serverNames from embedded URLs (used by --use flag)
 	serverNames = make(map[string]string)
 	for i, u := range embeddedServerUrls {
@@ -543,7 +758,21 @@ func loadDeploymentConfig() {
 		serverNames[key] = u
 	}
 	
-	log("Deployment config loaded: auth=" + authUser + " urls=" + fmt.Sprintf("%v", embeddedServerUrls) + " port=" + strconv.Itoa(ConfigPort))
+	// Check for mode.ini override (set via config panel wizard)
+	if modeData, err := os.ReadFile(filepath.Join(dataDir(), "mode.ini")); err == nil {
+		for _, ml := range strings.Split(string(modeData), "\n") {
+			ml = strings.TrimSpace(ml)
+			if strings.HasPrefix(ml, "mode=") {
+				m := strings.TrimPrefix(ml, "mode=")
+				if m == "lan" || m == "cloud" {
+					isLanMode = m == "lan"
+					log("Mode override from mode.ini: " + m)
+				}
+			}
+		}
+	}
+
+	log("Deployment config loaded: auth=" + authUser + " mode=" + map[bool]string{true: "LAN", false: "Cloud"}[isLanMode] + " urls=" + fmt.Sprintf("%v", embeddedServerUrls) + " port=" + strconv.Itoa(ConfigPort))
 }
 
 func log(msg string) {
@@ -2276,21 +2505,25 @@ func handleAgentMessage(d Message, c *websocket.Conn, name string) {
 }
 
 func connect() {
-	// Start tunnel in background — NEVER blocks other connections
-	if !tunnelStarted {
-		log("🚀 Starting tunnel for remote access...")
-		tunnelStarted = true
-		go startTunnel(nil)
-	}
-	
-	// Wake up Render server (free tier sleeps after 15 min)
-	go func() {
-		resp, err := http.Get("https://pu-k752.onrender.com")
-		if err == nil {
-			defer resp.Body.Close()
-			log("✅ Render server responded (HTTP " + strconv.Itoa(resp.StatusCode) + ")")
+	if !isLanMode {
+		// Start tunnel in background — NEVER blocks other connections
+		if !tunnelStarted {
+			log("🚀 Starting tunnel for remote access...")
+			tunnelStarted = true
+			go startTunnel(nil)
 		}
-	}()
+
+		// Wake up Render server (free tier sleeps after 15 min)
+		go func() {
+			resp, err := http.Get("https://pu-k752.onrender.com")
+			if err == nil {
+				defer resp.Body.Close()
+				log("✅ Render server responded (HTTP " + strconv.Itoa(resp.StatusCode) + ")")
+			}
+		}()
+	} else {
+		log("🔒 LAN mode: tunnel + cloud wake-up skipped")
+	}
 	
 	// Build the list of servers to connect to
 	serverUrlsMu.Lock()
