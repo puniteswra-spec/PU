@@ -26,7 +26,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const Version = "7.2.0"
+const Version = "7.2.1"
 
 var agentId string
 var isServerMode = false
