@@ -237,8 +237,9 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: 
     <span style="color:#fff;font-size:14px;font-weight:600">🔗 Remote Session: <span id="remote-view-code"></span></span>
     <button onclick="closeRemoteView()" style="background:#f44336;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px">✕ Close</button>
   </div>
-  <div style="flex:1;display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden">
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden;position:relative">
     <img id="remote-view-frame" src="" style="max-width:100%;max-height:100%;object-fit:contain">
+    <div id="remote-view-status" style="position:absolute;color:#888;font-size:14px;display:none">⏳ Waiting for remote screen...</div>
   </div>
 </div>
 
@@ -462,22 +463,22 @@ document.addEventListener('click', e => {
 const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsUrl = `${wsProto}//${location.host}/ws?token=TOKEN_PLACEHOLDER`;
 let ws, agents = {}, frames = {};
-// Frame throttling to prevent flickering
-const frameThrottle = {}; // agentId -> {lastUpdate, pendingFrame}
+const frameThrottle = {}; // agentId -> {lastUpdate, preloader}
 const FRAME_INTERVAL = 100; // Max 10 FPS per agent
 
 function updateFrameThrottled(agentId, frame) {
   const now = Date.now();
   if (!frameThrottle[agentId]) {
-    frameThrottle[agentId] = { lastUpdate: 0, pendingFrame: null };
+    frameThrottle[agentId] = { lastUpdate: 0, preloader: new Image() };
   }
   const ft = frameThrottle[agentId];
-  ft.pendingFrame = frame; // Always keep latest frame
-  
-  if (now - ft.lastUpdate >= FRAME_INTERVAL) {
-    ft.lastUpdate = now;
-    frames[agentId] = ft.pendingFrame;
-    updateFrame(agentId, ft.pendingFrame);
+  if (now - ft.lastUpdate < FRAME_INTERVAL) return;
+  ft.lastUpdate = now;
+  frames[agentId] = frame;
+  const img = document.getElementById('frame-' + agentId);
+  if (img) {
+    ft.preloader.onload = function() { img.src = ft.preloader.src; };
+    ft.preloader.src = 'data:image/jpeg;base64,' + frame;
   }
 }
 
@@ -487,17 +488,6 @@ function connect() {
     document.getElementById('status-dot').classList.add('online');
     document.getElementById('conn-status').textContent = 'Connected';
     ws.send(JSON.stringify({ type: 'dashboard-hello' }));
-    // Flush pending frames every 200ms to prevent stale frames
-    setInterval(() => {
-      for (const agentId in frameThrottle) {
-        const ft = frameThrottle[agentId];
-        if (ft.pendingFrame && Date.now() - ft.lastUpdate >= FRAME_INTERVAL) {
-          ft.lastUpdate = Date.now();
-          frames[agentId] = ft.pendingFrame;
-          updateFrame(agentId, ft.pendingFrame);
-        }
-      }
-    }, 200);
   };
   ws.onmessage = e => {
     const d = JSON.parse(e.data);
@@ -610,16 +600,6 @@ function renderGrid() {
 }
 
 function esc(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]); }
-
-const frameTimers = {};
-function updateFrame(agentId, frame) {
-  if (frameTimers[agentId]) return;
-  frameTimers[agentId] = setTimeout(() => {
-    delete frameTimers[agentId];
-    const img = document.getElementById('frame-' + agentId);
-    if (img) img.src = 'data:image/jpeg;base64,' + frame;
-  }, 200);
-}
 
 function downloadLogs() {
   const a = document.createElement('a');
@@ -767,12 +747,17 @@ function updateStats(agentId) {
 
 function copyRemoteLink() {
   var url = location.origin + '/remote-assistant';
+  var msg = '📋 REMOTE ASSISTANT FLOW:\n\n' +
+    '1. Send this link to the remote user:\n   ' + url + '\n\n' +
+    '2. Ask them to click "Start Screen Share"\n   and share the 6-digit code with you\n\n' +
+    '3. Enter that code in "Join Session"\n   to view their screen';
   if (navigator.clipboard) {
     navigator.clipboard.writeText(url).then(function() {
-      showToast('✅ Link copied: ' + url);
+      alert(msg);
     });
   } else {
-    prompt('Copy this link:', url);
+    alert(msg + '\n\nLink copied below:\n' + url);
+    prompt('Copy this link to share with the remote user:', url);
   }
 }
 
@@ -820,6 +805,8 @@ function handleRemoteAssistantMessage(d) {
       closeJoinRemoteModal();
       document.getElementById('remote-view-modal').style.display = 'flex';
       document.getElementById('remote-view-code').textContent = document.getElementById('remote-code').value.toUpperCase();
+      document.getElementById('remote-view-frame').src = '';
+      document.getElementById('remote-view-status').style.display = 'block';
     }, 1000);
   }
   if (d.type === 'remote-assistant-join-error') {
@@ -830,12 +817,18 @@ function handleRemoteAssistantMessage(d) {
   }
   if (d.type === 'remote-assistant-frame') {
     var img = document.getElementById('remote-view-frame');
-    if (img) img.src = 'data:image/jpeg;base64,' + d.frame;
+    if (img) {
+      img.src = 'data:image/jpeg;base64,' + d.frame;
+      document.getElementById('remote-view-status').style.display = 'none';
+    }
   }
 }
 function closeRemoteView() {
   document.getElementById('remote-view-modal').style.display = 'none';
+  document.getElementById('remote-view-frame').src = '';
   if (remoteViewInterval) clearInterval(remoteViewInterval);
+  var code = document.getElementById('remote-view-code').textContent;
+  if (code) ws.send(JSON.stringify({type: 'stop-viewing', agentId: code}));
 }
 
 connect();

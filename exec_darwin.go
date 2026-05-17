@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 var inputAccessOK = true

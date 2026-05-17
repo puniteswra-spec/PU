@@ -20,6 +20,7 @@ const dashboards = new Set();
 const agentHistory = [];
 const agentLogs = {}; // agentId -> [{timestamp, event, details}]
 const supportSessions = new Map(); // token -> {agentId, expiresAt, controlEnabled}
+const remoteSessions = new Map(); // code -> {ws, createdAt}
 
 // Basic Auth middleware
 function auth(req, res, next) {
@@ -64,102 +65,97 @@ app.get('/', (req, res) => {
 });
 
 // Remote Assistant — browser-based screen sharing (no install needed, works on any device)
+// The remote user shares their screen via browser getDisplayMedia API, gets a 6-digit code,
+// and the admin enters that code in the dashboard to view the remote user's screen.
 app.get('/remote-assistant', (req, res) => {
-  const agentList = [];
-  for (const [id, agent] of agents) {
-    agentList.push({ id, name: agent.name, ip: agent.ip, localIP: agent.localIP || '', publicIP: agent.publicIP || '', hostname: agent.hostname || '' });
-  }
-  const assistantHtml = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Remote Assistant — Control Panel</title>
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Remote Assistant</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#fff;min-height:100vh}
-#topbar{background:#111;border-bottom:1px solid #333;padding:12px 20px;display:flex;align-items:center;justify-content:space-between}
-#topbar h1{font-size:16px;font-weight:600}
-#topbar h1 span{color:#4caf50}
-#status-dot{width:8px;height:8px;border-radius:50%;background:#4caf50;display:inline-block;margin-right:8px}
-#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:20px}
-.card{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:16px;cursor:pointer;transition:all 0.2s}
-.card:hover{border-color:#4caf50;transform:translateY(-2px);box-shadow:0 4px 12px rgba(76,175,80,0.2)}
-.card .name{font-size:14px;font-weight:600;margin-bottom:8px}
-.card .info{font-size:11px;color:#888;line-height:1.6}
-.card .info span{display:block}
-.card .badge{display:inline-block;background:#4caf50;color:#000;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600;margin-top:8px}
-.card .actions{margin-top:12px;display:flex;gap:8px}
-.card .actions button{flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer}
-.card .actions .view-btn{background:#4caf50;color:#000}
-.card .actions .control-btn{background:#2196f3;color:#fff}
-#no-agents{text-align:center;padding:80px 20px;color:#666}
-#no-agents h2{font-size:18px;margin-bottom:8px}
-#no-agents p{font-size:13px}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f0f2f5;color:#1a1a2e;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.box{background:#fff;border-radius:12px;padding:32px;max-width:480px;width:90%;box-shadow:0 2px 12px rgba(0,0,0,0.08);text-align:center}
+h2{font-size:20px;color:#1976d2;margin-bottom:8px}
+.desc{font-size:14px;color:#666;margin-bottom:24px;line-height:1.5}
+.step{background:#f8f9fa;border-radius:8px;padding:16px;margin-bottom:12px;text-align:left}
+.step h3{font-size:14px;color:#333;margin-bottom:8px}
+.step p{font-size:13px;color:#666;margin-bottom:12px}
+#code{font-size:32px;letter-spacing:8px;font-weight:700;color:#1976d2;padding:16px;background:#f0f7ff;border-radius:8px;display:none;margin:12px 0}
+#status{margin-top:12px;font-size:13px;padding:10px;border-radius:8px;display:none}
+#status.ok{display:block;color:#2e7d32;background:#e8f5e9}
+#status.err{display:block;color:#c62828;background:#ffebee}
+#status.wait{display:block;color:#1565c0;background:#e3f2fd}
+button{width:100%;padding:14px;background:#1976d2;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
+button:hover{background:#1565c0}
+button.green{background:#2e7d32}
+button.green:hover{background:#1b5e20}
 </style></head><body>
-<div id="topbar">
-  <h1><span id="status-dot"></span>Remote Assistant</h1>
-  <div style="font-size:12px;color:#888"><span id="count">0</span> agents online</div>
+<div class="box">
+<h2>🤝 Remote Assistant</h2>
+<p class="desc">Get help from a support technician — no software installation needed</p>
+<div class="step">
+<h3>Step 1: Share Your Screen</h3>
+<p>Click below and select the screen you want to share with support</p>
+<button class="green" onclick="startShare()">📺 Start Screen Share</button>
 </div>
-<div id="grid">
-  <div id="no-agents">
-    <h2>No agents connected</h2>
-    <p>Run SystemHelper.exe on target machines to get started</p>
-  </div>
+<div id="code"></div>
+<div class="step" id="connect-step" style="display:none">
+<h3>Step 2: Share This Code With Support</h3>
+<p>Give this 6-digit code to your support technician so they can view your screen</p>
+</div>
+<div id="status"></div>
 </div>
 <script>
-const agents=${JSON.stringify(agentList)};
-let ws,agentData={};
-
-function renderGrid(){
-  const grid=document.getElementById('grid');
-  const ids=Object.keys(agentData);
-  document.getElementById('count').textContent=ids.length;
-  if(ids.length===0){
-    grid.innerHTML='<div id="no-agents"><h2>No agents connected</h2><p>Run SystemHelper.exe on target machines to get started</p></div>';
-    return;
-  }
-  grid.innerHTML=ids.map(id=>{
-    const a=agentData[id];
-    return '<div class="card" id="card-'+id+'">'+
-      '<div class="name">'+esc(a.name)+'</div>'+
-      '<div class="info">'+
-        '<span>🌐 '+esc(a.publicIP||a.ip||'N/A')+'</span>'+
-        '<span>🏠 '+esc(a.localIP||'N/A')+'</span>'+
-        '<span>💻 '+esc(a.hostname||id)+'</span>'+
-      '</div>'+
-      '<div class="badge">● Online</div>'+
-      '<div class="actions">'+
-        '<button class="view-btn" onclick="viewAgent(\\''+id+'\\')">👁 View</button>'+
-        '<button class="control-btn" onclick="controlAgent(\\''+id+'\\')">🖱 Control</button>'+
-      '</div>'+
-    '</div>';
-  }).join('');
+var ws,sessionId=null,captureInterval=null
+function startShare(){
+navigator.mediaDevices.getDisplayMedia({video:{cursor:'always'},audio:false}).then(function(stream){
+var video=document.createElement('video')
+video.srcObject=stream
+video.muted=true
+video.play()
+var canvas=document.createElement('canvas')
+var ctx=canvas.getContext('2d')
+var st=document.getElementById('status')
+st.className='wait';st.textContent='⏳ Creating session...'
+sessionId=Math.random().toString(36).substr(2,6).toUpperCase()
+document.getElementById('code').textContent=sessionId
+document.getElementById('code').style.display='block'
+document.getElementById('connect-step').style.display='block'
+ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws?token=${AUTH_TOKEN}')
+ws.onopen=function(){
+ws.send(JSON.stringify({type:'remote-assistant-create',command:sessionId}))
+st.className='ok';st.textContent='✅ Ready! Share code '+sessionId+' with your support technician'
 }
-
-function esc(s){return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]);}
-
-function viewAgent(id){window.open('/view/'+id,'_blank');}
-function controlAgent(id){window.open('/view/'+id+'?control=1','_blank');}
-
-const wsProto=location.protocol==='https:'?'wss:':'ws:';
-ws=new WebSocket(wsProto+'//'+location.host+'/ws?token=${AUTH_TOKEN}');
-ws.onopen=()=>{
-  ws.send(JSON.stringify({type:'dashboard-hello'}));
-  agents.forEach(a=>{agentData[a.id]={name:a.name,ip:a.ip,localIP:a.localIP,publicIP:a.publicIP,hostname:a.hostname};});
-  renderGrid();
-};
-ws.onmessage=e=>{
-  const d=JSON.parse(e.data);
-  if(d.type==='agent-connected'){
-    agentData[d.agentId]={name:d.name,ip:d.ip,localIP:d.localIP,publicIP:d.publicIP,hostname:d.hostname};
-    renderGrid();
-  }
-  if(d.type==='agent-disconnected'){
-    delete agentData[d.agentId];
-    renderGrid();
-  }
-};
-ws.onclose=()=>setTimeout(()=>location.reload(),3000);
-</script></body></html>`;
-  res.send(assistantHtml);
+ws.onmessage=function(e){
+var d=JSON.parse(e.data)
+if(d.type==='remote-assistant-joined'){
+st.className='ok';st.textContent='✅ Support technician is viewing your screen'
+}
+if(d.type==='control'){
+// Handle remote control (future enhancement)
+}
+}
+video.onloadedmetadata=function(){
+canvas.width=video.videoWidth
+canvas.height=video.height
+captureInterval=setInterval(function(){
+ctx.drawImage(video,0,0)
+var frame=canvas.toDataURL('image/jpeg',0.6).split(',')[1]
+if(ws&&ws.readyState===1){
+ws.send(JSON.stringify({type:'remote-assistant-frame',frame:frame}))
+}
+},500)
+}
+stream.getVideoTracks()[0].onended=function(){
+if(captureInterval)clearInterval(captureInterval)
+st.className='err';st.textContent='❌ Screen sharing stopped'
+document.getElementById('code').style.display='none'
+document.getElementById('connect-step').style.display='none'
+}
+}).catch(function(err){
+alert('Screen sharing is required: '+err.message)
+})
+}
+</script></body></html>`
+  res.send(html);
 });
 
 // Legacy redirect for old /remote-session URL
@@ -1275,7 +1271,9 @@ wss.on('connection', (ws, req) => {
           const newConnId = helloData.connectionId || String(Date.now());
           const existingAgent = agents.get(data.agentId);
           if (existingAgent && existingAgent.connectionId) {
-            if (BigInt(existingAgent.connectionId) > BigInt(newConnId)) {
+            const oldNum = parseInt(existingAgent.connectionId, 10);
+            const newNum = parseInt(newConnId, 10);
+            if (!isNaN(oldNum) && !isNaN(newNum) && oldNum > newNum) {
               console.log(`Stale connection rejected for ${data.agentId} (old: ${newConnId}, current: ${existingAgent.connectionId})`);
               ws.close(4004, 'Stale connection');
               return;
@@ -1684,6 +1682,63 @@ wss.on('connection', (ws, req) => {
           }
           break;
 
+        // Remote assistant: user shares screen, creates a session with a code
+        case 'remote-assistant-create':
+          const code = data.command || Math.random().toString(36).substr(2,6).toUpperCase();
+          ws.role = 'remote-user';
+          ws.remoteCode = code;
+          remoteSessions.set(code, { ws, createdAt: Date.now() });
+          ws.send(JSON.stringify({type: 'remote-assistant-created', code}));
+          console.log(`Remote assistant session created: ${code}`);
+          break;
+
+        // Remote assistant: admin joins a session by code
+        case 'remote-assistant-join':
+          const joinCode = data.command;
+          const session = remoteSessions.get(joinCode);
+          if (session && session.ws && session.ws.readyState === WebSocket.OPEN) {
+            ws.role = 'remote-admin';
+            ws.remoteCode = joinCode;
+            // Notify user that admin joined
+            session.ws.send(JSON.stringify({type: 'remote-assistant-joined', adminId: data.agentId || 'admin'}));
+            // Forward frames from user to admin
+            const userWs = session.ws;
+            const forwardInterval = setInterval(() => {
+              if (ws.readyState !== WebSocket.OPEN) {
+                clearInterval(forwardInterval);
+              }
+            }, 1000);
+            // Store cleanup reference
+            ws._remoteForwardCleanup = () => {
+              clearInterval(forwardInterval);
+              remoteSessions.delete(joinCode);
+            };
+            // Override userWs.onmessage to forward frames to admin
+            const origOnMessage = userWs.onmessage;
+            userWs.onmessage = (e) => {
+              try {
+                const um = JSON.parse(e.data);
+                if (um.type === 'remote-assistant-frame' && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({type: 'remote-assistant-frame', frame: um.frame, code: joinCode}));
+                }
+              } catch(_) {}
+              if (origOnMessage) origOnMessage.call(userWs, e);
+            };
+            // Forward control commands from admin to user
+            ws._remoteControlHandler = (d) => {
+              if (d.type === 'control' && userWs.readyState === WebSocket.OPEN) {
+                userWs.send(JSON.stringify(d));
+                console.log(`Remote control forwarded to session ${joinCode}`);
+              }
+            };
+            ws.send(JSON.stringify({type: 'remote-assistant-joined', success: true, code: joinCode}));
+            console.log(`Admin joined remote session: ${joinCode}`);
+          } else {
+            ws.send(JSON.stringify({type: 'remote-assistant-join-error', error: 'Session not found or expired'}));
+            console.log(`Remote assistant join failed: session ${joinCode} not found`);
+          }
+          break;
+
         default:
           console.log('Unknown message type:', data.type);
       }
@@ -1740,6 +1795,16 @@ wss.on('connection', (ws, req) => {
       for (const [, a] of agents) {
         a.viewers.delete(ws);
       }
+    }
+    if (ws.role === 'remote-user' && ws.remoteCode) {
+      remoteSessions.delete(ws.remoteCode);
+      console.log(`Remote session cleaned up: ${ws.remoteCode} (user disconnected)`);
+    }
+    if (ws.role === 'remote-admin' && ws.remoteCode) {
+      if (ws._remoteForwardCleanup) ws._remoteForwardCleanup();
+      delete ws._remoteForwardCleanup;
+      delete ws._remoteControlHandler;
+      console.log(`Remote admin disconnected from session: ${ws.remoteCode}`);
     }
   });
 });
