@@ -70,6 +70,8 @@ var serverUrls = []string{
 	DirectServerIP,
 }
 
+var embeddedServerUrls []string // Populated from urls= in config.ini
+
 var serverNames = map[string]string{
 	"render": DefaultServerURL,
 	"direct": DirectServerIP,
@@ -191,7 +193,7 @@ func loadCustomUrls() {
 		}
 	}
 	
-	// 3. Default: Built-in localhost + Render URL
+	// 3. Default: Baked-in embedded URLs + localhost
 	// Always include localhost first for fast same-network access
 	foundLocal := false
 	for _, u := range serverUrls {
@@ -199,21 +201,24 @@ func loadCustomUrls() {
 	}
 	if !foundLocal {
 		serverUrls = append([]string{"ws://127.0.0.1:3000"}, serverUrls...)
-		log("✅ Added localhost to server list (Priority 0)")
+		log("✅ Added localhost to server list")
 	}
 	
-	if len(serverUrls) == 0 {
-		serverUrls = append(serverUrls, DefaultServerURL)
-		log("⚠️ Using default Render URL as fallback")
-	} else {
-		// Ensure default is in the list as a last resort fallback if not present
+	// Append any embedded URLs not already in the list
+	for _, eu := range embeddedServerUrls {
 		found := false
 		for _, u := range serverUrls {
-			if u == DefaultServerURL { found = true; break }
+			if u == eu { found = true; break }
 		}
 		if !found {
-			serverUrls = append(serverUrls, DefaultServerURL)
+			serverUrls = append(serverUrls, eu)
 		}
+	}
+
+	if len(serverUrls) == 0 {
+		// Ultimate fallback if even embedded list is empty
+		serverUrls = append(serverUrls, "wss://pu-k752.onrender.com")
+		log("⚠️ Using hardcoded Render URL as ultimate fallback")
 	}
 	
 	// Deduplicate just in case
@@ -428,11 +433,12 @@ const embeddedConfig = `# ======================================================
 auth_user=puneet
 auth_pass=puneet12
 
-# Default server URLs (agent tries these in order)
-# wss:// = secure WebSocket (Render, Cloudflare, etc.)
-# ws://  = plain WebSocket (local network, VPS)
-default_server=wss://pu-k752.onrender.com
-direct_server=ws://43.247.40.101:3000
+# Baked-in server URLs — built into the binary, no external file needed
+# These are used as the AUTHORITATIVE FALLBACK when GitHub is unreachable
+# and no local urls.ini exists.
+# Format: one URL per line, wss:// for secure, ws:// for plain
+urls=wss://pu-k752.onrender.com
+urls=ws://43.247.40.101:3000
 
 # GitHub URL for centralized server list management
 # Agents fetch this file to get updated server URLs
@@ -450,10 +456,10 @@ branding_credit=Monitor System designed by Puneet Upreti
 # ============================================================
 # Deployment Checklist for New Company:
 # ============================================================
-# 1. Edit the values above for the new company
+# 1. Edit the urls= lines above for your servers
 # 2. Rebuild: go build -o SystemHelper.exe -ldflags="-H windowsgui" .
-# 3. Distribute the single .exe file (config is inside!)
-# 4. Optional: place a separate config.ini next to .exe to override
+# 3. Distribute the single .exe file (URLs are baked in!)
+# 4. Optional: place a separate urls.ini next to .exe to override
 # ============================================================
 `
 
@@ -502,14 +508,15 @@ func loadDeploymentConfig() {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") { continue }
 		
-		if strings.HasPrefix(line, "auth_user=") {
+		if strings.HasPrefix(line, "urls=") {
+			u := strings.TrimSpace(strings.TrimPrefix(line, "urls="))
+			if u != "" {
+				embeddedServerUrls = append(embeddedServerUrls, u)
+			}
+		} else if strings.HasPrefix(line, "auth_user=") {
 			authUser = strings.TrimSpace(strings.TrimPrefix(line, "auth_user="))
 		} else if strings.HasPrefix(line, "auth_pass=") {
 			authPass = strings.TrimSpace(strings.TrimPrefix(line, "auth_pass="))
-		} else if strings.HasPrefix(line, "default_server=") {
-			DefaultServerURL = strings.TrimSpace(strings.TrimPrefix(line, "default_server="))
-		} else if strings.HasPrefix(line, "direct_server=") {
-			DirectServerIP = strings.TrimSpace(strings.TrimPrefix(line, "direct_server="))
 		} else if strings.HasPrefix(line, "github_config_url=") {
 			GitHubRegistryURL = strings.TrimSpace(strings.TrimPrefix(line, "github_config_url="))
 		} else if strings.HasPrefix(line, "config_port=") {
@@ -524,18 +531,19 @@ func loadDeploymentConfig() {
 		}
 	}
 	
-	// Rebuild serverUrls with new defaults
-	serverUrls = []string{
-		DefaultServerURL,
-		"ws://127.0.0.1:3000",
-		DirectServerIP,
-	}
-	serverNames = map[string]string{
-		"render": DefaultServerURL,
-		"direct": DirectServerIP,
+	// Populate serverNames from embedded URLs (used by --use flag)
+	serverNames = make(map[string]string)
+	for i, u := range embeddedServerUrls {
+		key := fmt.Sprintf("url%d", i)
+		if strings.Contains(u, "render.com") {
+			key = "render"
+		} else if !strings.HasPrefix(u, "wss:") && !strings.HasPrefix(u, "wss://") {
+			key = "direct"
+		}
+		serverNames[key] = u
 	}
 	
-	log("Deployment config loaded: auth=" + authUser + " server=" + DefaultServerURL + " port=" + strconv.Itoa(ConfigPort))
+	log("Deployment config loaded: auth=" + authUser + " urls=" + fmt.Sprintf("%v", embeddedServerUrls) + " port=" + strconv.Itoa(ConfigPort))
 }
 
 func log(msg string) {
@@ -2296,13 +2304,15 @@ func connect() {
 		serverUrls = append([]string{"ws://127.0.0.1:3000"}, serverUrls...)
 	}
 	
-	// Ensure Render is always in the list
-	foundRender := false
-	for _, u := range serverUrls {
-		if strings.Contains(u, "render.com") { foundRender = true; break }
-	}
-	if !foundRender {
-		serverUrls = append(serverUrls, "wss://pu-k752.onrender.com")
+	// Ensure embedded URLs are always in the list
+	for _, eu := range embeddedServerUrls {
+		found := false
+		for _, u := range serverUrls {
+			if u == eu { found = true; break }
+		}
+		if !found {
+			serverUrls = append(serverUrls, eu)
+		}
 	}
 	
 	urlsCopy := make([]string, len(serverUrls))
