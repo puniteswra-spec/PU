@@ -1,1 +1,1 @@
-["ws://localhost:8181/agent/ws", "quic://localhost:8182"]
+["wss://pu-14sp.onrender.com/agent/ws", "ws://localhost:8181/agent/ws", "quic://localhost:8182"]
