@@ -68,7 +68,7 @@ func (ds *DashboardServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/restart", ds.apiRestartHandler)
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", ds.cfg.ConfigPort),
+		Addr:    fmt.Sprintf("0.0.0.0:%d", ds.cfg.ConfigPort),
 		Handler: mux,
 	}
 	go func() {

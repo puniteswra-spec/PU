@@ -752,7 +752,7 @@ func (sm *ServerMode) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/agents/full", sm.apiAgentListFullHandler)
 	mux.HandleFunc("/api/push-update", sm.apiPushUpdateHandler)
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", sm.cfg.ConfigPort),
+		Addr:    fmt.Sprintf("0.0.0.0:%d", sm.cfg.ConfigPort),
 		Handler: mux,
 	}
 
