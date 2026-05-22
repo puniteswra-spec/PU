@@ -29,11 +29,20 @@ const (
 
 func setupInputEvents() *InputEvent {
 	return &InputEvent{
-		MouseMove:  winMouseMove,
-		MouseClick: winMouseClick,
-		KeyPress:   winKeyPress,
-		TypeText:   winTypeText,
+		MouseMove:        winMouseMove,
+		MouseClick:       winMouseClick,
+		MouseMiddleClick: winMouseMiddleClick,
+		KeyPress:         winKeyPress,
+		TypeText:         winTypeText,
 	}
+}
+
+func winMouseMiddleClick(x, y int) {
+	if x > 0 || y > 0 {
+		winMouseMove(x, y)
+	}
+	procMouseEvent.Call(mouseeventfMiddledown, 0, 0, 0, 0)
+	procMouseEvent.Call(mouseeventfMiddleup, 0, 0, 0, 0)
 }
 
 func winMouseMove(x, y int) {

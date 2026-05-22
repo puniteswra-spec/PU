@@ -1,5 +1,3 @@
-//go:build windows
-
 package main
 
 import (
@@ -10,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -297,7 +294,7 @@ func (ds *DashboardServer) apiRestartHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	cmd := exec.Command(exe)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	hideCmdWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
