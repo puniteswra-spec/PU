@@ -2477,6 +2477,7 @@ func main() {
 		fmt.Println("\nEnv:")
 		fmt.Println("  PUN_SERVER_URL, PUN_SERVER_PORT, PUN_AUTH_USER, PUN_AUTH_PASS")
 		fmt.Println("  PUN_MONTHLY_LIMIT_MB, PUN_TUNNEL, PUN_SERVER, PUN_SSH_DEST")
+		fmt.Println("  PORT                 (auto: Render/Heroku PORT env)")
 		os.Exit(0)
 	}
 
@@ -2543,6 +2544,10 @@ func main() {
 				}
 			}
 		}
+	}
+	if os.Getenv("RENDER") == "true" {
+		*serverMode = true
+		llog("info", "Render environment detected — enabling server mode")
 	}
 	cfg.IsServerMode = *serverMode
 	cfg.IsLanMode = *lanMode

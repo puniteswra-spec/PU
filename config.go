@@ -41,6 +41,11 @@ func LoadConfig() *Config {
 			cfg.ConfigPort = p
 		}
 	}
+	if v := os.Getenv("PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			cfg.ConfigPort = p
+		}
+	}
 	if v := os.Getenv("PUN_QUIC_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil && p > 0 {
 			cfg.QuicPort = p

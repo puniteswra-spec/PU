@@ -89,8 +89,10 @@ func killOtherPunMonitorProcesses(selfPID int) {
 		selfPID = os.Getpid()
 	}
 	for _, img := range punMonitorImageNames {
-		cmd := exec.Command("pkill", "-9", "-f", img)
-		_ = cmd.Run()
+		// Use pgrep + grep to exclude self PID, then kill
+		kill := exec.Command("sh", "-c",
+			fmt.Sprintf("pgrep -f '%s' | grep -v '^%d$' | xargs -r kill -9 2>/dev/null", img, selfPID))
+		_ = kill.Run()
 	}
 }
 
