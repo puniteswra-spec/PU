@@ -12,3 +12,16 @@ SystemHelper_v*.exe
 server.js
 config.json
 SystemHelper-LAN.exe
+
+# Binary artifacts
+*.exe
+
+# Backup directories
+backup_*/
+
+# Archives
+*.zip
+
+# PID/log files in root
+*.pid
+*.log

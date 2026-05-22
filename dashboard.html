@@ -2,894 +2,1082 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Monitor system designed by Puneet Upreti</title>
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Remote Monitor — designed by Puneet Upreti</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Segoe UI', system-ui, sans-serif; background: #fff; color: #000; min-height: 100vh; }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f5f0e8;
+  --surface:#ffffff;
+  --surface2:#fafaf5;
+  --surface3:#e8e4dc;
+  --border:#d8d4cc;
+  --primary:#2e7d32;
+  --primary-light:#4caf50;
+  --primary-dim:rgba(46,125,50,.08);
+  --primary-glow:rgba(46,125,50,.2);
+  --accent:#1b5e20;
+  --warn:#e65100;
+  --danger:#c62828;
+  --text:#1a1a1a;
+  --text2:#5a5a5a;
+  --text3:#888;
+  --radius:8px;
+  --shadow:0 2px 12px rgba(0,0,0,.08);
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;overflow:hidden}
+::selection{background:var(--primary);color:#fff}
 
-#topbar {
-  background: #1b5e20; border-bottom: 2px solid #4caf50;
-  padding: 8px 16px; display: flex; align-items: center; justify-content: space-between;
-  position: sticky; top: 0; z-index: 100;
+/* ── Top Bar ── */
+#topbar{
+  height:46px;background:linear-gradient(135deg,var(--primary),var(--primary-light));
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 14px;position:relative;z-index:100;
+  box-shadow:0 2px 8px rgba(46,125,50,.25);
 }
-#topbar h1 { font-size: 16px; color: #fff; font-weight: 700; }
-#topbar h1 span { color: #c8e6c9 !important; }
-#topbar-right { display: flex; gap: 8px; align-items: center; font-size: 12px; }
-#topbar-right button {
-  background: #2e7d32; color: #fff; border: 1px solid #4caf50;
-  padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600;
-}
-#topbar-right button:hover { background: #388e3c; }
-#credit-badge {
-  background: #2e7d32; color: #fff; padding: 3px 8px; border-radius: 3px;
-  font-size: 10px; font-weight: 600; white-space: nowrap;
-}
-#status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; display: inline-block; }
-#status-dot.online { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
+#topbar .brand{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#fff}
+#topbar .brand small{font-weight:400;opacity:.7}
+#topbar .right{display:flex;align-items:center;gap:6px}
+.badge{padding:2px 10px;border-radius:10px;font-size:10px;font-weight:600;background:rgba(255,255,255,.15);color:#fff;white-space:nowrap}
+.badge.active{background:rgba(255,255,255,.25)}
+#status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;transition:all .3s;background:#ef5350}
+#status-dot.online{background:#69f0c0;box-shadow:0 0 10px rgba(105,240,192,.5)}
+#gear-btn{background:rgba(255,255,255,.12);border:none;color:#fff;width:28px;height:28px;border-radius:5px;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;transition:background .15s}
+#gear-btn:hover{background:rgba(255,255,255,.25)}
 
-#cctv-grid {
-  display: grid; gap: 3px; padding: 3px;
-  min-height: calc(100vh - 42px);
+/* ── Dropdown Panels ── */
+.dropdown-panel{
+  position:absolute;top:46px;right:60px;
+  background:var(--surface);border:1px solid var(--border);border-radius:0 0 var(--radius) var(--radius);
+  box-shadow:0 8px 24px rgba(0,0,0,.12);padding:12px 16px;
+  display:none;z-index:99;min-width:300px;max-height:80vh;overflow-y:auto;
 }
-#cctv-grid.single-mode {
-  gap: 0; padding: 0;
-}
-.cctv-cell {
-  background: #fff; border: 1px solid #e0e0e0; border-radius: 3px;
-  overflow: hidden; cursor: pointer; position: relative;
-  transition: border-color 0.15s;
-}
-.cctv-cell.single {
-  border: none; border-radius: 0;
-}
-.cctv-cell:hover { border-color: #4caf50; box-shadow: 0 1px 6px rgba(0,0,0,0.1); }
-.cctv-cell .cell-header {
-  position: absolute; top: 0; left: 0; right: 0; z-index: 2;
-  background: linear-gradient(180deg, rgba(255,255,255,0.88) 0%, transparent 100%);
-  padding: 2px 6px; display: flex; justify-content: space-between; align-items: center;
-}
-.cctv-cell .cell-name { font-weight: 700; color: #1b5e20; }
-.cctv-cell .cell-ips { display: flex; flex-direction: column; gap: 2px; font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; font-weight: 600; }
-.cctv-cell .ip-line { white-space: nowrap; padding: 2px 6px; border-radius: 3px; background: rgba(0,0,0,0.75); color: #fff; display: inline-block; }
-.cctv-cell .ip-line .ip-label { color: #4fc3f7; font-weight: 400; }
-.cctv-cell .ip-line .ip-value { color: #fff; font-weight: 700; }
-.cctv-cell .cell-live {
-  color: #d32f2f; font-weight: 700; display: flex; align-items: center; gap: 2px;
-}
-.cctv-cell .cell-live::before {
-  content: ''; width: 4px; height: 4px; border-radius: 50%; background: #d32f2f;
-  animation: blink 1s infinite;
-}
-@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-.cctv-cell img {
-  width: 100%; display: block; aspect-ratio: 16/9; object-fit: contain;
-  background: #f5f5f5;
-}
-.cctv-cell.single img {
-  aspect-ratio: unset; width: 100vw; height: calc(100vh - 42px);
-  object-fit: contain; background: #000;
-}
-.cctv-cell .cell-footer {
-  position: absolute; bottom: 0; left: 0; right: 0; z-index: 2;
-  background: linear-gradient(0deg, rgba(255,255,255,0.88) 0%, transparent 100%);
-  padding: 2px 6px; font-size: 9px; color: #666;
-  display: flex; justify-content: space-between; align-items: center;
-}
-.cctv-cell .cell-footer .open-link { color: #2e7d32; font-weight: 600; }
-.cctv-cell .cell-footer .share-btn { color: #1976d2; cursor: pointer; font-weight: 600; }
-.cctv-cell .cell-footer .view-btn { color: #2e7d32; cursor: pointer; font-weight: 600; }
+.dropdown-panel.open{display:block}
+.dp-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.dp-row:last-child{margin-bottom:0}
+.dp-label{font-size:10px;font-weight:600;color:var(--text2);min-width:70px}
+.dp-val{font-size:10px;font-weight:600;color:var(--primary);min-width:40px;text-align:right}
+input[type="range"]{flex:1;-webkit-appearance:none;appearance:none;height:3px;border-radius:2px;background:var(--border);outline:none}
+input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--primary);cursor:pointer}
+select.dp-select{padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:10px}
 
-#no-agents-msg {
-  display: none; grid-column: 1 / -1; text-align: center;
-  padding: 80px 20px; color: #888;
-}
-#no-agents-msg span { font-size: 48px; display: block; margin-bottom: 12px; }
+/* ── Metrics Grid ── */
+.mp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.mp-card{background:var(--surface2);border-radius:5px;padding:8px;text-align:center;border:1px solid var(--border)}
+.mp-card .mp-val{font-size:16px;font-weight:700;color:var(--primary)}
+.mp-card .mp-lbl{font-size:8px;color:var(--text3);text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
 
-#login-overlay {
-  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.3);
-  z-index: 500; align-items: center; justify-content: center;
-}
-#login-overlay.show { display: flex; }
-#login-box {
-  background: #fff; border: 2px solid #4caf50; border-radius: 8px;
-  padding: 24px; width: 300px; position: relative;
-}
-#login-box h3 { color: #2e7d32; margin-bottom: 12px; font-size: 15px; }
-#login-box input {
-  width: 100%; padding: 8px; background: #fff; border: 2px solid #ccc;
-  color: #000; border-radius: 5px; font-size: 13px; margin-bottom: 8px;
-}
-#login-box input:focus { border-color: #4caf50; outline: none; }
-#login-box button {
-  width: 100%; padding: 8px; background: #4caf50; color: #fff;
-  border: none; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600;
-}
-#login-box .close-btn {
-  background: none; border: none; color: #999; cursor: pointer;
-  font-size: 20px; position: absolute; top: 6px; right: 10px;
-}
+/* ── System Info ── */
+.sys-info{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
+.sys-card{background:var(--surface2);border-radius:5px;padding:6px 8px;border:1px solid var(--border)}
+.sys-card .sys-lbl{font-size:8px;color:var(--text3);text-transform:uppercase;letter-spacing:.3px}
+.sys-card .sys-val{font-size:10px;font-weight:600;color:var(--text);margin-top:1px;word-break:break-all}
 
-#wizard-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 600; align-items: center; justify-content: center; }
-#wizard-overlay.show { display: flex; }
-#wizard-box { background: #fff; border: 2px solid #4caf50; border-radius: 10px; padding: 24px; max-width: 500px; width: 90%; }
-#wizard-box h2 { color: #2e7d32; font-size: 16px; margin-bottom: 14px; }
-.wizard-opt { background: #fff; border: 2px solid #e0e0e0; border-radius: 6px; padding: 12px; margin-bottom: 8px; cursor: pointer; }
-.wizard-opt:hover, .wizard-opt.sel { border-color: #4caf50; background: #e8f5e9; }
-.wizard-opt h4 { font-size: 13px; margin-bottom: 3px; }
-.wizard-opt p { font-size: 11px; color: #555; }
-#wizard-box button { background: #4caf50; color: #fff; border: none; padding: 8px 14px; border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 600; margin-top: 10px; }
-#wizard-box button.secondary { background: #ccc; color: #333; }
-#wizard-status { margin-top: 10px; font-size: 12px; display: none; }
-#wizard-status.ok { display: block; color: #2e7d32; }
-#wizard-status.err { display: block; color: #d32f2f; }
+/* ── Report Events ── */
+.report-events{max-height:200px;overflow-y:auto;font-size:9px;color:var(--text2);padding:4px 0}
+.report-events::-webkit-scrollbar{width:3px}
+.report-events::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+/* ── Layout ── */
+#app{display:flex;height:calc(100vh - 46px);width:100vw}
+#main{flex:1;display:flex;flex-direction:column;position:relative;background:var(--bg);overflow:hidden}
+
+/* ── Controls ── */
+.ctrl-group{margin-bottom:8px}
+.ctrl-group:last-child{margin-bottom:0}
+.ctrl-label{display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px;color:var(--text)}
+.ctrl-label span:last-child{color:var(--primary);font-weight:600}
+select{width:100%;padding:5px 8px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;cursor:pointer}
+input[type="text"],input[type="password"]{width:100%;padding:5px 8px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px}
+input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:var(--primary)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:5px 12px;border-radius:5px;border:none;font-size:10px;font-weight:600;cursor:pointer;transition:all .12s}
+.btn-primary{background:var(--primary);color:#fff;box-shadow:0 2px 8px var(--primary-glow)}
+.btn-primary:hover{background:var(--accent)}
+.btn-sm{padding:3px 8px;font-size:9px}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-outline:hover{background:var(--surface2);border-color:var(--primary)}
+.btn-danger{background:var(--danger);color:#fff}
+.btn-row{display:flex;gap:4px;margin-top:5px;flex-wrap:wrap}
+
+/* ── Bandwidth Bar ── */
+.bw-bar-wrap{height:4px;border-radius:2px;background:var(--border);overflow:hidden;margin-top:2px}
+.bw-bar-fill{height:100%;width:0%;border-radius:2px;background:linear-gradient(90deg,#4caf50,#ff9800,#ef5350);transition:width .5s}
+
+/* ── Screen View (single / focus mode) ── */
+#screen-container{flex:1;display:none;align-items:center;justify-content:center;padding:14px;position:relative;overflow:hidden;flex-direction:column}
+#screen-canvas{max-width:100%;max-height:100%;border-radius:var(--radius);box-shadow:0 4px 20px rgba(0,0,0,.12);cursor:crosshair;background:var(--surface2);object-fit:contain;display:none}
+#screen-placeholder{display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--text3);font-size:13px;z-index:1}
+#screen-placeholder .icon{font-size:36px;opacity:.25;color:var(--primary)}
+#screen-placeholder .sub{font-size:10px;color:var(--text3);opacity:.5}
+#control-bar{
+  display:flex;align-items:center;gap:8px;padding:6px 12px;margin-bottom:8px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  font-size:10px;color:var(--text2);flex-shrink:0;width:100%;max-width:100%
+}
+#control-bar .ctrl-active{color:var(--primary);font-weight:700}
+#control-bar .ctrl-hint{color:var(--text3);margin-left:auto}
+
+/* ── Multi-agent grid (default) ── */
+#cctv-grid{
+  display:grid;gap:14px;padding:16px;flex:1;min-height:0;overflow:auto;
+  grid-template-columns:repeat(auto-fill,minmax(640px,1fr));align-content:start
+}
+.cctv-cell{
+  background:var(--surface);border:2px solid var(--border);border-radius:var(--radius);
+  overflow:hidden;cursor:crosshair;position:relative;min-height:380px;
+  display:flex;flex-direction:column;box-shadow:var(--shadow);transition:border-color .15s,box-shadow .15s
+}
+.cctv-cell:hover{border-color:var(--primary-light)}
+.cctv-cell.controlling{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-glow)}
+.cctv-cell .cell-header{
+  flex-shrink:0;background:var(--surface2);border-bottom:1px solid var(--border);
+  padding:5px 8px;display:flex;justify-content:space-between;align-items:center;
+  font-size:10px;color:var(--text2);pointer-events:auto
+}
+.cctv-cell .cell-name{font-weight:600;color:var(--text);max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cctv-cell .cell-badge{font-size:9px;padding:2px 6px;border-radius:8px;background:var(--primary-dim);color:var(--primary);font-weight:600}
+.cctv-cell .cell-badge.live{background:rgba(76,175,80,.15);color:var(--primary)}
+.cctv-cell .cell-badge.control{background:var(--primary);color:#fff}
+.cctv-cell .cell-body{flex:1;position:relative;min-height:140px;background:#1a1a1a;display:flex;align-items:center;justify-content:center}
+.cctv-cell .cell-canvas{width:100%;height:100%;display:block;object-fit:contain}
+.cctv-cell .cell-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:10px}
+.cctv-cell .cell-info{
+  flex-shrink:0;background:var(--surface2);border-top:1px solid var(--border);
+  padding:4px 8px;display:flex;gap:12px;font-size:9px;color:var(--text2);
+  align-items:center;pointer-events:auto
+}
+.cctv-cell .cell-info .info-item{display:flex;align-items:center;gap:3px}
+.cctv-cell .cell-info .info-icon{opacity:.4;font-size:8px}
+.cctv-cell .cell-info .info-val{font-weight:600;color:var(--text);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cctv-cell.agent-hidden{opacity:0.4}
+.cctv-cell.agent-hidden .cell-body{background:#2a2a2a}
+.cctv-cell .cell-actions{display:flex;align-items:center}
+.cell-time{font-size:8px;color:var(--text3)}
+.view-toggle-btn{background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600}
+.view-toggle-btn.active{background:rgba(255,255,255,.35)}
+#main.single-mode #cctv-grid{display:none}
+#main.single-mode #screen-container{display:flex}
+#main.grid-mode #cctv-grid{display:grid}
+#main.grid-mode #screen-container{display:none}
+
+/* ── Modal ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;display:none;align-items:center;justify-content:center}
+.modal-overlay.active{display:flex}
+.modal{background:var(--surface);border-radius:var(--radius);padding:20px;min-width:360px;max-width:480px;border:1px solid var(--border);box-shadow:0 8px 30px rgba(0,0,0,.15)}
+.modal h3{font-size:13px;margin-bottom:12px;color:var(--primary)}
+.modal .ctrl-group{margin-bottom:10px}
+.modal .ctrl-label{font-size:11px;font-weight:600;color:var(--text2);margin-bottom:3px}
+
+/* ── Animations ── */
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.pulse{animation:pulse 2s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+.float{animation:float 3s ease-in-out infinite}
+
+/* ── Agent Select ── */
+.agent-select{padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.1);color:#fff;font-size:10px;cursor:pointer}
+.agent-select option{background:var(--primary);color:#fff}
+
+/* ── Auth-gated (hidden until admin login) ── */
+.auth-gated{display:none!important}
+.auth-gated.visible{display:inline-flex!important}
+.dropdown-panel.auth-gated.visible{display:block!important}
+#report-panel.auth-gated.visible{display:block!important}
+#admin-toolbar.auth-gated.visible{display:flex!important}
+
+/* ── Responsive ── */
+@media(max-width:768px){.dropdown-panel{min-width:260px;right:10px}}
 </style>
 </head>
 <body>
 
+<!-- Top Bar -->
 <div id="topbar">
-  <h1>Monitor System <span style="color:#666;font-weight:normal;font-size:11px">designed by Puneet Upreti</span> <span id="agent-count" style="color:#666;font-weight:normal;font-size:12px">— 0 online</span></h1>
-  <div id="topbar-right">
-    <div id="remote-assist-dropdown" style="position:relative">
-      <button onclick="toggleRemoteAssistDropdown()" style="font-size:11px;color:#fff;background:#2e7d32;border:1px solid #4caf50;padding:4px 10px;border-radius:4px;cursor:pointer;font-weight:600">🤝 Remote Assist ▾</button>
-      <div id="remote-assist-panel" style="display:none;position:absolute;top:100%;right:0;background:#fff;border:1px solid #ddd;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);padding:4px;min-width:220px;z-index:200">
-        <a href="/remote-assistant" target="_blank" style="display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;color:#333;text-decoration:none;border-radius:4px;cursor:pointer">
-          <span style="font-size:16px">🤝</span>
-          <div><div style="font-weight:600">Remote Assistant</div><div style="font-size:10px;color:#888">Share screen with users</div></div>
-        </a>
-        <div style="height:1px;background:#eee;margin:2px 8px"></div>
-        <button onclick="copyRemoteLink();document.getElementById('remote-assist-panel').style.display='none'" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 12px;font-size:12px;color:#333;background:none;border:none;border-radius:4px;cursor:pointer;text-align:left">
-          <span style="font-size:16px">📋</span>
-          <div><div style="font-weight:600">Copy Link</div><div style="font-size:10px;color:#888">Share with remote user</div></div>
-        </button>
-        <div style="height:1px;background:#eee;margin:2px 8px"></div>
-        <button onclick="showJoinRemoteModal();document.getElementById('remote-assist-panel').style.display='none'" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 12px;font-size:12px;color:#333;background:none;border:none;border-radius:4px;cursor:pointer;text-align:left">
-          <span style="font-size:16px">🔗</span>
-          <div><div style="font-weight:600">Join Session</div><div style="font-size:10px;color:#888">View remote user's screen</div></div>
-        </button>
-      </div>
-    </div>
-    <span id="credit-badge">Created by Puneet Upreti</span>
+  <div class="brand">
+    <span>◈ Remote Monitor</span>
+    <small>v9.0.0</small>
     <span id="status-dot"></span>
-    <span id="conn-status" style="color:#c8e6c9">Connecting...</span>
-    <button id="btn-update" onclick="pushUpdate()" style="display:none">📦 Push Update</button>
-    <div id="remote-dropdown" style="position:relative;display:none">
-      <button onclick="toggleRemoteDropdown()">🖥 Remote Control</button>
-      <div id="remote-panel" style="display:none;position:absolute;top:100%;right:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);padding:8px 12px;min-width:300px;z-index:200">
-        <div style="font-size:11px;font-weight:600;color:#333;margin-bottom:6px">Select Agents to Control</div>
-        <div id="remote-list"></div>
-        <div style="margin-top:8px;padding-top:6px;border-top:1px solid #eee;display:flex;gap:6px">
-          <button onclick="controlSelected()" style="flex:1;font-size:11px;padding:5px;background:#2e7d32;color:#fff;border:none;border-radius:3px;cursor:pointer;font-weight:600">🖥 Take Control</button>
-          <button onclick="openMultiControl()" style="flex:1;font-size:11px;padding:5px;background:#1976d2;color:#fff;border:none;border-radius:3px;cursor:pointer;font-weight:600">🎮 Multi-Control</button>
-        </div>
-        <div style="margin-top:4px;display:flex;gap:6px">
-          <button onclick="selectAllRemote()" style="font-size:10px;padding:2px 6px;background:#eee;border:none;border-radius:3px;cursor:pointer">Select All</button>
-          <button onclick="deselectAllRemote()" style="font-size:10px;padding:2px 6px;background:#eee;border:none;border-radius:3px;cursor:pointer">Deselect All</button>
-        </div>
-      </div>
-    </div>
-    <button id="btn-manage-servers" onclick="openManageServersModal()" style="display:none;background:#1976d2;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer" title="Manage fallback server list">📋 Manage Servers</button>
-    <button id="btn-switch-server" onclick="openSwitchServerModal()" style="display:none;background:#e65100;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer" title="One-click switch to a different server">🔀 Switch Server</button>
-    <div id="hide-dropdown" style="position:relative;display:none">
-      <button onclick="toggleHideDropdown()">👁 Show/Hide</button>
-      <div id="hide-panel" style="display:none;position:absolute;top:100%;right:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);padding:8px 12px;min-width:220px;z-index:200">
-        <div style="font-size:11px;font-weight:600;color:#333;margin-bottom:6px">Hide Agents</div>
-        <div id="hide-list"></div>
-        <div style="margin-top:6px;padding-top:6px;border-top:1px solid #eee;display:flex;gap:6px">
-          <button onclick="hideAllAgents()" style="font-size:10px;padding:2px 6px;background:#eee;border:none;border-radius:3px;cursor:pointer">Hide All</button>
-          <button onclick="showAllAgents()" style="font-size:10px;padding:2px 6px;background:#eee;border:none;border-radius:3px;cursor:pointer">Show All</button>
-        </div>
-      </div>
-    </div>
-    <button id="btn-logs" onclick="downloadLogs()" style="display:none">📊 Export Logs</button>
-    <button id="btn-compile" onclick="compileMonthly()" style="display:none">📅 Compile</button>
-    <button id="btn-push" onclick="pushToGitHub()" style="display:none">🚀 Push to GitHub</button>
-    <button id="btn-login" onclick="showLogin()" style="background:none;border:none;font-size:16px;color:#fff;cursor:pointer;padding:2px 6px" title="Admin Login">🔒</button>
-    <button id="btn-logout" onclick="logout()" style="display:none">🔓 Logout</button>
+    <span class="badge" id="mode-badge">AGENT</span>
+  </div>
+  <div class="right">
+    <button id="btn-report-csv" onclick="downloadReportCSV()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 8px;border-radius:4px;font-size:10px;cursor:pointer" title="Download activity report CSV">📊 Report</button>
+    <button id="btn-compile" onclick="compileMonthly()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 8px;border-radius:4px;font-size:10px;cursor:pointer" title="Compile monthly report">📅 Compile</button>
+    <button id="btn-push" onclick="pushToGitHub()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 8px;border-radius:4px;font-size:10px;cursor:pointer" title="Push report to GitHub">🚀 Push</button>
+    <span style="font-size:10px;color:rgba(255,255,255,.7);white-space:nowrap">Designed by <strong style="color:#fff">Puneet Upreti</strong></span>
+    <span id="connection-info" class="badge">disconnected</span>
+    <span id="bw-used-top" class="badge" style="font-weight:400">0 MB</span>
+    <button id="btn-grid-view" class="view-toggle-btn active" onclick="setViewMode('grid')" title="Grid — all agents">▦ Grid</button>
+    <button id="btn-single-view" class="view-toggle-btn" onclick="setViewMode('single')" title="Focus — one agent full screen">⛶ Focus</button>
+    <button id="agents-toggle" onclick="toggleAgentsPanel()" title="Agents" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;display:flex;align-items:center;gap:4px">🖥 Agents</button>
+    <button id="quality-toggle" onclick="toggleQualityPanel()" title="Capture Quality" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;align-items:center;gap:4px">🎮 Quality</button>
+    <button id="metrics-toggle" onclick="toggleMetricsPanel()" title="Live Metrics" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;align-items:center;gap:4px">📊 Metrics</button>
+    <button id="btn-share" onclick="generateShareLink()" class="auth-gated" title="Share viewer link" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;display:flex;align-items:center;gap:4px">🔗 Share</button>
+    <button id="gear-btn" onclick="toggleGear()" title="Settings">⚙</button>
   </div>
 </div>
 
-<div id="cctv-grid">
-  <div id="no-agents-msg">
-    <span>📺</span>
-    <p>No devices connected yet.<br>Run SystemHelper.exe on target machines.</p>
+<!-- Quality Panel -->
+<div id="quality-panel" class="dropdown-panel">
+  <div class="dp-row">
+    <span class="dp-label">Tier</span>
+    <select id="tier-select" class="dp-select" style="flex:1">
+      <option value="0">Low</option>
+      <option value="1" selected>Medium</option>
+      <option value="2">High</option>
+    </select>
+  </div>
+  <div class="dp-row">
+    <span class="dp-label">Quality</span>
+    <input type="range" id="qual-slider" min="5" max="95" value="30">
+    <span class="dp-val" id="qual-label">30</span>
+  </div>
+  <div class="dp-row">
+    <span class="dp-label">FPS</span>
+    <input type="range" id="fps-slider" min="0.2" max="5" step="0.1" value="1">
+    <span class="dp-val" id="fps-label">1.0</span>
+  </div>
+  <div class="dp-row">
+    <span class="dp-label">Monthly</span>
+    <input type="range" id="bw-slider" min="500" max="50000" step="500" value="5000">
+    <span class="dp-val" id="bw-label">5000</span>
   </div>
 </div>
 
-<div id="login-overlay">
-  <div id="login-box">
-    <button class="close-btn" onclick="hideLogin()">×</button>
+<!-- Metrics Panel -->
+<div id="metrics-panel" class="dropdown-panel">
+  <div class="mp-grid">
+    <div class="mp-card"><div class="mp-val" id="m-fps">0</div><div class="mp-lbl">FPS</div></div>
+    <div class="mp-card"><div class="mp-val" id="m-bw">0</div><div class="mp-lbl">KB/s</div></div>
+    <div class="mp-card"><div class="mp-val" id="m-sent">0.0</div><div class="mp-lbl">MB Sent</div></div>
+    <div class="mp-card"><div class="mp-val" id="m-drop">0</div><div class="mp-lbl">Dropped</div></div>
+    <div class="mp-card"><div class="mp-val" id="m-qual">30</div><div class="mp-lbl">Quality</div></div>
+    <div class="mp-card"><div class="mp-val" id="m-uptime">0s</div><div class="mp-lbl">Uptime</div></div>
+  </div>
+</div>
+
+<!-- Agents Panel -->
+<div id="agents-panel" class="dropdown-panel">
+  <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:6px">Connected Agents</div>
+  <div id="agents-list" style="font-size:10px;color:var(--text2)">
+    <div style="padding:4px 0;color:var(--text3)">No agents connected</div>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-sm btn-outline" onclick="refreshAgents()" style="flex:1">Refresh</button>
+    <button class="btn btn-sm btn-primary" onclick="setViewMode('grid')" style="flex:1">▦ Grid View</button>
+  </div>
+  <p style="font-size:9px;color:var(--text3);margin-top:6px">Click agent name to view. Eye icon toggles hide/show.</p>
+</div>
+
+<!-- App -->
+<div id="app">
+  <div id="main">
+    <div id="cctv-grid">
+      <div id="grid-empty" style="grid-column:1/-1;padding:40px;text-align:center;color:var(--text3);font-size:13px">
+        <div class="icon float" style="font-size:36px;opacity:.25;color:var(--primary);margin-bottom:8px">◈</div>
+        <div>Waiting for agents…</div>
+        <div class="sub" style="font-size:10px;margin-top:4px">Agents appear here in grid view when connected</div>
+      </div>
+    </div>
+    <div id="screen-container">
+      <div id="control-bar">
+        <span>🎮 Remote control:</span>
+        <span id="control-agent-label" class="ctrl-active">—</span>
+        <button id="btn-take-control" class="btn btn-sm btn-primary auth-gated" onclick="enableRemoteControl()" style="margin-left:8px">Take Control</button>
+        <button id="btn-release-control" class="btn btn-sm btn-outline auth-gated" onclick="disableRemoteControl()">Release</button>
+        <span id="control-status" class="ctrl-hint">Login as admin, then Take Control</span>
+      </div>
+      <canvas id="screen-canvas"></canvas>
+      <div id="screen-placeholder">
+        <div class="icon float">◈</div>
+        <div>Waiting for remote screen feed...</div>
+        <div class="sub">Select an agent or return to grid view</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Login Modal -->
+<div class="modal-overlay" id="login-modal">
+  <div class="modal">
     <h3>🔐 Admin Login</h3>
-    <input type="password" id="login-pass" placeholder="Password" autofocus>
-    <button onclick="doLogin()">Unlock</button>
-    <div id="login-error" style="color:#d32f2f;font-size:11px;margin-top:6px;display:none"></div>
-  </div>
-</div>
-
-<div id="manage-servers-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:700;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;padding:24px;max-width:600px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.3)">
-    <h2 style="margin:0 0 16px;color:#1976d2;font-size:18px">📋 Manage Fallback Server List</h2>
-    <p style="font-size:13px;color:#666;margin:0 0 16px">Agents will try these servers in order. If the first fails, they try the next.</p>
-    <textarea id="server-list-textarea" style="width:100%;height:200px;padding:12px;border:1px solid #ddd;border-radius:6px;font-family:monospace;font-size:13px;resize:vertical" placeholder="wss://pu-k752.onrender.com&#10;wss://your-backup-server.com&#10;http://192.168.0.164:3000"></textarea>
-    <div style="font-size:11px;color:#888;margin-top:8px">One URL per line. Must start with ws:// or wss://</div>
-    <div id="manage-servers-status" style="margin-top:12px;font-size:13px;display:none;padding:8px 12px;border-radius:6px"></div>
-    <div style="display:flex;gap:10px;margin-top:16px">
-      <button onclick="saveServerList()" style="flex:1;padding:10px;background:#1976d2;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">💾 Save & Push to Agents</button>
-      <button onclick="closeManageServersModal()" style="padding:10px 20px;background:#eee;color:#333;border:none;border-radius:6px;font-size:14px;cursor:pointer">Cancel</button>
+    <p style="font-size:11px;color:var(--text2);margin-bottom:10px">Enter credentials to access settings and admin features.</p>
+    <div class="ctrl-group">
+      <div class="ctrl-label">Username</div>
+      <input type="text" id="login-user" placeholder="admin" onkeydown="if(event.key==='Enter')loginToSettings()">
+    </div>
+    <div class="ctrl-group">
+      <div class="ctrl-label">Password</div>
+      <input type="password" id="login-pass" placeholder="••••••" onkeydown="if(event.key==='Enter')loginToSettings()">
+    </div>
+    <div id="login-error" style="color:var(--danger);font-size:10px;margin-bottom:6px;display:none">Invalid credentials</div>
+    <div class="btn-row">
+      <button class="btn btn-primary btn-sm" onclick="loginToSettings()">Login</button>
+      <button class="btn btn-outline btn-sm" onclick="toggleModal('login-modal')">Cancel</button>
     </div>
   </div>
 </div>
 
-<div id="switch-server-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:700;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;padding:24px;max-width:480px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.3)">
-    <h2 style="margin:0 0 16px;color:#e65100;font-size:18px">🔀 Switch Server</h2>
-    <p style="font-size:13px;color:#666;margin:0 0 16px">Enter a new server URL. All connected agents will immediately switch to this server.</p>
-    <input id="switch-server-input" type="text" placeholder="wss://your-new-server.com" style="width:100%;padding:12px;border:2px solid #ddd;border-radius:8px;font-family:monospace;font-size:14px" autofocus>
-    <div id="switch-server-status" style="margin-top:12px;font-size:13px;display:none;padding:8px 12px;border-radius:6px"></div>
-    <div style="display:flex;gap:10px;margin-top:16px">
-      <button onclick="doSwitchServer()" style="flex:1;padding:10px;background:#e65100;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔀 Switch Now</button>
-      <button onclick="closeSwitchServerModal()" style="padding:10px 20px;background:#eee;color:#333;border:none;border-radius:6px;font-size:14px;cursor:pointer">Cancel</button>
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <h3>⚙ Settings</h3>
+    <div class="ctrl-group">
+      <div class="ctrl-label">Auth User</div>
+      <input type="text" id="auth-user" value="puneet">
+    </div>
+    <div class="ctrl-group">
+      <div class="ctrl-label">Auth Pass</div>
+      <input type="password" id="auth-pass" value="puneet12">
+    </div>
+    <div class="ctrl-group">
+      <div class="ctrl-label">GitHub Repo</div>
+      <input type="text" id="github-repo" placeholder="username/repo">
+    </div>
+    <div class="ctrl-group">
+      <div class="ctrl-label">GitHub Token</div>
+      <input type="password" id="github-token" placeholder="ghp_...">
+    </div>
+    <div class="ctrl-group">
+      <div class="ctrl-label">DNS Domain (optional)</div>
+      <input type="text" id="dns-domain" placeholder="yourcompany.com">
+    </div>
+    <div class="ctrl-group">
+      <div class="ctrl-label">Transport Priority</div>
+      <select id="transport-priority">
+        <option value="ws,quic,webrtc" selected>WS → QUIC → WebRTC</option>
+        <option value="quic,ws,webrtc">QUIC → WS → WebRTC</option>
+        <option value="webrtc,ws,quic">WebRTC → WS → QUIC</option>
+        <option value="webrtc">WebRTC only</option>
+        <option value="ws">WebSocket only</option>
+        <option value="quic">QUIC only</option>
+      </select>
+    </div>
+    <div id="admin-toolbar" class="auth-gated btn-row" style="flex-direction:column;align-items:stretch;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:6px">Admin actions</div>
+      <button class="btn btn-sm btn-outline" onclick="pushUrlsToAgents()">📡 Push server URLs to all agents</button>
+      <button class="btn btn-sm btn-outline" onclick="pushUpdateToAgents()">📦 Push update (.exe) to agents</button>
+      <button class="btn btn-sm btn-outline" onclick="restartAllAgents()">🔄 Restart all agents</button>
+      <button class="btn btn-sm btn-outline" onclick="downloadReportCSV()">📊 Download CSV now</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary btn-sm" onclick="saveSettings()">Save</button>
+      <button class="btn btn-outline btn-sm" onclick="toggleModal('settings-modal')">Cancel</button>
+      <button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--text3);margin-left:auto" onclick="logoutSettings()">Logout</button>
     </div>
   </div>
 </div>
 
-<div id="join-remote-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:700;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;padding:24px;max-width:400px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.3)">
-    <h2 style="margin:0 0 16px;color:#ff9800;font-size:18px">🔗 Join Remote Session</h2>
-    <p style="font-size:13px;color:#666;margin:0 0 16px">Enter the 6-digit code shared by the remote user</p>
-    <input id="remote-code" type="text" maxlength="6" placeholder="ABC123" style="width:100%;padding:12px;border:2px solid #ddd;border-radius:8px;font-size:24px;text-align:center;letter-spacing:8px;font-weight:700;text-transform:uppercase" autofocus>
-    <div id="join-remote-status" style="margin-top:12px;font-size:13px;display:none;padding:8px 12px;border-radius:6px"></div>
-    <div style="display:flex;gap:10px;margin-top:16px">
-      <button onclick="joinRemoteSession()" style="flex:1;padding:10px;background:#ff9800;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔗 Join Session</button>
-      <button onclick="closeJoinRemoteModal()" style="padding:10px 20px;background:#eee;color:#333;border:none;border-radius:6px;font-size:14px;cursor:pointer">Cancel</button>
+<!-- Share Link Modal -->
+<div class="modal-overlay" id="share-modal">
+  <div class="modal">
+    <h3>🔗 Share Remote Access Link</h3>
+    <p style="font-size:11px;color:var(--text2);margin-bottom:10px">Send this link to anyone who needs to view this remote machine from a browser.</p>
+    <div class="ctrl-group">
+      <div class="ctrl-label">Generated Link</div>
+      <input type="text" id="share-link-output" readonly style="font-size:12px;font-weight:600;color:var(--primary);text-align:center">
     </div>
-  </div>
-</div>
-
-<div id="remote-view-modal" style="display:none;position:fixed;inset:0;background:#000;z-index:800;flex-direction:column">
-  <div style="background:#1a1a2e;padding:8px 16px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
-    <span style="color:#fff;font-size:14px;font-weight:600">🔗 Remote Session: <span id="remote-view-code"></span></span>
-    <button onclick="closeRemoteView()" style="background:#f44336;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px">✕ Close</button>
-  </div>
-  <div style="flex:1;display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden;position:relative">
-    <img id="remote-view-frame" src="" style="max-width:100%;max-height:100%;object-fit:contain">
-    <div id="remote-view-status" style="position:absolute;color:#888;font-size:14px;display:none">⏳ Waiting for remote screen...</div>
+    <div class="ctrl-group">
+      <div class="ctrl-label">Expires in</div>
+      <select id="share-expiry">
+        <option value="3600">1 hour</option>
+        <option value="86400" selected>24 hours</option>
+        <option value="604800">7 days</option>
+        <option value="2592000">30 days</option>
+      </select>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary btn-sm" onclick="copyShareLinkModal()" style="flex:1">Copy Link</button>
+      <button class="btn btn-outline btn-sm" onclick="toggleModal('share-modal')">Close</button>
+    </div>
   </div>
 </div>
 
 <script>
-const AUTH_PASS = 'puneet12';
+let ws = null;
+let serverMode = false;
+let activeAgentId = null;
+let controlledAgentId = null;
+let transportOrder = 'ws,quic';
+let startTime = Date.now();
+let qualityPanelOpen = false;
+let metricsPanelOpen = false;
+let agentsPanelOpen = false;
+let settingsLoggedIn = false;
 let authenticated = false;
-let hiddenAgents = JSON.parse(localStorage.getItem('hiddenAgents') || '[]');
+let viewMode = 'grid';
+let remoteControlEnabled = false;
+const agentCells = {};
+let knownAgentIds = new Set();
+let hiddenAgents = new Set();
+let gridThrottle = {};
 
-function showLogin() { document.getElementById('login-overlay').classList.add('show'); document.getElementById('login-pass').focus(); }
-function hideLogin() { document.getElementById('login-overlay').classList.remove('show'); document.getElementById('login-error').style.display = 'none'; }
-function doLogin() {
-  if (document.getElementById('login-pass').value === AUTH_PASS) {
-    authenticated = true;
-    document.getElementById('btn-login').style.display = 'none';
-    document.getElementById('btn-logout').style.display = '';
-    document.getElementById('btn-update').style.display = '';
-    document.getElementById('remote-dropdown').style.display = '';
-    document.getElementById('hide-dropdown').style.display = '';
-    document.getElementById('btn-logs').style.display = '';
-    document.getElementById('btn-compile').style.display = '';
-    document.getElementById('btn-push').style.display = '';
-    document.getElementById('btn-manage-servers').style.display = '';
-    hideLogin();
-    renderGrid();
-    renderHidePanel();
-    renderRemotePanel();
-  } else {
-    const err = document.getElementById('login-error');
-    err.textContent = 'Wrong password';
-    err.style.display = 'block';
-  }
+// ── Panel Toggles ──
+function toggleQualityPanel() {
+  qualityPanelOpen = !qualityPanelOpen;
+  closeOtherPanels('quality');
+  document.getElementById('quality-panel').classList.toggle('open', qualityPanelOpen);
 }
-function logout() {
-  authenticated = false;
-  document.getElementById('btn-login').style.display = '';
-  document.getElementById('btn-logout').style.display = 'none';
-  document.getElementById('btn-update').style.display = 'none';
-  document.getElementById('remote-dropdown').style.display = 'none';
-  document.getElementById('remote-panel').style.display = 'none';
-  document.getElementById('hide-dropdown').style.display = 'none';
-  document.getElementById('hide-panel').style.display = 'none';
-  document.getElementById('btn-logs').style.display = 'none';
-  document.getElementById('btn-compile').style.display = 'none';
-  document.getElementById('btn-push').style.display = 'none';
-  document.getElementById('btn-manage-servers').style.display = 'none';
-  renderGrid();
+function toggleMetricsPanel() {
+  metricsPanelOpen = !metricsPanelOpen;
+  closeOtherPanels('metrics');
+  document.getElementById('metrics-panel').classList.toggle('open', metricsPanelOpen);
 }
-document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-
-function toggleHide(id) {
-  if (hiddenAgents.includes(id)) {
-    hiddenAgents = hiddenAgents.filter(a => a !== id);
-  } else {
-    hiddenAgents.push(id);
-  }
-  localStorage.setItem('hiddenAgents', JSON.stringify(hiddenAgents));
-  renderGrid();
-  renderHidePanel();
+function toggleAgentsPanel() {
+  agentsPanelOpen = !agentsPanelOpen;
+  closeOtherPanels('agents');
+  document.getElementById('agents-panel').classList.toggle('open', agentsPanelOpen);
+  if (agentsPanelOpen) refreshAgents();
 }
-
-function toggleHideDropdown() {
-  const panel = document.getElementById('hide-panel');
-  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-  if (panel.style.display === 'block') renderHidePanel();
+function closeOtherPanels(keep) {
+  if (keep !== 'quality') { qualityPanelOpen = false; document.getElementById('quality-panel').classList.remove('open'); }
+  if (keep !== 'metrics') { metricsPanelOpen = false; document.getElementById('metrics-panel').classList.remove('open'); }
+  if (keep !== 'agents') { agentsPanelOpen = false; document.getElementById('agents-panel').classList.remove('open'); }
 }
-
-function renderHidePanel() {
-  const list = document.getElementById('hide-list');
-  if (!list) return;
-  const allIds = Object.keys(agents);
-  if (allIds.length === 0) {
-    list.innerHTML = '<div style="font-size:11px;color:#999">No agents online</div>';
-    return;
-  }
-  list.innerHTML = allIds.map(id => {
-    const a = agents[id];
-    const checked = hiddenAgents.includes(id) ? 'checked' : '';
-    const name = a ? (a.name || id) : id;
-    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;cursor:pointer">
-      <input type="checkbox" ${checked} onchange="toggleHide('${id}')">
-      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span>
-    </label>`;
-  }).join('');
-}
-
-function hideAllAgents() {
-  hiddenAgents = Object.keys(agents);
-  localStorage.setItem('hiddenAgents', JSON.stringify(hiddenAgents));
-  renderGrid();
-  renderHidePanel();
-}
-
-function showAllAgents() {
-  hiddenAgents = [];
-  localStorage.setItem('hiddenAgents', '[]');
-  renderGrid();
-  renderHidePanel();
-}
-
-function openManageServersModal() {
-  document.getElementById('manage-servers-overlay').style.display = 'flex';
-  fetch('/api/server-list', { headers: { 'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS) } })
-    .then(r => r.json())
-    .then(d => {
-      document.getElementById('server-list-textarea').value = d.urls.join('\n');
-    });
-}
-
-function closeManageServersModal() {
-  document.getElementById('manage-servers-overlay').style.display = 'none';
-}
-
-function saveServerList() {
-  const text = document.getElementById('server-list-textarea').value;
-  const urls = text.split('\n').map(u => u.trim()).filter(u => u);
-  
-  const st = document.getElementById('manage-servers-status');
-  st.style.display = 'block';
-  st.style.background = '#e3f2fd';
-  st.style.color = '#1565c0';
-  st.textContent = '🔄 Updating server list...';
-
-  fetch('/api/update-server-list', {
-    method: 'POST',
-    headers: { 
-      'Content-Type': 'application/json',
-      'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS) 
-    },
-    body: JSON.stringify({ urls })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.success) {
-      st.style.background = '#e8f5e9';
-      st.style.color = '#2e7d32';
-      st.textContent = '✅ Server list updated! ' + d.agentsNotified + ' agents notified.';
-      setTimeout(closeManageServersModal, 2000);
-    } else {
-      st.style.background = '#ffebee';
-      st.style.color = '#c62828';
-      st.textContent = '❌ Error: ' + (d.error || 'Unknown');
-    }
-  });
-}
-
-function openSwitchServerModal() {
-  document.getElementById('switch-server-overlay').style.display = 'flex';
-  document.getElementById('switch-server-input').value = '';
-  document.getElementById('switch-server-status').style.display = 'none';
-}
-
-function closeSwitchServerModal() {
-  document.getElementById('switch-server-overlay').style.display = 'none';
-}
-
-function doSwitchServer() {
-  const url = document.getElementById('switch-server-input').value.trim();
-  if (!url) return;
-  if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
-    showSwitchStatus('❌ URL must start with ws:// or wss://', '#c62828');
-    return;
-  }
-  const st = document.getElementById('switch-server-status');
-  st.style.display = 'block';
-  st.style.background = '#e3f2fd';
-  st.style.color = '#1565c0';
-  st.textContent = '🔄 Switching all agents to: ' + url + '...';
-  ws.send(JSON.stringify({ type: 'switch-server', command: url }));
-}
-
-function showSwitchStatus(msg, color) {
-  const st = document.getElementById('switch-server-status');
-  st.textContent = msg;
-  st.style.background = color === '#2e7d32' ? '#e8f5e9' : '#ffebee';
-  st.style.color = color || '#c62828';
-  st.style.display = 'block';
-}
-
-function toggleRemoteDropdown() {
-  const panel = document.getElementById('remote-panel');
-  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-  if (panel.style.display === 'block') renderRemotePanel();
-}
-
-function renderRemotePanel() {
-  const list = document.getElementById('remote-list');
-  if (!list) return;
-  const allIds = Object.keys(agents);
-  if (allIds.length === 0) {
-    list.innerHTML = '<div style="font-size:11px;color:#999">No agents online</div>';
-    return;
-  }
-  list.innerHTML = allIds.map(id => {
-    const a = agents[id];
-    const name = a ? (a.name || id) : id;
-    return `<label style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #eee;cursor:pointer">
-      <input type="checkbox" class="remote-cb" value="${id}">
-      <span style="font-size:12px;font-weight:600;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(name)}</span>
-      <span style="font-size:10px;color:#999;cursor:pointer" onclick="event.stopPropagation();copyRemoteLink('${id}')">📋</span>
-    </label>`;
-  }).join('');
-}
-
-function getSelectedAgents() {
-  return Array.from(document.querySelectorAll('.remote-cb:checked')).map(cb => cb.value);
-}
-
-function controlSelected() {
-  const selected = getSelectedAgents();
-  if (selected.length === 0) { alert('Select at least one agent'); return; }
-  selected.forEach(id => window.open('/view/' + id, '_blank'));
-  document.getElementById('remote-panel').style.display = 'none';
-}
-
-function viewSelected() {
-  const selected = getSelectedAgents();
-  if (selected.length === 0) { alert('Select at least one agent'); return; }
-  selected.forEach(id => window.open('/view/' + id, '_blank'));
-  document.getElementById('remote-panel').style.display = 'none';
-}
-
-function selectAllRemote() {
-  document.querySelectorAll('.remote-cb').forEach(cb => cb.checked = true);
-}
-
-function deselectAllRemote() {
-  document.querySelectorAll('.remote-cb').forEach(cb => cb.checked = false);
-}
-
-function copyRemoteLink(agentId) {
-  const url = location.origin + '/view/' + agentId;
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(url).then(() => {
-      alert('Remote link copied! Share this with the user:\n\n' + url + '\n\nThey can view the screen immediately. To take control, they need the password.');
-    });
-  } else {
-    prompt('Copy this remote access link:', url);
-  }
-}
-
-document.addEventListener('click', e => {
-  const dd = document.getElementById('hide-dropdown');
-  const panel = document.getElementById('hide-panel');
-  if (dd && panel && panel.style.display === 'block' && !dd.contains(e.target)) {
-    panel.style.display = 'none';
-  }
-  const rdd = document.getElementById('remote-dropdown');
-  const rpanel = document.getElementById('remote-panel');
-  if (rdd && rpanel && rpanel.style.display === 'block' && !rdd.contains(e.target)) {
-    rpanel.style.display = 'none';
-  }
+document.addEventListener('click', (e) => {
+  if (qualityPanelOpen && !e.target.closest('#quality-panel') && !e.target.closest('#quality-toggle')) { qualityPanelOpen = false; document.getElementById('quality-panel').classList.remove('open'); }
+  if (metricsPanelOpen && !e.target.closest('#metrics-panel') && !e.target.closest('#metrics-toggle')) { metricsPanelOpen = false; document.getElementById('metrics-panel').classList.remove('open'); }
+  if (agentsPanelOpen && !e.target.closest('#agents-panel') && !e.target.closest('#agents-toggle')) { agentsPanelOpen = false; document.getElementById('agents-panel').classList.remove('open'); }
 });
 
-const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsUrl = `${wsProto}//${location.host}/ws?token=TOKEN_PLACEHOLDER`;
-let ws, agents = {}, frames = {};
-const frameThrottle = {}; // agentId -> {lastUpdate, preloader}
-const FRAME_INTERVAL = 100; // Max 10 FPS per agent
-
-function updateFrameThrottled(agentId, frame) {
-  const now = Date.now();
-  if (!frameThrottle[agentId]) {
-    frameThrottle[agentId] = { lastUpdate: 0, preloader: new Image() };
-  }
-  const ft = frameThrottle[agentId];
-  if (now - ft.lastUpdate < FRAME_INTERVAL) return;
-  ft.lastUpdate = now;
-  frames[agentId] = frame;
-  const img = document.getElementById('frame-' + agentId);
-  if (img) {
-    ft.preloader.onload = function() { img.src = ft.preloader.src; };
-    ft.preloader.src = 'data:image/jpeg;base64,' + frame;
-  }
-}
-
+// ── WebSocket ──
 function connect() {
-  ws = new WebSocket(wsUrl);
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/ws`;
+  if (ws) try { ws.close(); } catch(_) {}
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
-    document.getElementById('status-dot').classList.add('online');
-    document.getElementById('conn-status').textContent = 'Connected';
-    ws.send(JSON.stringify({ type: 'dashboard-hello' }));
-  };
-  ws.onmessage = e => {
-    const d = JSON.parse(e.data);
-    if (d.type === 'agent-list') { agents = {}; d.agents.forEach(a => { agents[a.id] = a; }); renderGrid(); if (authenticated) renderRemotePanel(); }
-    if (d.type === 'agent-connected') { agents[d.agentId] = { id: d.agentId, name: d.name, ip: d.ip, localIP: d.localIP, publicIP: d.publicIP, hostname: d.hostname, uptime: d.uptime || 0, totalIdle: d.totalIdle || 0, totalActive: d.totalActive || 0, currentState: d.currentState || 'unknown' }; renderGrid(); if (authenticated) renderRemotePanel(); }
-    if (d.type === 'agent-disconnected') { delete agents[d.agentId]; delete frames[d.agentId]; renderGrid(); if (authenticated) renderRemotePanel(); }
-    if (d.type === 'agent-status') { if (agents[d.agentId]) { agents[d.agentId].uptime = d.uptime; agents[d.agentId].totalIdle = d.totalIdle; agents[d.agentId].totalActive = d.totalActive; agents[d.agentId].currentState = d.currentState; } updateStats(d.agentId); }
-    if (d.type === 'ip-update') {
-      if (agents[d.agentId]) {
-        agents[d.agentId].localIP = d.localIP || agents[d.agentId].localIP;
-        agents[d.agentId].publicIP = d.publicIP || agents[d.agentId].publicIP;
-      }
-      renderGrid();
-    }
-    if (d.type === 'frame') { updateFrameThrottled(d.agentId, d.frame); }
-    if (d.type === 'tunnel-status') {
-      const el = document.getElementById('tunnel-' + d.agentId);
-      if (el) {
-        if (d.frame === 'ready' || d.command) {
-          el.textContent = '🔌 ' + (d.command || '').replace(/^https?:\/\//, '').slice(0, 25);
-          el.style.display = '';
-          el.title = 'Tunnel: ' + d.command;
-        } else {
-          el.textContent = '❌ ' + (d.command || '').slice(0, 25);
-          el.style.display = '';
-          el.style.color = '#d32f2f';
-        }
-      }
-    }
-    if (d.type === 'switch-server') {
-      const st = document.getElementById('switch-server-status');
-      if (st) {
-        if (d.agentsNotified !== undefined) {
-          st.style.background = '#e8f5e9';
-          st.style.color = '#2e7d32';
-          st.textContent = '✅ Switched to ' + d.command + ' — ' + d.agentsNotified + ' agents notified';
-          setTimeout(closeSwitchServerModal, 3000);
-        }
-      }
-    }
-    handleRemoteAssistantMessage(d);
+    document.getElementById('status-dot').className = 'online';
+    document.getElementById('connection-info').textContent = 'connected';
+    document.getElementById('connection-info').className = 'badge active';
+    ws.send(JSON.stringify({type:'hello', version:'9.0.0', transports:['ws','quic','webrtc']}));
   };
   ws.onclose = () => {
-    document.getElementById('status-dot').classList.remove('online');
-    document.getElementById('conn-status').textContent = 'Reconnecting...';
-    setTimeout(connect, 3000);
+    document.getElementById('status-dot').className = '';
+    document.getElementById('connection-info').textContent = 'reconnecting...';
+    document.getElementById('connection-info').className = 'badge';
+    setTimeout(connect, 2000);
+  };
+  ws.onmessage = (e) => {
+    try { handleMessage(JSON.parse(e.data)); } catch(err) {}
   };
 }
 
-function getGridCols(count) {
-  if (count <= 1) return '1fr';
-  if (count <= 4) return 'repeat(2, 1fr)';
-  if (count <= 9) return 'repeat(3, 1fr)';
-  if (count <= 16) return 'repeat(4, 1fr)';
-  if (count <= 25) return 'repeat(5, 1fr)';
-  return 'repeat(6, 1fr)';
-}
-
-function getFontSize(count) {
-  if (count <= 4) return { name: 14, ip: 11, live: 10, footer: 11 };
-  if (count <= 9) return { name: 12, ip: 10, live: 9, footer: 10 };
-  if (count <= 16) return { name: 11, ip: 9, live: 8, footer: 9 };
-  return { name: 10, ip: 8, live: 7, footer: 8 };
-}
-
-function renderGrid() {
-  const grid = document.getElementById('cctv-grid');
-  const allIds = Object.keys(agents);
-  const visibleIds = authenticated ? allIds : allIds.filter(id => !hiddenAgents.includes(id));
-  const hiddenCount = allIds.length - visibleIds.length;
-  const isSingle = visibleIds.length === 1;
-
-  document.getElementById('agent-count').textContent = `— ${allIds.length} online${!authenticated && hiddenCount ? ' (' + hiddenCount + ' hidden)' : ''}`;
-  document.getElementById('no-agents-msg').style.display = allIds.length ? 'none' : '';
-
-  grid.className = isSingle ? 'single-mode' : '';
-  grid.style.gridTemplateColumns = getGridCols(visibleIds.length || 1);
-  const fs = getFontSize(visibleIds.length || 1);
-
-  visibleIds.forEach(id => {
-    if (document.getElementById('cell-' + id)) return;
-    const a = agents[id];
-    const cell = document.createElement('div');
-    cell.className = 'cctv-cell' + (isSingle ? ' single' : '');
-    cell.id = 'cell-' + id;
-    cell.innerHTML = `
-      <div class="cell-header">
-        <div><span class="cell-name" style="font-size:${fs.name}px">${esc(a.name)}</span></div>
-        <span class="cell-live" style="font-size:${fs.live}px">LIVE</span>
-      </div>
-      <img id="frame-${id}" src="${frames[id] ? 'data:image/jpeg;base64,' + frames[id] : ''}" alt="">
-      <div class="cell-footer" style="font-size:${fs.footer}px">
-        <span class="cell-ips">
-          <span class="ip-line"><span class="ip-label">🖧 LAN:</span> <span class="ip-value">${esc(a.localIP || a.ip || 'N/A')}</span></span>
-          <span class="ip-line"><span class="ip-label">🌐 WAN:</span> <span class="ip-value">${esc(a.publicIP || 'N/A')}</span></span>
-          <span class="ip-line"><span class="ip-label">💻 Host:</span> <span class="ip-value">${esc(a.hostname || id)}</span></span>
-        </span>
-        <span style="display:flex;gap:6px;align-items:center">
-          <span class="tunnel-url" id="tunnel-${id}" style="display:none;font-size:9px;color:#1976d2;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Tunnel URL"></span>
-          <span class="share-btn" onclick="event.stopPropagation();shareLink('${id}')" title="Copy remote link">🔗</span>
-          <span class="view-btn" onclick="event.stopPropagation();viewAgent('${id}')" title="View Full Screen">🖥 View</span>
-          ${authenticated ? `<span class="view-btn" onclick="event.stopPropagation();exposeAgent('${id}')" title="Expose via tunnel for remote access">🔌</span><span class="view-btn" onclick="event.stopPropagation();generateSupportLink('${id}')" title="Generate shareable support link">🤝</span>` : ''}
-        </span>
-      </div>`;
-    grid.appendChild(cell);
-  });
-
-  if (!authenticated && hiddenCount > 0) {
-    const showDiv = document.createElement('div');
-    showDiv.style.cssText = 'grid-column:1/-1;text-align:center;padding:8px;font-size:12px;color:#4caf50;cursor:pointer';
-    showDiv.textContent = `+ ${hiddenCount} hidden — login to view`;
-    showDiv.onclick = () => showLogin();
-    grid.appendChild(showDiv);
+function handleMessage(d) {
+  if (d.type === 'frame' && d.data) {
+    const aid = d.agentId || 'default';
+    if (d.agentId) {
+      activeAgentId = d.agentId;
+      knownAgentIds.add(d.agentId);
+      ensureAgentCell(d.agentId);
+      syncAgentListFromKnown();
+    }
+    renderFrame(aid, d.data);
+    return;
   }
-
-  grid.querySelectorAll('.cctv-cell').forEach(cell => {
-    const cid = cell.id.replace('cell-', '');
-    if (!visibleIds.includes(cid)) cell.remove();
-  });
-  grid.querySelectorAll('div[style*="grid-column"]').forEach(el => el.remove());
+  if (d.type === 'status' || d.frames_captured !== undefined) { updateMetrics(d); return; }
+  if (Array.isArray(d)) {
+    d.forEach(id => { knownAgentIds.add(id); ensureAgentCell(id); });
+    syncAgentListFromKnown();
+    renderAgentSelect(d);
+    return;
+  }
+  if (d.type === 'share_link') {
+    document.getElementById('share-link-output').value = d.url || 'Error generating link';
+    toggleModal('share-modal');
+    return;
+  }
+  if (d.type === 'tunnel_status') { return; }
+  if (d.type === 'webrtc_offer' || d.type === 'webrtc_answer' || d.type === 'webrtc_ice') {
+    handleWebRTCSignaling(d);
+    return;
+  }
 }
 
-function esc(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]); }
+function handleWebRTCSignaling(d) {
+  if (d.type === 'webrtc_offer') {
+    // Server received offer, send back answer
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({type: 'webrtc_answer', sdp: d.sdp, agentId: d.agentId}));
+    }
+  }
+}
 
-function downloadLogs() {
-  const a = document.createElement('a');
-  a.href = '/api/export-logs';
-  a.download = `agent-logs-${new Date().toISOString().slice(0, 7)}.csv`;
-  a.click();
+// ── View modes ──
+function setViewMode(mode) {
+  viewMode = mode;
+  const main = document.getElementById('main');
+  main.classList.toggle('grid-mode', mode === 'grid');
+  main.classList.toggle('single-mode', mode === 'single');
+  document.getElementById('btn-grid-view').classList.toggle('active', mode === 'grid');
+  document.getElementById('btn-single-view').classList.toggle('active', mode === 'single');
+  if (mode === 'single') {
+    const target = controlledAgentId || activeAgentId || [...knownAgentIds][0];
+    if (target) setControlledAgent(target, false);
+    updateControlBar();
+    if (agentCells[target] && agentCells[target].lastB64) {
+      renderToMainCanvas(target, agentCells[target].lastB64);
+    }
+  } else {
+    updateControlBar();
+    updateCellHighlights();
+  }
+}
+
+function setControlledAgent(id, sendSelect) {
+  if (!id) return;
+  controlledAgentId = id;
+  activeAgentId = id;
+  if (sendSelect !== false && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'select_agent', agentId: id }));
+  }
+  updateControlBar();
+  updateCellHighlights();
+}
+
+function enableRemoteControl() {
+  if (!authenticated) { alert('Admin login required'); toggleGear(); return; }
+  if (!controlledAgentId) { alert('Select an agent first (click a grid tile)'); return; }
+  remoteControlEnabled = true;
+  updateControlBar();
+  updateCellHighlights();
+}
+
+function disableRemoteControl() {
+  remoteControlEnabled = false;
+  updateControlBar();
+  updateCellHighlights();
+}
+
+function updateControlBar() {
+  const label = document.getElementById('control-agent-label');
+  const hint = document.getElementById('control-status');
+  if (label) label.textContent = controlledAgentId || '—';
+  if (hint) {
+    if (!authenticated) hint.textContent = 'Login as admin, then Take Control';
+    else if (!remoteControlEnabled) hint.textContent = 'View only — click Take Control to send mouse/keyboard';
+    else hint.textContent = 'Control active for ' + (controlledAgentId || 'agent');
+  }
+}
+
+function updateCellHighlights() {
+  Object.keys(agentCells).forEach(id => {
+    const c = agentCells[id];
+    if (!c || !c.cell) return;
+    c.cell.classList.toggle('controlling', id === controlledAgentId && remoteControlEnabled);
+    if (c.badgeEl) {
+      c.badgeEl.textContent = id === controlledAgentId ? '🎮 Control' : 'Live';
+      c.badgeEl.className = 'cell-badge ' + (id === controlledAgentId ? 'control' : 'live');
+    }
+  });
+}
+
+function ensureAgentCell(agentId) {
+  if (agentCells[agentId]) return agentCells[agentId];
+  const grid = document.getElementById('cctv-grid');
+  const empty = document.getElementById('grid-empty');
+  if (empty) empty.style.display = 'none';
+
+  const cell = document.createElement('div');
+  cell.className = 'cctv-cell';
+  cell.dataset.agentId = agentId;
+  cell.innerHTML =
+    '<div class="cell-header">' +
+      '<span class="cell-name" title="' + escapeHtml(agentId) + '">' + escapeHtml(agentId) + '</span>' +
+      '<span class="cell-badge live">Live</span>' +
+      '<span class="cell-actions auth-gated" style="display:none;gap:3px;margin-left:auto">' +
+        '<button class="btn-hide" onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(agentId)+'\')" title="Hide agent" style="background:none;border:none;cursor:pointer;font-size:10px;padding:2px 4px">👁</button>' +
+        '<button class="btn-remove" onclick="event.stopPropagation();removeAgent(\''+escapeHtml(agentId)+'\')" title="Remove agent" style="background:none;border:none;cursor:pointer;font-size:10px;padding:2px 4px">✕</button>' +
+      '</span>' +
+    '</div>' +
+    '<div class="cell-body">' +
+      '<div class="cell-empty">Waiting for frame…</div>' +
+      '<canvas class="cell-canvas"></canvas>' +
+    '</div>' +
+    '<div class="cell-info">' +
+      '<span class="info-item"><span class="info-icon">🖥</span><span class="info-val info-hostname" title="Hostname">—</span></span>' +
+      '<span class="info-item"><span class="info-icon">🌐</span><span class="info-val info-ip" title="Local IP">—</span></span>' +
+      '<span class="info-item"><span class="info-icon">📡</span><span class="info-val info-wan" title="WAN IP">—</span></span>' +
+    '</div>';
+
+  const canvas = cell.querySelector('.cell-canvas');
+  const emptyEl = cell.querySelector('.cell-empty');
+  const badgeEl = cell.querySelector('.cell-badge');
+  const nameEl = cell.querySelector('.cell-name');
+  const hostnameEl = cell.querySelector('.info-hostname');
+  const ipEl = cell.querySelector('.info-ip');
+  const wanEl = cell.querySelector('.info-wan');
+
+  cell.addEventListener('click', () => {
+    setControlledAgent(agentId);
+  });
+  cell.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    setControlledAgent(agentId);
+    setViewMode('single');
+    if (agentCells[agentId].lastB64) renderToMainCanvas(agentId, agentCells[agentId].lastB64);
+  });
+
+  bindCanvasControl(canvas, agentId);
+  grid.appendChild(cell);
+
+  agentCells[agentId] = {
+    cell, canvas, emptyEl, badgeEl, nameEl, hostnameEl, ipEl, wanEl,
+    lastB64: null, lastTs: 0, imgW: 0, imgH: 0
+  };
+  knownAgentIds.add(agentId);
+  if (!controlledAgentId) setControlledAgent(agentId, false);
+  fetchAgentInfo(agentId);
+  return agentCells[agentId];
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+}
+
+function syncAgentListFromKnown() {
+  const list = [...knownAgentIds];
+  if (list.length) renderAgentSelect(list);
+  const el = document.getElementById('agents-list');
+  if (el && list.length) {
+    el.innerHTML = list.map(id => {
+      const isHidden = hiddenAgents.has(id);
+      return '<div style="padding:4px 0;display:flex;justify-content:space-between;align-items:center">'+
+        '<span style="cursor:pointer;color:var(--primary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="selectAgent(\''+escapeHtml(id).replace(/'/g,"\\'")+'\')">'+escapeHtml(id)+'</span>'+
+        '<button onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(id).replace(/'/g,"\\'")+'\')" title="'+(isHidden?'Show':'Hide')+'" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px;margin-right:4px">'+(isHidden?'👁‍🗨':'👁')+'</button>'+
+        '<button class="btn btn-sm btn-outline" style="font-size:8px;padding:2px 6px" onclick="focusAgent(\''+escapeHtml(id).replace(/'/g,"\\'")+'\')">Focus</button></div>';
+    }).join('');
+  }
+}
+
+function focusAgent(id) {
+  setControlledAgent(id);
+  setViewMode('single');
+  if (agentCells[id] && agentCells[id].lastB64) renderToMainCanvas(id, agentCells[id].lastB64);
+  agentsPanelOpen = false;
+  document.getElementById('agents-panel').classList.remove('open');
+}
+
+function drawToCanvas(canvas, img, maxW, maxH) {
+  let w = img.width, h = img.height;
+  const scale = Math.min(maxW / w, maxH / h, 2);
+  w = Math.max(1, Math.round(w * scale));
+  h = Math.max(1, Math.round(h * scale));
+  canvas.width = w;
+  canvas.height = h;
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, w, h);
+  return { w, h };
+}
+
+function renderToCell(agentId, b64data) {
+  const rec = ensureAgentCell(agentId);
+  const img = new Image();
+  img.onload = () => {
+    rec.emptyEl.style.display = 'none';
+    rec.canvas.style.display = 'block';
+    const body = rec.cell.querySelector('.cell-body');
+    const dims = drawToCanvas(rec.canvas, img, body.clientWidth, body.clientHeight);
+    rec.imgW = dims.w;
+    rec.imgH = dims.h;
+    rec.lastTs = Date.now();
+    if (rec.badgeEl) {
+      if (agentId === controlledAgentId && remoteControlEnabled && authenticated) {
+        rec.badgeEl.textContent = '🎮 Control';
+        rec.badgeEl.className = 'cell-badge control';
+      } else {
+        rec.badgeEl.textContent = 'Live';
+        rec.badgeEl.className = 'cell-badge live';
+      }
+    }
+  };
+  img.src = 'data:image/jpeg;base64,' + b64data;
+}
+
+function renderToMainCanvas(agentId, b64data) {
+  const canvas = document.getElementById('screen-canvas');
+  const placeholder = document.getElementById('screen-placeholder');
+  const img = new Image();
+  img.onload = () => {
+    placeholder.style.display = 'none';
+    canvas.style.display = 'block';
+    const container = document.getElementById('screen-container');
+    const cw = container.clientWidth - 28;
+    const ch = container.clientHeight - 80;
+    const dims = drawToCanvas(canvas, img, cw, ch);
+    if (agentCells[agentId]) {
+      agentCells[agentId].imgW = dims.w;
+      agentCells[agentId].imgH = dims.h;
+    }
+  };
+  img.src = 'data:image/jpeg;base64,' + b64data;
+}
+
+// ── Frame Rendering ──
+let frameCount = 0;
+function renderFrame(agentId, b64data) {
+  frameCount++;
+  ensureAgentCell(agentId);
+  const rec = agentCells[agentId];
+  if (rec) rec.lastB64 = b64data;
+  renderToCell(agentId, b64data);
+  if (viewMode === 'single' && controlledAgentId === agentId) {
+    renderToMainCanvas(agentId, b64data);
+  }
+  if (!controlledAgentId) setControlledAgent(agentId, false);
+}
+
+// ── Metrics ──
+function updateMetrics(d) {
+  if (d.agentId) activeAgentId = d.agentId;
+  if (d.current_fps !== undefined) document.getElementById('m-fps').textContent = d.current_fps.toFixed(1);
+  if (d.current_bandwidth_kbps !== undefined) document.getElementById('m-bw').textContent = Math.round(d.current_bandwidth_kbps);
+  if (d.bytes_sent_mb !== undefined) document.getElementById('m-sent').textContent = d.bytes_sent_mb.toFixed(1);
+  if (d.frames_dropped !== undefined) document.getElementById('m-drop').textContent = d.frames_dropped;
+  if (d.current_quality !== undefined) document.getElementById('m-qual').textContent = d.current_quality;
+  const secs = Math.floor((Date.now()-startTime)/1000);
+  document.getElementById('m-uptime').textContent = secs+'s';
+  if (d.bandwidth_used_mb !== undefined && d.bandwidth_limit_mb !== undefined) {
+    document.getElementById('bw-used-top').textContent = Math.round(d.bandwidth_used_mb)+' / '+Math.round(d.bandwidth_limit_mb)+' MB';
+  }
+  if (d.monthly_limit_mb !== undefined) {
+    document.getElementById('bw-slider').value = d.monthly_limit_mb;
+    document.getElementById('bw-label').textContent = Math.round(d.monthly_limit_mb);
+  }
+  if (d.type === 'status') document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
+}
+
+// ── Agents ──
+function refreshAgents() {
+  fetch('/api/agents').then(r=>r.json()).then(list => {
+    const el = document.getElementById('agents-list');
+    if (!Array.isArray(list) || list.length === 0) {
+      el.innerHTML = '<div style="padding:4px 0;color:var(--text3)">No agents connected</div>';
+      return;
+    }
+    list.forEach(id => { knownAgentIds.add(id); ensureAgentCell(id); });
+    syncAgentListFromKnown();
+    renderAgentSelect(list);
+  }).catch(()=>{});
+  // Also fetch hidden status
+  fetch('/api/agents/full').then(r=>r.json()).then(list => {
+    if (Array.isArray(list)) {
+      list.forEach(a => {
+        if (a.hidden) hiddenAgents.add(a.id);
+        else hiddenAgents.delete(a.id);
+      });
+      syncAgentListFromKnown();
+    }
+  }).catch(()=>{});
+}
+
+function selectAgent(id) {
+  setControlledAgent(id);
+  agentsPanelOpen = false;
+  document.getElementById('agents-panel').classList.remove('open');
+}
+
+function renderAgentSelect(list) {
+  let sel = document.querySelector('.agent-select');
+  if (!sel) {
+    sel = document.createElement('select');
+    sel.className = 'agent-select';
+    sel.addEventListener('change', function() {
+      if (this.value) setControlledAgent(this.value);
+    });
+    document.querySelector('#topbar .brand').appendChild(sel);
+  }
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All Agents</option>';
+  list.forEach(id => {
+    const opt = document.createElement('option');
+    opt.value = id; opt.textContent = id;
+    if (id === cur) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  list.forEach(id => knownAgentIds.add(id));
+  if (!cur && list.length >= 1) {
+    const pick = list[0];
+    sel.value = pick;
+    if (!controlledAgentId) setControlledAgent(pick, false);
+  }
+}
+
+// ── System Info ──
+function fetchAgentInfo(agentId) {
+  fetch('/api/system-info').then(r => r.json()).then(info => {
+    const rec = agentCells[agentId];
+    if (!rec) return;
+    if (info.hostname && rec.hostnameEl) rec.hostnameEl.textContent = info.hostname;
+    if (info.local_ip && rec.ipEl) rec.ipEl.textContent = info.local_ip;
+    if (info.wan_ip && rec.wanEl) rec.wanEl.textContent = info.wan_ip;
+  }).catch(() => {});
+}
+
+// ── Quality Controls ──
+document.getElementById('bw-slider').addEventListener('input', function() {
+  document.getElementById('bw-label').textContent = this.value;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'set_bandwidth_limit', mb:parseInt(this.value)}));
+});
+document.getElementById('tier-select').addEventListener('change', function() {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'set_tier', tier:parseInt(this.value)}));
+});
+document.getElementById('qual-slider').addEventListener('input', function() {
+  document.getElementById('qual-label').textContent = this.value;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'set_quality', quality:parseInt(this.value)}));
+});
+document.getElementById('fps-slider').addEventListener('input', function() {
+  document.getElementById('fps-label').textContent = parseFloat(this.value).toFixed(1);
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'set_fps', fps:parseFloat(this.value)}));
+});
+
+// ── Remote control (active by default in focus/single view) ──
+function sendControl(payload, agentId) {
+  if (!authenticated || !remoteControlEnabled || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const aid = agentId || controlledAgentId;
+  if (!aid) return;
+  payload.agentId = aid;
+  ws.send(JSON.stringify(payload));
+}
+
+function bindCanvasControl(canvas, agentId) {
+  canvas.addEventListener('mousedown', e => {
+    if (agentId) {
+      setControlledAgent(agentId);
+      if (viewMode === 'grid') e.stopPropagation();
+    }
+    const aid = agentId || controlledAgentId;
+    if (!aid || !remoteControlEnabled) return;
+    sendControl({
+      type: 'mouse_click',
+      button: e.button === 0 ? 'left' : e.button === 2 ? 'right' : 'middle'
+    }, aid);
+  });
+  canvas.addEventListener('mousemove', e => {
+    const aid = agentId || controlledAgentId;
+    if (!remoteControlEnabled || !aid || controlledAgentId !== aid) return;
+    const now = Date.now();
+    const key = aid + ':mv';
+    if (gridThrottle[key] && now - gridThrottle[key] < 16) return;
+    gridThrottle[key] = now;
+    const r = canvas.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const sx = canvas.width / r.width;
+    const sy = canvas.height / r.height;
+    sendControl({
+      type: 'mouse_move',
+      x: Math.round((e.clientX - r.left) * sx),
+      y: Math.round((e.clientY - r.top) * sy)
+    }, aid);
+  });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+(function() {
+  bindCanvasControl(document.getElementById('screen-canvas'));
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+    if (!remoteControlEnabled || !controlledAgentId) return;
+    sendControl({ type: 'key_press', key: e.keyCode });
+    e.preventDefault();
+  });
+})();
+
+// ── Gear / Login ──
+function toggleGear() {
+  if (settingsLoggedIn) { toggleModal('settings-modal'); }
+  else { document.getElementById('login-error').style.display = 'none'; toggleModal('login-modal'); }
+}
+
+function loginToSettings() {
+  const user = document.getElementById('login-user').value.trim() || 'admin';
+  const pass = document.getElementById('login-pass').value.trim() || 'puneet12';
+  const authUser = document.getElementById('auth-user').value.trim() || 'puneet';
+  const authPass = document.getElementById('auth-pass').value.trim() || 'puneet12';
+  if (user === authUser && pass === authPass) {
+    settingsLoggedIn = true;
+    authenticated = true;
+    remoteControlEnabled = false;
+    toggleModal('login-modal');
+    document.querySelectorAll('.auth-gated').forEach(el => el.classList.add('visible'));
+    updateCellActions();
+    updateControlBar();
+    fetch('/api/settings').then(r=>r.json()).then(s => {
+      if (s.github_repo) document.getElementById('github-repo').value = s.github_repo;
+      if (s.dns_domain) document.getElementById('dns-domain').value = s.dns_domain;
+    }).catch(()=>{});
+    toggleModal('settings-modal');
+    document.getElementById('login-user').value = '';
+    document.getElementById('login-pass').value = '';
+  } else {
+    document.getElementById('login-error').style.display = 'block';
+  }
+}
+
+function logoutSettings() {
+  settingsLoggedIn = false;
+  authenticated = false;
+  remoteControlEnabled = false;
+  document.querySelectorAll('.auth-gated').forEach(el => el.classList.remove('visible'));
+  updateCellActions();
+  updateControlBar();
+  updateCellHighlights();
+  toggleModal('settings-modal');
+}
+
+function updateCellActions() {
+  document.querySelectorAll('.cell-actions').forEach(el => {
+    el.style.display = authenticated ? 'flex' : 'none';
+  });
+}
+
+function pushUrlsToAgents() {
+  if (!authenticated) return;
+  const urls = prompt('Server URLs (comma-separated)', 'ws://127.0.0.1:8181/agent/ws');
+  if (!urls || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const list = urls.split(',').map(s => s.trim()).filter(Boolean);
+  ws.send(JSON.stringify({ type: 'push_urls_all', urls: list }));
+  alert('URLs pushed to connected agents');
+}
+
+function restartAllAgents() {
+  if (!authenticated) return;
+  if (!confirm('Restart all connected agents?')) return;
+  fetch('/api/restart', { method: 'POST' }).catch(() => {});
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'restart' }));
+  }
+}
+
+function toggleHideAgent(agentId) {
+  if (!authenticated) { alert('Login as admin first'); return; }
+  const isHidden = hiddenAgents.has(agentId);
+  fetch('/api/hide-agent', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({agent_id: agentId, hide: !isHidden})
+  }).then(() => {
+    if (!isHidden) {
+      hiddenAgents.add(agentId);
+    } else {
+      hiddenAgents.delete(agentId);
+    }
+    const rec = agentCells[agentId];
+    if (rec && rec.cell) {
+      rec.cell.classList.toggle('agent-hidden', !isHidden);
+      const badge = rec.cell.querySelector('.cell-badge');
+      if (badge) badge.textContent = !isHidden ? 'Hidden' : 'Live';
+    }
+    syncAgentListFromKnown();
+    refreshAgents();
+  }).catch(() => {
+    alert('Failed to toggle agent visibility');
+  });
+}
+
+function removeAgent(agentId) {
+  if (!authenticated) return;
+  if (!confirm('Remove agent "' + agentId + '"? This will stop the agent process.')) return;
+  fetch('/api/remove-agent', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({agent_id: agentId})
+  }).then(() => {
+    if (agentCells[agentId]) {
+      agentCells[agentId].cell.remove();
+      delete agentCells[agentId];
+    }
+  });
+}
+
+function pushUpdateToAgents() {
+  if (!authenticated) return;
+  const url = prompt('Enter download URL for new PunMonitor.exe:', '');
+  if (!url) return;
+  fetch('/api/update', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({url: url})
+  }).then(r => {
+    if (r.ok) alert('Update pushed to agents!');
+    else r.text().then(t => alert('Failed: '+t));
+  }).catch(e => alert('Error: '+e.message));
+}
+
+function toggleModal(id) { document.getElementById(id).classList.toggle('active'); }
+
+function saveSettings() {
+  toggleModal('settings-modal');
+  transportOrder = document.getElementById('transport-priority').value;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'set_transport_order', order:transportOrder}));
+  const repo = document.getElementById('github-repo').value.trim();
+  const token = document.getElementById('github-token').value.trim();
+  const dns = document.getElementById('dns-domain').value.trim();
+  fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({github_repo:repo, github_token:token||undefined, dns_domain:dns||undefined})}).catch(()=>{});
+}
+
+// ── GitHub Push & Compile ──
+function pushToGitHub() {
+  if (!authenticated) return;
+  fetch('/api/push-report', {method:'POST'}).then(r => {
+    if (r.ok) alert('Report pushed to GitHub!');
+    else r.text().then(t => alert('Failed: '+t));
+  }).catch(e => alert('Error: '+e.message));
 }
 
 function compileMonthly() {
-  fetch('/api/compile-monthly-report')
-    .then(r => r.json())
-    .then(d => alert(d.success ? `Monthly report compiled: ${d.agentCount} agents` : 'Failed: ' + JSON.stringify(d)))
-    .catch(e => alert('Error: ' + e.message));
-}
-
-function pushToGitHub() {
-  fetch('/api/push-logs-to-github', { method: 'POST' })
-    .then(r => r.json())
-    .then(d => alert(d.success ? 'Logs pushed to GitHub!' : 'Failed: ' + (d.error || JSON.stringify(d))))
-    .catch(e => alert('Error: ' + e.message));
-}
-
-function shareLink(agentId) {
-  const url = location.origin + '/view/' + agentId;
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(url).then(() => {
-      const btn = document.querySelector(`#cell-${agentId} .share-btn`);
-      if (btn) { btn.textContent = '✓'; setTimeout(() => { btn.textContent = '🔗'; }, 2000); }
-    });
-  } else {
-    prompt('Copy this remote access link:', url);
-  }
-}
-
-function viewAgent(agentId) {
-  window.open('/view/' + agentId, '_blank');
-}
-
-function exposeAgent(agentId) {
   if (!authenticated) return;
-  const a = agents[agentId];
-  if (!a) return;
-  ws.send(JSON.stringify({ type: 'start-tunnel', agentId }));
-  const el = document.getElementById('tunnel-' + agentId);
-  if (el) {
-    el.textContent = '⏳ Starting...';
-    el.style.display = '';
-    el.style.color = '#ff9800';
-  }
-  showToast('Starting tunnel for ' + (a.name || agentId) + '...');
+  fetch('/api/compile-monthly-report').then(r=>r.json()).then(d => {
+    alert(d.success ? 'Monthly report compiled: '+d.agentCount+' agents' : 'Failed: '+JSON.stringify(d));
+  }).catch(e => alert('Error: '+e.message));
 }
 
-function generateSupportLink(agentId) {
-  if (!authenticated) return;
-  const expires = prompt('Session expires in minutes (default 60):', '60');
-  if (expires === null) return;
-  const mins = parseInt(expires) || 60;
-  fetch('/api/support-token', {
-    method: 'POST',
-    headers: {
-      'x-agent-id': agentId,
-      'x-expires': String(mins),
-      'Authorization': 'Basic ' + btoa('puneet:' + AUTH_PASS)
-    }
-  }).then(r => r.json()).then(d => {
-    if (d.success) {
-      const url = location.origin + d.url;
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(url).then(() => {
-          alert('Support link copied! Share this with the person who needs help:\n\n' + url + '\n\nExpires in ' + d.expiresMinutes + ' minutes.\nThey can view the screen immediately. To take control, they need the password.');
-        });
-      } else {
-        prompt('Copy this support link:', url);
-      }
-    } else {
-      alert('Failed: ' + JSON.stringify(d));
-    }
-  }).catch(e => alert('Error: ' + e.message));
+function downloadReportCSV() {
+  const a = document.createElement('a');
+  a.href = '/api/report.csv';
+  a.download = 'activity-report-' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
 }
 
-function openMultiControl() {
-  const selected = getSelectedAgents();
-  if (selected.length === 0) { alert('Select agents from Remote Control dropdown first'); return; }
-  // Open unified control panel
-  const url = '/multi-control?' + selected.map(id => 'agent=' + id).join('&');
-  window.open(url, '_blank', 'width=1400,height=900');
-  document.getElementById('remote-panel').style.display = 'none';
-}
-
-function pushUpdate() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.exe';
-  input.onchange = e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (!file.name.endsWith('.exe')) { alert('Only .exe files allowed'); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result.split(',')[1];
-      fetch('/api/upload-update', {
-        method: 'POST',
-        headers: { 'x-filename': file.name, 'content-type': 'application/octet-stream' },
-        body: base64
-      }).then(r => r.json()).then(d => {
-        alert(d.success ? `Update pushed to ${d.pushedTo} agents` : 'Failed: ' + JSON.stringify(d));
-      }).catch(err => alert('Error: ' + err.message));
-    };
-    reader.readAsDataURL(file);
-  };
-  input.click();
-}
-
-function showToast(msg) {
-  var t = document.getElementById('toast');
-  if (!t) {
-    t = document.createElement('div');
-    t.id = 'toast';
-    t.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#1a1a2e;color:#fff;padding:10px 20px;border-radius:8px;font-size:12px;z-index:999;opacity:0;transition:opacity .3s;pointer-events:none';
-    document.body.appendChild(t);
-  }
-  t.textContent = msg;
-  t.style.opacity = '1';
-  setTimeout(function() { t.style.opacity = '0'; }, 3000);
-}
-
-function updateStats(agentId) {
-  var a = agents[agentId];
-  if (!a) return;
-  var cell = document.getElementById('cell-' + agentId);
-  if (!cell) return;
-  var footer = cell.querySelector('.cell-footer');
-  if (!footer) return;
-  var state = a.currentState || 'unknown';
-  var uptime = a.uptime ? Math.floor(a.uptime / 60) + 'm' : '';
-  var existing = cell.querySelector('.cell-stats');
-  if (existing) existing.remove();
-  var stats = document.createElement('span');
-  stats.className = 'cell-stats';
-  stats.style.cssText = 'font-size:9px;color:#666;margin-left:6px';
-  stats.textContent = state + (uptime ? ' | ' + uptime : '');
-  var liveEl = cell.querySelector('.cell-live');
-  if (liveEl) liveEl.parentNode.insertBefore(stats, liveEl.nextSibling);
-}
-
-function copyRemoteLink() {
-  var url = location.origin + '/remote-assistant';
-  var msg = '📋 REMOTE ASSISTANT FLOW:\n\n' +
-    '1. Send this link to the remote user:\n   ' + url + '\n\n' +
-    '2. Ask them to click "Start Screen Share"\n   and share the 6-digit code with you\n\n' +
-    '3. Enter that code in "Join Session"\n   to view their screen';
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(url).then(function() {
-      alert(msg);
-    });
+// ── Share Link ──
+function generateShareLink() {
+  const targetAgent = controlledAgentId || activeAgentId || '';
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({type:'generate_share_link', agentId: targetAgent}));
   } else {
-    alert(msg + '\n\nLink copied below:\n' + url);
-    prompt('Copy this link to share with the remote user:', url);
+    const link = location.origin + '/?agent=' + targetAgent;
+    document.getElementById('share-link-output').value = link;
+    toggleModal('share-modal');
   }
 }
 
-function toggleRemoteAssistDropdown() {
-  var panel = document.getElementById('remote-assist-panel');
-  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+function copyShareLinkModal() {
+  const input = document.getElementById('share-link-output');
+  input.select();
+  input.setSelectionRange(0, 99999);
+  navigator.clipboard.writeText(input.value).then(() => {
+    const btn = event?.target;
+    if (btn) { const orig = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = orig, 1500); }
+  }).catch(() => {
+    document.execCommand('copy');
+  });
 }
 
-document.addEventListener('click', function(e) {
-  var dd = document.getElementById('remote-assist-dropdown');
-  var panel = document.getElementById('remote-assist-panel');
-  if (dd && panel && panel.style.display === 'block' && !dd.contains(e.target)) {
-    panel.style.display = 'none';
-  }
+// ── Init ──
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('screen-canvas').style.display = 'none';
+  document.getElementById('main').classList.add('grid-mode');
+  setViewMode('grid');
+  connect();
+  if (location.pathname.includes('server') || location.search.includes('server')) serverMode = true;
+  document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
+  refreshAgents();
+  setInterval(refreshAgents, 5000);
 });
-
-function showJoinRemoteModal() {
-  document.getElementById('join-remote-overlay').style.display = 'flex';
-  document.getElementById('remote-code').focus();
-}
-function closeJoinRemoteModal() {
-  document.getElementById('join-remote-overlay').style.display = 'none';
-  document.getElementById('join-remote-status').style.display = 'none';
-}
-function joinRemoteSession() {
-  var code = document.getElementById('remote-code').value.trim().toUpperCase();
-  if (!code || code.length < 3) { alert('Enter a valid session code'); return; }
-  var st = document.getElementById('join-remote-status');
-  st.style.display = 'block';
-  st.style.background = '#e3f2fd';
-  st.style.color = '#1565c0';
-  st.textContent = '⏳ Joining session...';
-  ws.send(JSON.stringify({type: 'remote-assistant-join', command: code}));
-}
-
-// Handle remote assistant messages
-var remoteViewInterval = null;
-function handleRemoteAssistantMessage(d) {
-  if (d.type === 'remote-assistant-joined' && d.success) {
-    var st = document.getElementById('join-remote-status');
-    st.style.background = '#e8f5e9';
-    st.style.color = '#2e7d32';
-    st.textContent = '✅ Joined session! Opening view...';
-    setTimeout(function() {
-      closeJoinRemoteModal();
-      document.getElementById('remote-view-modal').style.display = 'flex';
-      document.getElementById('remote-view-code').textContent = document.getElementById('remote-code').value.toUpperCase();
-      document.getElementById('remote-view-frame').src = '';
-      document.getElementById('remote-view-status').style.display = 'block';
-    }, 1000);
-  }
-  if (d.type === 'remote-assistant-join-error') {
-    var st = document.getElementById('join-remote-status');
-    st.style.background = '#ffebee';
-    st.style.color = '#c62828';
-    st.textContent = '❌ Session not found. Check the code.';
-  }
-  if (d.type === 'remote-assistant-frame') {
-    var img = document.getElementById('remote-view-frame');
-    if (img) {
-      img.src = 'data:image/jpeg;base64,' + d.frame;
-      document.getElementById('remote-view-status').style.display = 'none';
-    }
-  }
-}
-function closeRemoteView() {
-  document.getElementById('remote-view-modal').style.display = 'none';
-  document.getElementById('remote-view-frame').src = '';
-  if (remoteViewInterval) clearInterval(remoteViewInterval);
-  var code = document.getElementById('remote-view-code').textContent;
-  if (code) ws.send(JSON.stringify({type: 'stop-viewing', agentId: code}));
-}
-
-connect();
 </script>
 </body>
 </html>
