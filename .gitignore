@@ -32,3 +32,5 @@ backup_*/
 # PID/log files in root
 *.pid
 *.log
+PunMonitor-watchdog
+watchdog.stop

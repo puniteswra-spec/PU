@@ -2453,13 +2453,14 @@ func (a *Agent) pushEvent(typ, detail string) {
 
 func main() {
 	var (
-		serverMode = flag.Bool("server", false, "Run in server mode")
+		serverMode = flag.Bool("server", false, "Run in relay server mode")
 		lanMode    = flag.Bool("lan", false, "LAN-only mode")
 		configFile = flag.String("config", "", "Config file path")
 		runCheck   = flag.Bool("check", false, "Run preflight diagnostics and exit")
 		help       = flag.Bool("help", false, "Show help")
 		forceKill  = flag.Bool("force", false, "Kill existing instance before starting")
 		port       = flag.Int("port", 0, "Dashboard/server port (default: 8181)")
+		agentAndServer = flag.Bool("agent-and-server", false, "Run as relay server AND share local screen")
 	)
 	flag.Parse()
 
@@ -2468,6 +2469,7 @@ func main() {
 		fmt.Println("Usage:")
 		fmt.Println("  monitor               Run as agent")
 		fmt.Println("  monitor --server      Run as relay server")
+		fmt.Println("  monitor --agent-and-server  Run as relay server + share local screen")
 		fmt.Println("  monitor --lan         LAN-only mode")
 		fmt.Println("  monitor --check       Run preflight diagnostics")
 		fmt.Println("  monitor --force       Kill existing instance first")
@@ -2549,6 +2551,10 @@ func main() {
 		*serverMode = true
 		llog("info", "Render environment detected — enabling server mode")
 	}
+	if *agentAndServer {
+		*serverMode = true
+		llog("info", "combined mode — enabling server + agent")
+	}
 	cfg.IsServerMode = *serverMode
 	cfg.IsLanMode = *lanMode
 	if *port > 0 {
@@ -2603,10 +2609,19 @@ func main() {
 			os.Exit(0)
 		}
 		sm := NewServerMode(cfg)
-		if err := sm.Start(ctx); err != nil {
-			llog("error", "server: %v", err)
+		go func() {
+			if err := sm.Start(ctx); err != nil && ctx.Err() == nil {
+				llog("error", "server: %v", err)
+			}
+		}()
+		time.Sleep(200 * time.Millisecond)
+		if !*agentAndServer {
+			<-ctx.Done()
+			return
 		}
-		return
+		llog("info", "combined mode: sharing local screen to server")
+		localURL := fmt.Sprintf("ws://127.0.0.1:%d/agent/ws", cfg.ConfigPort)
+		cfg.SetServerURLs(append([]string{localURL}, cfg.GetServerURLs()...))
 	}
 
 	if isPortInUse(cfg.ConfigPort) {
@@ -2629,24 +2644,30 @@ func main() {
 		}
 	}
 
-	// Start local dashboard server (agent mode) — runs forever on same port
-	frameCh := make(chan *WireMessage, 32)
-	ds := NewDashboardServer(cfg, frameCh, nil, nil, nil)
-	dashCtx, dashCancel := context.WithCancel(context.Background())
-	defer dashCancel()
-	go func() {
-		if err := ds.Start(dashCtx); err != nil && dashCtx.Err() == nil {
-			llog("error", "dashboard: %v", err)
-		}
-	}()
+	// Start local dashboard server (agent mode) — only in pure agent mode, not combined
+	var frameCh chan *WireMessage
+	var ds *DashboardServer
+	if !cfg.IsServerMode {
+		frameCh = make(chan *WireMessage, 32)
+		ds = NewDashboardServer(cfg, frameCh, nil, nil, nil)
+		dashCtx, dashCancel := context.WithCancel(context.Background())
+		defer dashCancel()
+		go func() {
+			if err := ds.Start(dashCtx); err != nil && dashCtx.Err() == nil {
+				llog("error", "dashboard: %v", err)
+			}
+		}()
+	}
 
 	// Agent with auto-restart watchdog — never exits unless manually killed
 	for {
 		agent := NewAgent(cfg, frameCh)
-		agent.reportSink = ds.addReport
-		ds.agent = agent
-		ds.pool = agent.pool
-		ds.bandwidth = agent.bandwidth
+		if ds != nil {
+			agent.reportSink = ds.addReport
+			ds.agent = agent
+			ds.pool = agent.pool
+			ds.bandwidth = agent.bandwidth
+		}
 		agent.Start()
 		// Start watchdog after agent is fully started (only once; subsequent loops no-op)
 		startWatchdog()
