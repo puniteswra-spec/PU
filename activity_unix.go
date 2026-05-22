@@ -1,16 +1,37 @@
-//go:build linux
+//go:build !windows
 
 package main
 
 import (
 	"context"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
 func systemBootTimeMS() int64 {
+	if runtime.GOOS == "darwin" {
+		data, err := exec.Command("sysctl", "-n", "kern.boottime").Output()
+		if err == nil {
+			// Output: { sec = 1234567890, usec = 0 } Thursday ...
+			line := string(data)
+			if i := strings.Index(line, "sec = "); i >= 0 {
+				rest := line[i+6:]
+				if j := strings.Index(rest, ","); j >= 0 {
+					sec, err := strconv.ParseInt(strings.TrimSpace(rest[:j]), 10, 64)
+					if err == nil && sec > 0 {
+						return sec * 1000
+					}
+				}
+			}
+		}
+		return 0
+	}
+
+	// Linux
 	data, err := os.ReadFile("/proc/stat")
 	if err != nil {
 		return 0
@@ -65,7 +86,6 @@ func (id *IdleDetector) loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			// Simple idle detection: if no activity received, assume idle
 			idleDuration := time.Since(id.lastInput)
 			isIdle := idleDuration >= id.threshold
 			if isIdle != id.wasIdle {

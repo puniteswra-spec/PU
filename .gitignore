@@ -16,6 +16,12 @@ SystemHelper-LAN.exe
 
 # Binary artifacts
 *.exe
+PunMonitor
+
+# Runtime data
+*.jsonl
+agent.id
+session_state.json
 
 # Backup directories
 backup_*/
