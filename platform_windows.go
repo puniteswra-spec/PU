@@ -147,7 +147,9 @@ var winMouseMove = func(x, y int) {
 }
 
 var winMouseClick = func(x, y int, left bool) {
-	setCursorPos.Call(uintptr(x), uintptr(y))
+	if x != 0 || y != 0 {
+		setCursorPos.Call(uintptr(x), uintptr(y))
+	}
 	flags := uintptr(0x0002 | 0x0004) // MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP
 	if !left {
 		flags = uintptr(0x0008 | 0x0010) // MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP

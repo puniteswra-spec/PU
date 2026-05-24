@@ -1,50 +1,50 @@
 # Anchored Summary
 
 ## Goal
-Consolidate PunMonitor into a single process with WebRTC/WS frame broadcasting, Cloudflare tunnel, GitHub credential backup, watchdog, and autostart.
+Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard.
 
-## Platform Info
-- Windows: built with `-H windowsgui` (no console window), `monitor.log` + `cloudflare.log` for debug
-- macOS: built without hidden-window flag; uses file-based locking for singleton
-- Watchdog: same binary, launched as `monitor.exe --watchdog` (hidden child process)
-- Autostart: Windows = HKCU\Run (no UAC), macOS = LaunchAgent plist
+## Architecture
+- 4 .go files: `main.go` + 3 platform files (`platform_windows.go`, `platform_darwin.go`, `platform_default.go`)
+- Dashboard (`dashboard.html`) served on `:8080`
+- GitHub repo (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`
+- Watchdog same binary (`--watchdog`), auto-installed on first run
+- Autostart via Windows registry / macOS LaunchAgent, auto-installed on first run
 
-## Progress
-### Done
-- Full WebRTC P2P with STUN, pion/webrtc v4, data channel frame broadcast, WS signaling
-- Transport pool: WebRTC (primary) → WS (fallback) → GitHub API (last resort)
-- GitHub credential backup on every `saveSettings()`
-- Promote to server (WS + HTTP endpoint)
-- Single cloudflared instance only (named tunnel; quick tunnel as fallback if named fails)
-- File logging (`monitor.log` + `watchdog.log`) for hidden-window debugging
-- Watchdog mode (`--watchdog` flag) with global mutex, restarts monitor on crash
-- Autostart install/remove (`--install`, `--remove`)
-- Cross-compilation: Windows x64, macOS amd64 + arm64
-- Build tags on platform files for correct OS-conditional compilation
-- `platform_default.go` stubs for Linux/other builds
+## Key Behaviors
+- **Fully hidden**: `FreeConsole()` + `-H windowsgui` — no window, no output, ever
+- **First run**: pulls `punmonitor-credentials.json` + `settings.json` from GitHub → saves locally → starts tunnel → screen capture → HTTP server → auto-installs watchdog → done
+- **Subsequent runs**: reads cached settings, syncs from GitHub for updates
+- **Restart on crash**: watchdog (auto-installed) restarts monitor if killed
+- **Remote control**: Win32 `SendInput` for mouse/keyboard via dashboard Take Control
 
-## Key Design Decisions
-- **Single tunnel only**: named tunnel runs; quick tunnel only starts if named fails (no concurrent cloudflared to avoid port conflicts)
-- **Watchdog same binary** with `--watchdog`: no separate executable, `newHiddenCmd()` per platform
-- **Autostart → watchdog → monitor**: `--install` points to `monitor.exe --watchdog`; watchdog launches hidden monitor child
-- **File logging in GUI mode**: `llog()` writes both to stdout and `monitor.log`
-- **Build per platform**: `platform_windows.go` (windows), `platform_darwin.go` (darwin), `platform_default.go` (everything else)
+## Config File (in GitHub repo)
+| Field | Purpose | Example |
+|---|---|---|
+| `github_repo` | Source of truth for config | `puniteswra-spec/PU` |
+| `github_token` | For write-back (credential backup) | `ghp_xxx` |
+| `tunnel_provider` | `cloudflare`, `direct`, or custom | `cloudflare` |
+| `tunnel_hostname` | Public hostname for ingress | `relay.recruitedge.us` |
+| `server_url` | Override share link URL entirely | `https://my-server.com` |
+| `cloudflare_account_tag` | CF tunnel account | |
+| `cloudflare_tunnel_secret` | CF tunnel secret | |
+| `cloudflare_tunnel_id` | CF tunnel ID | |
 
-## Next Steps
-1. Rebuild with `build.cmd` → test `PunMonitor.exe --install` (registers autostart via watchdog)
-2. Reboot or run `PunMonitor.exe` manually → verify single instance + single tunnel + WebRTC broadcasting
-3. Test Mac binary: `chmod +x monitor-darwin-arm64 && xattr -d com.apple.quarantine monitor-darwin-arm64 && ./monitor-darwin-arm64`
-4. Verify watchdog kills and restarts monitor process on crash
-5. Test `--remove` removes autostart entries
+## Self-Update
+- Dashboard → Settings → "Push update (.exe)" — prompts for download URL
+- Binary downloads new version, spawns updater script, replaces itself on disk
+- Watchdog (3s delay) restarts with new binary
+- Version tracked via `-X main.binaryVersion` at build time
 
-## Relevant Files
-- `main.go` – Entry point, Config, HTTP/WS server, screen capture, tunnel, settings, dashboard APIs, `llog()` file logger
-- `watchdog.go` – Watchdog mode: `runWatchdog()` launches monitor as child, restarts on crash, logs to `watchdog.log`
-- `network.go` – HealthChecker, TransportPool, ws/quic/webrtc/github transports, ReconnectManager, transport monitor
-- `webrtc.go` – WebRTCManager, pion/webrtc v4 PeerConnection + DataChannel lifecycle
-- `system.go` – Portable code: ActivityStore, formatTime, EnsureCloudflaredInstalled
-- `platform_windows.go` – Windows singleton (mutex), boot time, idle detector, `newHiddenCmd`, autostart (registry), DLL procs
-- `platform_darwin.go` – macOS singleton (lock file), idle stub, `newHiddenCmd` no-op, autostart (LaunchAgent plist)
-- `platform_default.go` – Stubs for non-Windows/non-Darwin builds
-- `dashboard.html` – Full dashboard UI, WebRTC client, transport badge, share modal, promote button
-- `build.cmd` – Builds Windows (hidden console) + macOS (arm64, amd64)
+## API Endpoints
+| Route | Method | Purpose |
+|---|---|---|
+| `/` | GET | Dashboard UI |
+| `/api/settings` | GET/POST | Read/write all config |
+| `/api/version` | GET | Returns binary version |
+| `/api/update` | POST | Self-update from URL |
+| `/api/promote` | POST | Designate as primary server |
+| `/api/agents/full` | GET | Agent list with hidden state |
+| `/api/hide-agent` | POST | Toggle agent visibility |
+| `/api/system-info` | GET | Hostname, IP, uptime, version |
+| `/api/transport-status` | GET | Active transport, health |
+| `/ws` | WS | Frame broadcast + remote control |

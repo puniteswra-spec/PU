@@ -4,10 +4,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -16,22 +20,77 @@ func hideConsole()                  {}
 
 func watchdogSingleton() bool {
 	lockFile := filepath.Join(os.TempDir(), "PunMonitorWatchdog.lock")
-	f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL, 0644)
-	if err != nil {
-		return false
+	f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err == nil {
+		fmt.Fprintf(f, "%d", os.Getpid())
+		f.Close()
+		return true
 	}
-	f.Close()
-	return true
+	// Lock file exists; check if it's stale
+	data, err := os.ReadFile(lockFile)
+	if err == nil {
+		s := strings.TrimSpace(string(data))
+		if s == "" {
+			os.Remove(lockFile)
+			return watchdogSingleton()
+		}
+		if pid, err := strconv.Atoi(s); err == nil && pid > 0 {
+			if isProcessRunning(pid) {
+				// Another live instance holds the lock
+				return false
+			}
+			// Stale lock file, remove and retry
+			os.Remove(lockFile)
+			return watchdogSingleton()
+		}
+		// Unparseable content, treat as stale
+		os.Remove(lockFile)
+		return watchdogSingleton()
+	}
+	// Could not read lock file; assume locked
+	return false
 }
 
 func singleton() bool {
 	lockFile := filepath.Join(os.TempDir(), "PunMonitor.lock")
-	f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL, 0644)
-	if err != nil {
+	f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err == nil {
+		fmt.Fprintf(f, "%d", os.Getpid())
+		f.Close()
+		return true
+	}
+	// Lock file exists; check if it's stale
+	data, err := os.ReadFile(lockFile)
+	if err == nil {
+		s := strings.TrimSpace(string(data))
+		if pid, err := strconv.Atoi(s); err == nil && pid > 0 {
+			if isProcessRunning(pid) {
+				// Another live instance holds the lock
+				return false
+			}
+			// Stale lock file, remove and retry
+			os.Remove(lockFile)
+			return singleton()
+		}
+	}
+	// Could not read or parse lock file; assume locked
+	return false
+}
+
+func isProcessRunning(pid int) bool {
+	// On Unix, send signal 0 to check existence
+	err := syscall.Kill(pid, 0)
+	if err == nil {
+		return true
+	}
+	if err == syscall.ESRCH {
 		return false
 	}
-	f.Close()
-	return true
+	// EPERM means process exists but no permission to signal
+	if err == syscall.EPERM {
+		return true
+	}
+	return false
 }
 
 func systemBootTimeMS() int64 {
