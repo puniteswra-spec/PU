@@ -1,0 +1,387 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// --- Shared Types ---
+
+type WireMessage struct {
+	Type int
+	Data []byte
+}
+
+func (wm *WireMessage) Marshal() []byte {
+	data, _ := json.Marshal(wm)
+	return data
+}
+
+func (wm *WireMessage) Unmarshal(data []byte) error { return json.Unmarshal(data, wm) }
+
+type Config struct {
+	mu             sync.Mutex
+	ConfigPort     int
+	MonthlyLimitMB int64
+	ServerType     string // cloudflare, oracle, azure, custom
+	TunnelMode     string
+	ServerURLs     []string
+	IsServerMode   bool
+	IsLanMode      bool
+	Autostart      bool
+	StealthMode    bool
+	GitHubRepo     string
+	GitHubToken    string
+	MaxFPS         float64
+	AuthUser       string
+	AuthPass       string
+	// Cloud provider specific credentials
+	CloudflareAccountTag string
+	CloudflareTunnelSecret string
+	CloudflareTunnelID string
+}
+
+func (c *Config) GetServerURLs() []string {
+	if c == nil {
+		return []string{}
+	}
+	return c.ServerURLs
+}
+
+func (c *Config) SetServerURLs(urls []string) {
+	if c != nil {
+		c.ServerURLs = urls
+	}
+}
+
+func (c *Config) SetMonthlyLimitMB(v int64) {
+	if c != nil {
+		c.MonthlyLimitMB = v
+	}
+}
+
+// Cloudflare credential getters and setters
+func (c *Config) GetCloudflareAccountTag() string {
+	if c == nil {
+		return ""
+	}
+	return c.CloudflareAccountTag
+}
+
+func (c *Config) SetCloudflareAccountTag(tag string) {
+	if c != nil {
+		c.CloudflareAccountTag = tag
+	}
+}
+
+func (c *Config) GetCloudflareTunnelSecret() string {
+	if c == nil {
+		return ""
+	}
+	return c.CloudflareTunnelSecret
+}
+
+func (c *Config) SetCloudflareTunnelSecret(secret string) {
+	if c != nil {
+		c.CloudflareTunnelSecret = secret
+	}
+}
+
+func (c *Config) GetCloudflareTunnelID() string {
+	if c == nil {
+		return ""
+	}
+	return c.CloudflareTunnelID
+}
+
+func (c *Config) SetCloudflareTunnelID(tunnelID string) {
+	if c != nil {
+		c.CloudflareTunnelID = tunnelID
+	}
+}
+
+type CaptureTier int
+
+const (
+	CaptureTierAuto CaptureTier = iota
+	CaptureTierLow
+	CaptureTierHigh
+)
+
+// Transport interface defines the network transport methods.
+type Transport interface {
+	Send(*WireMessage) error
+	Recv() (*WireMessage, error)
+	Name() string
+}
+
+type BandwidthMonitor struct {
+	mu             sync.Mutex
+	LimitMB        int64
+	UsedBytes      int64
+	LastReset      time.Time
+	RateWindow     []int64
+	WindowSize     int
+}
+
+func NewBandwidthMonitor(limitMB int64) *BandwidthMonitor {
+	return &BandwidthMonitor{
+		LimitMB:   limitMB,
+		WindowSize: 10,
+		RateWindow: make([]int64, 0, 10),
+		LastReset:  time.Now(),
+	}
+}
+
+func (bm *BandwidthMonitor) SetLimitMB(limitMB int64) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	bm.LimitMB = limitMB
+}
+
+func (bm *BandwidthMonitor) RecordBytes(n int) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	bm.UsedBytes += int64(n)
+	bm.RateWindow = append(bm.RateWindow, int64(n))
+	if len(bm.RateWindow) > bm.WindowSize {
+		bm.RateWindow = bm.RateWindow[1:]
+	}
+}
+
+func (bm *BandwidthMonitor) GetThrottleDelay() time.Duration {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	if bm.LimitMB == 0 {
+		return 0
+	}
+	usedMB := float64(bm.UsedBytes) / 1024 / 1024
+	if usedMB >= float64(bm.LimitMB) {
+		return time.Second * 10
+	}
+	return 0
+}
+
+func (bm *BandwidthMonitor) GetUsedMB() float64 {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	return float64(bm.UsedBytes) / 1024 / 1024
+}
+
+func (bm *BandwidthMonitor) GetCurrentRateKBps() float64 {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	if len(bm.RateWindow) == 0 {
+		return 0
+	}
+	var sum int64
+	for _, v := range bm.RateWindow {
+		sum += v
+	}
+	avgBytesPerSec := float64(sum) / float64(len(bm.RateWindow))
+	return avgBytesPerSec / 1024
+}
+
+func (bm *BandwidthMonitor) GetLimitMB() int64 {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	return bm.LimitMB
+}
+
+func (bm *BandwidthMonitor) IsOverLimit() bool {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	if bm.LimitMB == 0 {
+		return false
+	}
+	usedMB := float64(bm.UsedBytes) / 1024 / 1024
+	return usedMB >= float64(bm.LimitMB)
+}
+
+func (bm *BandwidthMonitor) Reset() {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	bm.UsedBytes = 0
+	bm.RateWindow = make([]int64, 0, bm.WindowSize)
+}
+
+// ActivityEvent and InputEvent are defined in system.go
+type ActivityEvent struct {
+	Timestamp int64  `json:"ts"`
+	Type      string `json:"type"`
+	Detail    string `json:"detail,omitempty"`
+}
+
+type InputEvent struct {
+	MouseMove   func(int, int)
+	MouseClick  func(int, int, bool)
+	KeyPress    func(uint16)
+	TypeText    func(string)
+}
+
+// --- Utility Functions ---
+
+func llog(level string, format string, args ...interface{}) {
+	ts := time.Now().Format("15:04:05.000")
+	msg := fmt.Sprintf(format, args...)
+	fmt.Println(ts + " [" + level + "] " + msg)
+}
+
+func dataDir() string {
+	exe, _ := os.Executable()
+	if runtime.GOOS == "windows" {
+		if ad := os.Getenv("APPDATA"); ad != "" {
+			d := filepath.Join(ad, "PunMonitor")
+			os.MkdirAll(d, 0755)
+			return d
+		}
+	}
+	return filepath.Dir(exe)
+}
+
+// --- Main Application Logic ---
+
+var cfg = &Config{}
+
+func isPrimaryServerDown(urls []string) bool {
+	if len(urls) == 0 {
+		return true
+	}
+	// Try to connect to first URL
+	conn, err := net.DialTimeout("tcp", urls[0], 5*time.Second)
+	if err != nil {
+		return true
+	}
+	conn.Close()
+	return false
+}
+
+type ServerMode struct {
+	cfg *Config
+}
+
+func NewServerMode(cfg *Config) *ServerMode { return &ServerMode{cfg: cfg} }
+
+func (sm *ServerMode) Start(ctx context.Context) error {
+	// Placeholder for actual server logic
+	llog("info", "server mode started (placeholder)")
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func main() {
+	// 1. Ensure cloudflared is installed
+	if err := EnsureCloudflaredInstalled(); err != nil {
+		llog("error", "cloudflared setup: %v", err)
+	}
+
+	// 2. Health check and Server Failover monitor
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		for {
+			select {
+			case <-ticker.C:
+				if !cfg.IsServerMode && isPrimaryServerDown(cfg.ServerURLs) {
+					llog("info", "primary server down, promoting to server mode...")
+					cfg.IsServerMode = true
+					// Start server listener logic
+					go func() {
+						sm := NewServerMode(cfg)
+						if err := sm.Start(context.Background()); err != nil {
+							llog("error", "server mode: %v", err)
+						}
+					}()
+				}
+			}
+		}
+	}()
+
+	// 3. Background checker for server updates and credential changes (every 24 hours)
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		for {
+			select {
+			case <-ticker.C:
+				llog("info", "Checking for server updates and credential changes...")
+				// TODO: Implement actual update logic
+				// For example, fetch latest server list from a known endpoint
+				// and compare with cfg.ServerURLs, update if different.
+				// Also check for cloudflare tunnel key changes (e.g., by verifying
+				// the tunnel is still valid or checking a remote config).
+				if err := checkForServerUpdates(); err != nil {
+					llog("error", "server update check failed: %v", err)
+				}
+				if err := checkForCloudflareKeyChanges(); err != nil {
+					llog("error", "cloudflare key check failed: %v", err)
+				}
+			}
+		}
+	}()
+
+	// 4. HTTP server for dashboard and WebSocket
+	go func() {
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, "dashboard.html")
+		})
+		http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+			upgrader := websocket.Upgrader{
+				CheckOrigin: func(r *http.Request) bool { return true },
+			}
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				llog("error", "WebSocket upgrade failed: %v", err)
+				return
+			}
+			defer conn.Close()
+			llog("info", "WebSocket client connected")
+
+			// Read messages until the connection is closed
+			for {
+				_, msg, err := conn.ReadMessage()
+				if err != nil {
+					llog("info", "WebSocket client disconnected: %v", err)
+					break
+				}
+				// Echo the message back? Or just log?
+				llog("debug", "Received WebSocket message: %s", msg)
+				// For now, we just log and do nothing.
+			}
+		})
+
+		addr := fmt.Sprintf(":%d", cfg.ConfigPort)
+		if cfg.ConfigPort == 0 {
+			addr = ":8080" // default
+		}
+		llog("info", "Starting HTTP server on %s", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			llog("error", "HTTP server failed: %v", err)
+		}
+	}()
+
+	// Simulate main application running
+	select {}
+}
+
+// checkForServerUpdates is a placeholder for checking if server configuration has changed.
+func checkForServerUpdates() error {
+	// Example: fetch from a config server or GitHub.
+	// For now, just return nil.
+	return nil
+}
+
+// checkForCloudflareKeyChanges checks if the cloudflare tunnel credentials need updating.
+func checkForCloudflareKeyChanges() error {
+	// Example: verify the tunnel is still active or check a remote source for new keys.
+	// For now, just return nil.
+	return nil
+}

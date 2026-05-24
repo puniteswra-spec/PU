@@ -757,6 +757,9 @@ var defaultGitHubRepo string
 var defaultGitHubToken string
 
 func main() {
+	// Detach from any parent console — binary runs fully hidden
+	hideConsole()
+
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--github-repo":

@@ -18,6 +18,12 @@ func newHiddenCmd(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 }
 
+func hideConsole() {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	freeConsole := kernel32.NewProc("FreeConsole")
+	freeConsole.Call()
+}
+
 func watchdogSingleton() bool {
 	h, err := windows.CreateMutex(nil, false, windows.StringToUTF16Ptr(`Global\PunMonitorWatchdog`))
 	if err != nil {
