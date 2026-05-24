@@ -824,6 +824,9 @@ func main() {
 	syncFromGitHub()
 	saveSettings()
 
+	// Auto-install watchdog autostart on first successful run
+	setupAutostart()
+
 	if err := EnsureCloudflaredInstalled(); err != nil {
 		llog("error", "cloudflared setup: %v", err)
 	}

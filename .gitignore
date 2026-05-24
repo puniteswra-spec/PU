@@ -2,7 +2,11 @@
 *.log
 *.bak
 *~
+*.backup*
 monitor-darwin-*
+$null
+punmonitor-credentials.json
 cloudflare.ps1
 manager.cmd
 uninstall.ps1
+settings.json
