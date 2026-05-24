@@ -1,4 +1,4 @@
-module systemhelper
+module PunMonitor
 
 go 1.25.0
 
@@ -6,6 +6,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
 	github.com/pion/webrtc/v4 v4.2.12
+	github.com/quic-go/quic-go v0.59.1
 	golang.org/x/sys v0.44.0
 )
 
