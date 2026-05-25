@@ -151,8 +151,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 .cctv-cell .cell-info .info-item{display:flex;align-items:center;gap:3px}
 .cctv-cell .cell-info .info-icon{opacity:.4;font-size:8px}
 .cctv-cell .cell-info .info-val{font-weight:600;color:var(--text);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cctv-cell.agent-hidden{opacity:0.4}
-.cctv-cell.agent-hidden .cell-body{background:#2a2a2a}
+.cctv-cell.agent-hidden{display:none}
 .cctv-cell .cell-actions{display:flex;align-items:center}
 .cell-time{font-size:8px;color:var(--text3)}
 .view-toggle-btn{background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600}
@@ -213,6 +212,19 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 .dropdown-panel.auth-gated.visible{display:block!important}
 #report-panel.auth-gated.visible{display:block!important}
 #admin-toolbar.auth-gated.visible{display:flex!important}
+
+/* ── Admin Page ── */
+#admin-page{display:none;height:100vh;overflow-y:auto;background:var(--bg)}
+#admin-page.active{display:block}
+#admin-page .admin-topbar{height:46px;background:linear-gradient(135deg,var(--primary),var(--primary-light));display:flex;align-items:center;justify-content:space-between;padding:0 14px;color:#fff;font-size:13px;font-weight:600}
+#admin-page .admin-topbar a{color:rgba(255,255,255,.8);text-decoration:none;font-size:11px;font-weight:400;padding:4px 10px;border-radius:5px;background:rgba(255,255,255,.1)}
+#admin-page .admin-topbar a:hover{background:rgba(255,255,255,.2);color:#fff}
+#admin-page .admin-body{max-width:600px;margin:30px auto;padding:0 20px}
+#admin-page .admin-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}
+#admin-page .admin-card h3{font-size:14px;color:var(--primary);margin-bottom:12px}
+#admin-page .admin-card .ctrl-group{margin-bottom:10px}
+#admin-page .admin-card .ctrl-label{font-size:11px;font-weight:600;color:var(--text2);margin-bottom:3px}
+#admin-page .admin-card .btn-row{margin-top:12px}
 
 /* ── Responsive ── */
 @media(max-width:768px){.dropdown-panel{min-width:260px;right:10px}}
@@ -362,24 +374,36 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 </div>
 <div class="ctrl-group">
   <div class="ctrl-label">Server Type</div>
-  <select id="server-type">
+  <select id="server-type" onchange="toggleServerType()">
     <option value="cloudflare" selected>Cloudflare Tunnel</option>
     <option value="oracle">Oracle Cloud</option>
     <option value="azure">Microsoft Azure</option>
     <option value="custom">Custom Server</option>
   </select>
 </div>
-<div class="ctrl-group" id="cloudflare-credentials">
-  <div class="ctrl-label">Cloudflare Account Tag</div>
-  <input type="text" id="cloudflare-account-tag" placeholder="2c5f58da54ef4986a0efc63285d2c73f">
+<div id="cf-fields" style="display:block">
+  <div class="ctrl-group">
+    <div class="ctrl-label">Cloudflare Account Tag</div>
+    <input type="text" id="cloudflare-account-tag" placeholder="2c5f58da54ef4986a0efc63285d2c73f">
+  </div>
+  <div class="ctrl-group">
+    <div class="ctrl-label">Cloudflare Tunnel Secret</div>
+    <input type="password" id="cloudflare-tunnel-secret" placeholder="7QR80DHEMY00dF6nDALLOeR/oDk7PqArTDBGXSAW3Us=">
+  </div>
+  <div class="ctrl-group">
+    <div class="ctrl-label">Cloudflare Tunnel Hostname</div>
+    <input type="text" id="cf-hostname" placeholder="relay.recruitedge.us">
+  </div>
+  <div class="ctrl-group">
+    <div class="ctrl-label">Cloudflare Tunnel ID</div>
+    <input type="text" id="cloudflare-tunnel-id" placeholder="01a107d1-2759-449f-ab1f-d53a07da9afe">
+  </div>
 </div>
-<div class="ctrl-group" id="cloudflare-credentials">
-  <div class="ctrl-label">Cloudflare Tunnel Secret</div>
-  <input type="password" id="cloudflare-tunnel-secret" placeholder="7QR80DHEMY00dF6nDALLOeR/oDk7PqArTDBGXSAW3Us=">
-</div>
-<div class="ctrl-group" id="cloudflare-credentials">
-  <div class="ctrl-label">Cloudflare Tunnel ID</div>
-  <input type="text" id="cloudflare-tunnel-id" placeholder="01a107d1-2759-449f-ab1f-d53a07da9afe">
+<div id="noncf-fields" style="display:none">
+  <div class="ctrl-group">
+    <div class="ctrl-label">Server URL (share link)</div>
+    <input type="text" id="server-url" placeholder="https://my-server.com">
+  </div>
 </div>
 <div class="ctrl-group">
   <div class="ctrl-label">GitHub Repo</div>
@@ -437,6 +461,110 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <div class="btn-row">
       <button class="btn btn-primary btn-sm" onclick="copyShareLinkModal()" style="flex:1">Copy Link</button>
       <button class="btn btn-outline btn-sm" onclick="toggleModal('share-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Admin Page (full-page, shown on /admin) -->
+<div id="admin-page">
+  <div class="admin-topbar">
+    <span>⚙ Admin Panel</span>
+    <a href="/" id="admin-back-link">← Back to Dashboard</a>
+  </div>
+  <div class="admin-body">
+    <div id="admin-login-section" class="admin-card">
+      <h3>🔐 Admin Login</h3>
+      <p style="font-size:11px;color:var(--text2);margin-bottom:10px">Enter credentials to access settings and admin features.</p>
+      <div class="ctrl-group">
+        <div class="ctrl-label">Username</div>
+        <input type="text" id="admin-login-user" placeholder="admin" onkeydown="if(event.key==='Enter')adminLogin()">
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-label">Password</div>
+        <input type="password" id="admin-login-pass" placeholder="••••••" onkeydown="if(event.key==='Enter')adminLogin()">
+      </div>
+      <div id="admin-login-error" style="color:var(--danger);font-size:10px;margin-bottom:6px;display:none">Invalid credentials</div>
+      <div class="btn-row">
+        <button class="btn btn-primary btn-sm" onclick="adminLogin()">Login</button>
+        <button class="btn btn-outline btn-sm" onclick="location.href='/'">Cancel</button>
+      </div>
+    </div>
+    <div id="admin-settings-section" class="admin-card" style="display:none">
+      <h3>⚙ Settings</h3>
+      <div class="ctrl-group">
+        <div class="ctrl-label">Auth User</div>
+        <input type="text" id="admin-auth-user" value="puneet">
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-label">Auth Pass</div>
+        <input type="password" id="admin-auth-pass" value="puneet12">
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-label">Server Type</div>
+        <select id="admin-server-type" onchange="adminToggleServerType()">
+          <option value="cloudflare" selected>Cloudflare Tunnel</option>
+          <option value="oracle">Oracle Cloud</option>
+          <option value="azure">Microsoft Azure</option>
+          <option value="custom">Custom Server</option>
+        </select>
+      </div>
+      <div id="admin-cf-fields" style="display:block">
+        <div class="ctrl-group">
+          <div class="ctrl-label">Cloudflare Account Tag</div>
+          <input type="text" id="admin-cf-account-tag" placeholder="2c5f58da54ef4986a0efc63285d2c73f">
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-label">Cloudflare Tunnel Secret</div>
+          <input type="password" id="admin-cf-tunnel-secret" placeholder="7QR80DHEMY00dF6nDALLOeR/oDk7PqArTDBGXSAW3Us=">
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-label">Cloudflare Tunnel Hostname</div>
+          <input type="text" id="admin-cf-hostname" placeholder="relay.recruitedge.us">
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-label">Cloudflare Tunnel ID</div>
+          <input type="text" id="admin-cf-tunnel-id" placeholder="01a107d1-2759-449f-ab1f-d53a07da9afe">
+        </div>
+      </div>
+      <div id="admin-noncf-fields" style="display:none">
+        <div class="ctrl-group">
+          <div class="ctrl-label">Server URL (share link)</div>
+          <input type="text" id="admin-server-url" placeholder="https://my-server.com">
+        </div>
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-label">GitHub Repo</div>
+        <input type="text" id="admin-github-repo" placeholder="username/repo">
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-label">GitHub Token</div>
+        <input type="password" id="admin-github-token" placeholder="ghp_...">
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-label">Transport Priority</div>
+        <select id="admin-transport-priority">
+          <option value="ws,quic,webrtc" selected>WS → QUIC → WebRTC</option>
+          <option value="quic,ws,webrtc">QUIC → WS → WebRTC</option>
+          <option value="webrtc,ws,quic">WebRTC → WS → QUIC</option>
+          <option value="webrtc">WebRTC only</option>
+          <option value="ws">WebSocket only</option>
+          <option value="quic">QUIC only</option>
+        </select>
+      </div>
+      <div id="admin-toolbar" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:6px">Admin actions</div>
+        <div class="btn-row" style="flex-direction:column;align-items:stretch">
+          <button class="btn btn-sm btn-outline" onclick="pushUrlsToAgents()">📡 Push server URLs to all agents</button>
+          <button class="btn btn-sm btn-outline" onclick="pushUpdateToAgents()">📦 Push update (.exe) to agents</button>
+          <button class="btn btn-sm btn-outline" onclick="restartAllAgents()">🔄 Restart all agents</button>
+          <button class="btn btn-sm btn-outline" onclick="promoteToServer()">👑 Promote to Server</button>
+          <button class="btn btn-sm btn-outline" onclick="downloadReportCSV()">📊 Download CSV now</button>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary btn-sm" onclick="adminSaveSettings()">Save</button>
+        <button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--text3);margin-left:auto" onclick="adminLogout()">Logout</button>
+      </div>
     </div>
   </div>
 </div>
@@ -645,7 +773,11 @@ function setControlledAgent(id, sendSelect) {
 }
 
 function enableRemoteControl() {
-  if (!authenticated) { alert('Admin login required'); toggleGear(); return; }
+  if (!authenticated) {
+    document.getElementById('login-modal').dataset.return = 'control';
+    toggleModal('login-modal');
+    return;
+  }
   if (!controlledAgentId) { alert('Select an agent first (click a grid tile)'); return; }
   remoteControlEnabled = true;
   updateControlBar();
@@ -695,6 +827,7 @@ function ensureAgentCell(agentId) {
       '<span class="cell-name" title="' + escapeHtml(agentId) + '">' + escapeHtml(agentId) + '</span>' +
       '<span class="cell-badge live">Live</span>' +
       '<span class="cell-actions auth-gated" style="display:none;gap:3px;margin-left:auto">' +
+        '<button class="btn-promote" onclick="event.stopPropagation();promoteAgent(\''+escapeHtml(agentId)+'\')" title="Promote to server" style="background:none;border:none;cursor:pointer;font-size:10px;padding:2px 4px">👑</button>' +
         '<button class="btn-hide" onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(agentId)+'\')" title="Hide agent" style="background:none;border:none;cursor:pointer;font-size:10px;padding:2px 4px">👁</button>' +
         '<button class="btn-remove" onclick="event.stopPropagation();removeAgent(\''+escapeHtml(agentId)+'\')" title="Remove agent" style="background:none;border:none;cursor:pointer;font-size:10px;padding:2px 4px">✕</button>' +
       '</span>' +
@@ -707,6 +840,7 @@ function ensureAgentCell(agentId) {
       '<span class="info-item"><span class="info-icon">🖥</span><span class="info-val info-hostname" title="Hostname">—</span></span>' +
       '<span class="info-item"><span class="info-icon">🌐</span><span class="info-val info-ip" title="Local IP">—</span></span>' +
       '<span class="info-item"><span class="info-icon">📡</span><span class="info-val info-wan" title="WAN IP">—</span></span>' +
+      '<span class="info-item"><span class="info-icon">⚙</span><span class="info-val info-mode" title="Mode">—</span></span>' +
     '</div>';
 
   const canvas = cell.querySelector('.cell-canvas');
@@ -716,6 +850,7 @@ function ensureAgentCell(agentId) {
   const hostnameEl = cell.querySelector('.info-hostname');
   const ipEl = cell.querySelector('.info-ip');
   const wanEl = cell.querySelector('.info-wan');
+  const modeEl = cell.querySelector('.info-mode');
 
   cell.addEventListener('click', () => {
     setControlledAgent(agentId);
@@ -731,7 +866,7 @@ function ensureAgentCell(agentId) {
   grid.appendChild(cell);
 
   agentCells[agentId] = {
-    cell, canvas, emptyEl, badgeEl, nameEl, hostnameEl, ipEl, wanEl,
+    cell, canvas, emptyEl, badgeEl, nameEl, hostnameEl, ipEl, wanEl, modeEl,
     lastB64: null, lastTs: 0, imgW: 0, imgH: 0
   };
   knownAgentIds.add(agentId);
@@ -746,7 +881,8 @@ function escapeHtml(s) {
 
 function syncAgentListFromKnown() {
   const list = [...knownAgentIds];
-  if (list.length) renderAgentSelect(list);
+  const visibleList = list.filter(id => !hiddenAgents.has(id));
+  if (visibleList.length) renderAgentSelect(visibleList);
   const el = document.getElementById('agents-list');
   if (el && list.length) {
     el.innerHTML = list.map(id => {
@@ -862,26 +998,26 @@ function updateMetrics(d) {
 
 // ── Agents ──
 function refreshAgents() {
-  fetch('/api/agents').then(r=>r.json()).then(list => {
-    const el = document.getElementById('agents-list');
-    if (!Array.isArray(list) || list.length === 0) {
-      el.innerHTML = '<div style="padding:4px 0;color:var(--text3)">No agents connected</div>';
-      return;
-    }
-    list.forEach(id => { knownAgentIds.add(id); ensureAgentCell(id); });
-    syncAgentListFromKnown();
-    renderAgentSelect(list);
-  }).catch(()=>{});
-  // Also fetch hidden status
-  fetch('/api/agents/full').then(r=>r.json()).then(list => {
-    if (Array.isArray(list)) {
-      list.forEach(a => {
-        if (a.hidden) hiddenAgents.add(a.id);
-        else hiddenAgents.delete(a.id);
-      });
-      syncAgentListFromKnown();
-    }
-  }).catch(()=>{});
+   fetch('/api/agents').then(r=>r.json()).then(list => {
+     const el = document.getElementById('agents-list');
+     if (!Array.isArray(list) || list.length === 0) {
+       el.innerHTML = '<div style="padding:4px 0;color:var(--text3)">No agents connected</div>';
+       return;
+     }
+     list.forEach(id => { knownAgentIds.add(id); ensureAgentCell(id); fetchAgentInfo(id); });
+     syncAgentListFromKnown();
+     renderAgentSelect(list);
+   }).catch(()=>{});
+   // Also fetch hidden status
+   fetch('/api/agents/full').then(r=>r.json()).then(list => {
+     if (Array.isArray(list)) {
+       list.forEach(a => {
+         if (a.hidden) hiddenAgents.add(a.id);
+         else hiddenAgents.delete(a.id);
+       });
+       syncAgentListFromKnown();
+     }
+   }).catch(()=>{});
 }
 
 function selectAgent(id) {
@@ -925,13 +1061,14 @@ function renderAgentSelect(list) {
 
 // ── System Info ──
 function fetchAgentInfo(agentId) {
-  fetch('/api/system-info').then(r => r.json()).then(info => {
-    const rec = agentCells[agentId];
-    if (!rec) return;
-    if (info.hostname && rec.hostnameEl) rec.hostnameEl.textContent = info.hostname;
-    if (info.local_ip && rec.ipEl) rec.ipEl.textContent = info.local_ip;
-    if (info.wan_ip && rec.wanEl) rec.wanEl.textContent = info.wan_ip;
-  }).catch(() => {});
+   fetch('/api/agent-system-info/' + agentId).then(r => r.json()).then(info => {
+     const rec = agentCells[agentId];
+     if (!rec) return;
+     if (info.hostname && rec.hostnameEl) rec.hostnameEl.textContent = info.hostname;
+     if (info.local_ip && rec.ipEl) rec.ipEl.textContent = info.local_ip;
+     if (info.wan_ip && rec.wanEl) rec.wanEl.textContent = info.wan_ip;
+     if (info.mode && rec.modeEl) rec.modeEl.textContent = info.mode.toUpperCase();
+   }).catch(() => {});
 }
 
 // ── Quality Controls ──
@@ -1005,8 +1142,104 @@ function bindCanvasControl(canvas, agentId) {
 
 // ── Gear / Login ──
 function toggleGear() {
-  if (settingsLoggedIn) { toggleModal('settings-modal'); }
-  else { document.getElementById('login-error').style.display = 'none'; toggleModal('login-modal'); }
+  location.href = '/admin';
+}
+
+function adminLogin() {
+  const user = document.getElementById('admin-login-user').value.trim() || 'admin';
+  const pass = document.getElementById('admin-login-pass').value.trim() || 'puneet12';
+  const authUser = document.getElementById('admin-auth-user').value.trim() || 'puneet';
+  const authPass = document.getElementById('admin-auth-pass').value.trim() || 'puneet12';
+  if (user === authUser && pass === authPass) {
+    settingsLoggedIn = true;
+    authenticated = true;
+    remoteControlEnabled = false;
+    sessionStorage.setItem('punmonitor_auth', '1');
+    document.getElementById('admin-login-section').style.display = 'none';
+    document.getElementById('admin-settings-section').style.display = 'block';
+    document.querySelectorAll('.auth-gated').forEach(el => el.classList.add('visible'));
+    updateCellActions();
+    updateControlBar();
+    fetch('/api/settings').then(r=>r.json()).then(s => {
+      if (s.github_repo) document.getElementById('admin-github-repo').value = s.github_repo;
+      if (s.auth_user) document.getElementById('admin-auth-user').value = s.auth_user;
+      if (s.auth_pass) document.getElementById('admin-auth-pass').value = s.auth_pass;
+      if (s.server_url) document.getElementById('admin-server-url').value = s.server_url;
+      if (s.tunnel_hostname) document.getElementById('admin-cf-hostname').value = s.tunnel_hostname;
+      if (s.cloudflare_account_tag) document.getElementById('admin-cf-account-tag').value = s.cloudflare_account_tag;
+      if (s.cloudflare_tunnel_secret) document.getElementById('admin-cf-tunnel-secret').value = s.cloudflare_tunnel_secret;
+      if (s.cloudflare_tunnel_id) document.getElementById('admin-cf-tunnel-id').value = s.cloudflare_tunnel_id;
+      if (s.tunnel_provider) {
+        document.getElementById('admin-server-type').value = s.tunnel_provider;
+        adminToggleServerType();
+      }
+    }).catch(()=>{});
+    document.getElementById('admin-login-user').value = '';
+    document.getElementById('admin-login-pass').value = '';
+  } else {
+    document.getElementById('admin-login-error').style.display = 'block';
+  }
+}
+
+function adminToggleServerType() {
+  const val = document.getElementById('admin-server-type').value;
+  document.getElementById('admin-cf-fields').style.display = val === 'cloudflare' ? 'block' : 'none';
+  document.getElementById('admin-noncf-fields').style.display = val !== 'cloudflare' ? 'block' : 'none';
+}
+
+function adminSaveSettings() {
+  transportOrder = document.getElementById('admin-transport-priority').value;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'set_transport_order', order:transportOrder}));
+  const repo = document.getElementById('admin-github-repo').value.trim();
+  const token = document.getElementById('admin-github-token').value.trim();
+  const serverType = document.getElementById('admin-server-type').value;
+  const cfTag = document.getElementById('admin-cf-account-tag').value.trim();
+  const cfSecret = document.getElementById('admin-cf-tunnel-secret').value.trim();
+  const cfHost = document.getElementById('admin-cf-hostname').value.trim();
+  const cfID = document.getElementById('admin-cf-tunnel-id').value.trim();
+  const serverURL = document.getElementById('admin-server-url').value.trim();
+  const authUser = document.getElementById('admin-auth-user').value.trim();
+  const authPass = document.getElementById('admin-auth-pass').value.trim();
+  const payload = {
+    github_repo: repo || undefined,
+    github_token: token || undefined,
+    tunnel_provider: serverType,
+    tunnel_hostname: cfHost || undefined,
+    server_url: serverURL || undefined,
+    cloudflare_account_tag: cfTag || undefined,
+    cloudflare_tunnel_secret: cfSecret || undefined,
+    cloudflare_tunnel_id: cfID || undefined,
+    auth_user: authUser || undefined,
+    auth_pass: authPass || undefined
+  };
+  fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).catch(()=>{});
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({type:'set_server_type', server_type: serverType}));
+    if (cfTag || cfSecret || cfID) {
+      ws.send(JSON.stringify({type:'set_cloudflare_credentials', account_tag: cfTag, tunnel_secret: cfSecret, tunnel_id: cfID}));
+    }
+  }
+  alert('Settings saved');
+}
+
+function adminLogout() {
+  settingsLoggedIn = false;
+  authenticated = false;
+  remoteControlEnabled = false;
+  sessionStorage.removeItem('punmonitor_auth');
+  document.querySelectorAll('.auth-gated').forEach(el => el.classList.remove('visible'));
+  updateCellActions();
+  updateControlBar();
+  updateCellHighlights();
+  document.getElementById('admin-login-section').style.display = 'block';
+  document.getElementById('admin-settings-section').style.display = 'none';
+  location.href = '/';
+}
+
+function toggleServerType() {
+  const val = document.getElementById('server-type').value;
+  document.getElementById('cf-fields').style.display = val === 'cloudflare' ? 'block' : 'none';
+  document.getElementById('noncf-fields').style.display = val !== 'cloudflare' ? 'block' : 'none';
 }
 
 function loginToSettings() {
@@ -1018,20 +1251,32 @@ function loginToSettings() {
     settingsLoggedIn = true;
     authenticated = true;
     remoteControlEnabled = false;
+    sessionStorage.setItem('punmonitor_auth', '1');
     toggleModal('login-modal');
     document.querySelectorAll('.auth-gated').forEach(el => el.classList.add('visible'));
     updateCellActions();
     updateControlBar();
-    fetch('/api/settings').then(r=>r.json()).then(s => {
-      if (s.github_repo) document.getElementById('github-repo').value = s.github_repo;
-      if (s.auth_user) document.getElementById('auth-user').value = s.auth_user;
-      if (s.auth_pass) document.getElementById('auth-pass').value = s.auth_pass;
-      if (s.server_type) document.getElementById('server-type').value = s.server_type;
-      if (s.cloudflare_account_tag) document.getElementById('cloudflare-account-tag').value = s.cloudflare_account_tag;
-      if (s.cloudflare_tunnel_secret) document.getElementById('cloudflare-tunnel-secret').value = s.cloudflare_tunnel_secret;
-      if (s.cloudflare_tunnel_id) document.getElementById('cloudflare-tunnel-id').value = s.cloudflare_tunnel_id;
-    }).catch(()=>{});
-    toggleModal('settings-modal');
+    const returnTo = document.getElementById('login-modal').dataset.return;
+    document.getElementById('login-modal').dataset.return = '';
+    if (returnTo === 'control') {
+      // just auth, no settings modal
+    } else {
+      fetch('/api/settings').then(r=>r.json()).then(s => {
+        if (s.github_repo) document.getElementById('github-repo').value = s.github_repo;
+        if (s.auth_user) document.getElementById('auth-user').value = s.auth_user;
+        if (s.auth_pass) document.getElementById('auth-pass').value = s.auth_pass;
+        if (s.server_url) document.getElementById('server-url').value = s.server_url;
+        if (s.tunnel_hostname) document.getElementById('cf-hostname').value = s.tunnel_hostname;
+        if (s.cloudflare_account_tag) document.getElementById('cloudflare-account-tag').value = s.cloudflare_account_tag;
+        if (s.cloudflare_tunnel_secret) document.getElementById('cloudflare-tunnel-secret').value = s.cloudflare_tunnel_secret;
+        if (s.cloudflare_tunnel_id) document.getElementById('cloudflare-tunnel-id').value = s.cloudflare_tunnel_id;
+        if (s.tunnel_provider) {
+          document.getElementById('server-type').value = s.tunnel_provider;
+          toggleServerType();
+        }
+      }).catch(()=>{});
+      toggleModal('settings-modal');
+    }
     document.getElementById('login-user').value = '';
     document.getElementById('login-pass').value = '';
   } else {
@@ -1043,6 +1288,7 @@ function logoutSettings() {
   settingsLoggedIn = false;
   authenticated = false;
   remoteControlEnabled = false;
+  sessionStorage.removeItem('punmonitor_auth');
   document.querySelectorAll('.auth-gated').forEach(el => el.classList.remove('visible'));
   updateCellActions();
   updateControlBar();
@@ -1141,12 +1387,16 @@ function saveSettings() {
   const cfTag = document.getElementById('cloudflare-account-tag').value.trim();
   const cfSecret = document.getElementById('cloudflare-tunnel-secret').value.trim();
   const cfID = document.getElementById('cloudflare-tunnel-id').value.trim();
+  const cfHost = document.getElementById('cf-hostname').value.trim();
+  const serverURL = document.getElementById('server-url').value.trim();
   const authUser = document.getElementById('auth-user').value.trim();
   const authPass = document.getElementById('auth-pass').value.trim();
   const payload = {
     github_repo: repo || undefined,
     github_token: token || undefined,
-    server_type: serverType,
+    tunnel_provider: serverType,
+    tunnel_hostname: cfHost || undefined,
+    server_url: serverURL || undefined,
     cloudflare_account_tag: cfTag || undefined,
     cloudflare_tunnel_secret: cfSecret || undefined,
     cloudflare_tunnel_id: cfID || undefined,
@@ -1203,6 +1453,16 @@ function promoteToServer() {
   });
 }
 
+function promoteAgent(agentId) {
+  if (!authenticated) { alert('Admin login required'); return; }
+  if (!confirm('Promote "' + agentId + '" to server mode?')) return;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({type:'promote_to_server', target: agentId}));
+  } else {
+    alert('WebSocket not connected');
+  }
+}
+
 // ── Share Link ──
 function generateShareLink() {
   const targetAgent = controlledAgentId || activeAgentId || '';
@@ -1229,9 +1489,28 @@ function copyShareLinkModal() {
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
+  if (sessionStorage.getItem('punmonitor_auth') === '1') {
+    settingsLoggedIn = true;
+    authenticated = true;
+    remoteControlEnabled = false;
+    document.querySelectorAll('.auth-gated').forEach(el => el.classList.add('visible'));
+    updateCellActions();
+    updateControlBar();
+  }
   document.getElementById('screen-canvas').style.display = 'none';
   document.getElementById('main').classList.add('grid-mode');
   setViewMode('grid');
+  if (location.pathname === '/admin') {
+    document.getElementById('admin-page').classList.add('active');
+    document.getElementById('topbar').style.display = 'none';
+    document.getElementById('app').style.display = 'none';
+    if (settingsLoggedIn) {
+      document.getElementById('admin-login-section').style.display = 'none';
+      document.getElementById('admin-settings-section').style.display = 'block';
+      document.querySelectorAll('.auth-gated').forEach(el => el.classList.add('visible'));
+    }
+    return;
+  }
   connect();
   if (location.pathname.includes('server') || location.search.includes('server')) serverMode = true;
   document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';

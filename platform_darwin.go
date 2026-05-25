@@ -15,8 +15,21 @@ import (
 	"time"
 )
 
-func newHiddenCmd(cmd *exec.Cmd) {}
-func hideConsole()                  {}
+func newHiddenCmd(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+}
+func hideConsole() {
+	// Detach from terminal: create new session and redirect all std FDs to /dev/null
+	syscall.Syscall(syscall.SYS_SETSID, 0, 0, 0)
+	devNull, _ := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	if devNull != nil {
+		syscall.Dup2(int(devNull.Fd()), int(os.Stdin.Fd()))
+		syscall.Dup2(int(devNull.Fd()), int(os.Stdout.Fd()))
+		syscall.Dup2(int(devNull.Fd()), int(os.Stderr.Fd()))
+	}
+}
 
 func watchdogSingleton() bool {
 	lockFile := filepath.Join(os.TempDir(), "PunMonitorWatchdog.lock")
