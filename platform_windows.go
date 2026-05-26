@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -50,13 +51,29 @@ func singleton() bool {
 }
 
 func systemBootTimeMS() int64 {
+	// Try GetTickCount64 first (fast, no external process)
 	k32 := windows.NewLazyDLL("kernel32.dll")
 	getTick := k32.NewProc("GetTickCount64")
 	r, _, _ := getTick.Call()
-	if r == 0 {
-		return 0
+	if r != 0 {
+		return time.Now().Add(-time.Duration(r) * time.Millisecond).UnixMilli()
 	}
-	return time.Now().Add(-time.Duration(r) * time.Millisecond).UnixMilli()
+	// Fallback: WMI query via command
+	out, err := exec.Command("cmd", "/c", "wmic", "os", "get", "lastbootuptime").Output()
+	if err == nil {
+		t := strings.TrimSpace(string(out))
+		lines := strings.Split(t, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if len(line) >= 14 {
+				tm, err := time.Parse("20060102150405", line[:14])
+				if err == nil {
+					return tm.UnixMilli()
+				}
+			}
+		}
+	}
+	return 0
 }
 
 var (
@@ -213,3 +230,24 @@ func writePIDFile()                                   {}
 func removePIDFile()                                  {}
 func isPortInUse(port int) bool                       { return false }
 func updateSystemInfoFromActivity(info map[string]string) {}
+
+func getIdleDuration() time.Duration {
+	var lii lastInputInfo
+	lii.cbSize = uint32(unsafe.Sizeof(lii))
+	ret, _, _ := GetLastInputInfo.Call(uintptr(unsafe.Pointer(&lii)))
+	if ret == 0 {
+		return 0
+	}
+	tick, _, _ := GetTickCount64.Call()
+	idleMS := uint64(tick) - uint64(lii.dwTime)
+	return time.Duration(idleMS) * time.Millisecond
+}
+
+func hideFile(path string) string {
+	pathPtr, _ := windows.UTF16PtrFromString(path)
+	windows.NewLazySystemDLL("kernel32.dll").NewProc("SetFileAttributesW").Call(
+		uintptr(unsafe.Pointer(pathPtr)),
+		2, // FILE_ATTRIBUTE_HIDDEN
+	)
+	return path
+}

@@ -58,6 +58,9 @@ var wsClients sync.Map
 // agentSystemInfo stores system info for each connected agent
 var agentSystemInfo sync.Map
 
+// webrtcAgentDataChannels stores incoming WebRTC data channels from agents (reverse direction)
+var webrtcAgentDataChannels sync.Map
+
 // dashboardContent holds the embedded HTML dashboard
 var dashboardContent string
 
@@ -90,24 +93,31 @@ type Config struct {
     CloudflareTunnelID   string
     ElectionInterval    string
     AgentID             string
+    UpdateURL           string
+    TurnServerURL       string
+    TurnServerCredential string
 }
 
 type SettingsFile struct {
-	ConfigPort             int     `json:"config_port"`
-	MaxFPS                 float64 `json:"max_fps"`
-	GitHubRepo             string  `json:"github_repo"`
-	GitHubToken            string  `json:"github_token"`
-	AuthUser               string  `json:"auth_user"`
-	AuthPass               string  `json:"auth_pass"`
-	MonthlyLimitMB         int64   `json:"monthly_limit_mb"`
-	TunnelProvider         string  `json:"tunnel_provider"`
-	TunnelHostname         string  `json:"tunnel_hostname"`
-	ServerURL              string  `json:"server_url"`
-	CloudflareAccountTag   string  `json:"cloudflare_account_tag"`
-	CloudflareTunnelSecret string  `json:"cloudflare_tunnel_secret"`
-	CloudflareTunnelID     string  `json:"cloudflare_tunnel_id"`
-    ElectionInterval      string  `json:"election_interval,omitempty"`
-    AgentID               string  `json:"agent_id,omitempty"`
+	ConfigPort             int              `json:"config_port"`
+	MaxFPS                 float64          `json:"max_fps"`
+	GitHubRepo             string           `json:"github_repo"`
+	GitHubToken            string           `json:"github_token"`
+	AuthUser               string           `json:"auth_user"`
+	AuthPass               string           `json:"auth_pass"`
+	MonthlyLimitMB         int64            `json:"monthly_limit_mb"`
+	TunnelProvider         string           `json:"tunnel_provider"`
+	TunnelHostname         string           `json:"tunnel_hostname"`
+	ServerURL              string           `json:"server_url"`
+	CloudflareAccountTag   string           `json:"cloudflare_account_tag"`
+	CloudflareTunnelSecret string           `json:"cloudflare_tunnel_secret"`
+	CloudflareTunnelID     string           `json:"cloudflare_tunnel_id"`
+    ElectionInterval       string           `json:"election_interval,omitempty"`
+    AgentID                string           `json:"agent_id,omitempty"`
+    HiddenAgents           map[string]bool  `json:"hidden_agents,omitempty"`
+    UpdateURL              string           `json:"update_url,omitempty"`
+    TurnServerURL          string           `json:"turn_server_url,omitempty"`
+    TurnServerCredential   string           `json:"turn_server_credential,omitempty"`
 }
 
 type CaptureTier int
@@ -329,6 +339,12 @@ func settingsFilePath() string {
 }
 
 func saveSettings() error {
+	// Collect hidden agents from sync.Map
+	hiddenMap := make(map[string]bool)
+	hiddenAgents.Range(func(k, v interface{}) bool {
+		hiddenMap[k.(string)] = v.(bool)
+		return true
+	})
 	s := SettingsFile{
 		ConfigPort:             cfg.ConfigPort,
 		MaxFPS:                 cfg.MaxFPS,
@@ -344,6 +360,10 @@ func saveSettings() error {
 		CloudflareTunnelSecret: cfg.CloudflareTunnelSecret,
 		CloudflareTunnelID:     cfg.CloudflareTunnelID,
         AgentID:                cfg.AgentID,
+        HiddenAgents:           hiddenMap,
+        UpdateURL:              cfg.UpdateURL,
+        TurnServerURL:          cfg.TurnServerURL,
+        TurnServerCredential:   cfg.TurnServerCredential,
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil { return err }
@@ -370,6 +390,14 @@ func loadSettings() {
 	if s.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = s.CloudflareTunnelSecret }
 	if s.CloudflareTunnelID != "" { cfg.CloudflareTunnelID = s.CloudflareTunnelID }
     if s.AgentID != "" { cfg.AgentID = s.AgentID }
+	if s.HiddenAgents != nil {
+		for id, hidden := range s.HiddenAgents {
+			hiddenAgents.Store(id, hidden)
+		}
+	}
+	if s.UpdateURL != "" { cfg.UpdateURL = s.UpdateURL }
+	if s.TurnServerURL != "" { cfg.TurnServerURL = s.TurnServerURL }
+	if s.TurnServerCredential != "" { cfg.TurnServerCredential = s.TurnServerCredential }
 	llog("info", "Loaded saved settings from %s", settingsFilePath())
 }
 
@@ -501,7 +529,11 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 	case "webrtc_offer":
 		sdp, _ := msgMap["sdp"].(string)
 		connID := fmt.Sprintf("%s-%d", cfg.AgentID, time.Now().UnixNano())
-		go webrtcManager.HandleOffer(connID, sdp, conn)
+		isAgent := false
+		if a, ok := msgMap["agent"].(bool); ok && a {
+			isAgent = true
+		}
+		go webrtcManager.HandleOffer(connID, sdp, conn, isAgent)
 	case "webrtc_ice":
 		candidate, _ := msgMap["candidate"].(string)
 		webrtcManager.HandleICE("", candidate)
@@ -696,12 +728,22 @@ func writePrimaryServerFile(hostname, sha string) (bool, error) {
     if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusConflict {
         return false, nil // Failed to claim (no token or already claimed), act as agent
     }
-    return false, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+return false, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 }
+
+func renewLeadership() (bool, error) {
+    apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", cfg.GitHubRepo)
+    req, _ := http.NewRequest("GET", apiURL, nil)
+    req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+    req.Header.Set("Accept", "application/vnd.github.v3+json")
+    resp, err := httpFastClient.Do(req)
+    if err != nil {
+        return false, err
+    }
     defer resp.Body.Close()
     if resp.StatusCode == http.StatusNotFound {
         llog("info", "No primary_server.json found, claiming leadership")
-        return writePrimaryServerFile(myHostname, "")
+        return writePrimaryServerFile(cfg.AgentID, "")
     }
     if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
         llog("info", "GitHub auth failed (%d) – acting as agent", resp.StatusCode)
@@ -717,27 +759,27 @@ func writePrimaryServerFile(hostname, sha string) (bool, error) {
     }
     if err := json.NewDecoder(resp.Body).Decode(&ghResp); err != nil {
         llog("error", "Leader renewal – decode failed: %v", err)
-        return
+        return false, nil
     }
     decoded, err := base64.StdEncoding.DecodeString(ghResp.Content)
     if err != nil {
-        return
+        return false, nil
     }
     var primary struct {
         Host    string `json:"host"`
         Updated int64  `json:"updated"`
     }
     if err := json.Unmarshal(decoded, &primary); err != nil {
-        return
+        return false, nil
     }
     if primary.Host != cfg.AgentID {
         llog("warn", "Leader renewed by another host %s – stepping down", primary.Host)
         cfg.IsServerMode = false
         agentMode = true
         if serverCancel != nil { serverCancel() }
-        return
+        return true, nil
     }
-    writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
+    return writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
 }
 
 func runServerComponents() {
@@ -772,6 +814,26 @@ func runServerComponents() {
 		"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
 		"version":  binaryVersion,
 		"mode":     "server",
+		"boot_time": func() string {
+			if globalActivity != nil {
+				s := globalActivity.Summary()
+				return s["boot_time"]
+			}
+			return formatTime(systemBootTimeMS())
+		}(),
+		"wake_up_time": func() string {
+			if startTime.IsZero() {
+				return "never"
+			}
+			return startTime.Format("2006-01-02 15:04:05")
+		}(),
+		"idle_time": func() string {
+			if globalActivity != nil {
+				s := globalActivity.Summary()
+				return s["total_idle"]
+			}
+			return "0s"
+		}(),
 	})
 	go startTransportMonitor(context.Background())
 	go safeRun("leader-renewal", func() {
@@ -802,6 +864,21 @@ func runServerComponents() {
 		ticker := time.NewTicker(2 * time.Minute)
 		for range ticker.C {
 			setupAutostart()
+			if cfg.UpdateURL != "" {
+				updateMsg, _ := json.Marshal(map[string]string{
+					"type": "update",
+					"url":  cfg.UpdateURL,
+				})
+				connAgentIDMu.RLock()
+				wsClients.Range(func(key, value interface{}) bool {
+					conn := key.(*websocket.Conn)
+					if _, isAgent := connAgentID[conn]; isAgent {
+						conn.WriteMessage(websocket.TextMessage, updateMsg)
+					}
+					return true
+				})
+				connAgentIDMu.RUnlock()
+			}
 		}
 	}()
 
@@ -859,6 +936,9 @@ func startHTTPServer() {
 				"max_fps":                   cfg.MaxFPS,
 				"monthly_limit_mb":          cfg.MonthlyLimitMB,
 				"election_interval":         cfg.ElectionInterval,
+				"update_url":                cfg.UpdateURL,
+				"turn_server_url":          cfg.TurnServerURL,
+				"turn_server_credential":   cfg.TurnServerCredential,
 			})
 			return
 		}
@@ -894,6 +974,9 @@ func startHTTPServer() {
 			}
 			if s.MaxFPS > 0 { cfg.MaxFPS = s.MaxFPS }
 			if s.MonthlyLimitMB > 0 { cfg.MonthlyLimitMB = s.MonthlyLimitMB }
+			if s.UpdateURL != "" { cfg.UpdateURL = s.UpdateURL }
+			if s.TurnServerURL != "" { cfg.TurnServerURL = s.TurnServerURL }
+			if s.TurnServerCredential != "" { cfg.TurnServerCredential = s.TurnServerCredential }
 			saveSettings()
 			pushCredsToGitHub()
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -943,25 +1026,27 @@ func startHTTPServer() {
 		uptimeSecs := int64(time.Since(startTime).Seconds())
 		uptimeStr := fmt.Sprintf("%dh %dm %ds", uptimeSecs/3600, (uptimeSecs%3600)/60, uptimeSecs%60)
 		bootTime := "never"
-		lastStartup := "never"
 		lastShutdown := "never"
 		lastActive := "never"
 		lastIdleStart := "never"
-		lastWake := "never"
+		totalIdle := "never"
 		if globalActivity != nil {
 			s := globalActivity.Summary()
 			bootTime = s["boot_time"]
-			lastStartup = s["last_startup"]
 			lastShutdown = s["last_shutdown"]
 			lastActive = s["last_active"]
 			lastIdleStart = s["last_idle_start"]
-			lastWake = s["last_wake"]
+			totalIdle = s["total_idle"]
+		}
+		wakeUpTime := "never"
+		if !startTime.IsZero() {
+			wakeUpTime = startTime.Format("2006-01-02 15:04:05")
 		}
 		writer := csv.NewWriter(w)
 		writer.Write([]string{
 			"Agent", "Hostname", "Local IP", "WAN IP",
-			"OS", "Version", "Uptime", "Start Time",
-			"Boot Time", "Last Startup", "Last Active", "Last Idle Start", "Last Shutdown", "Last Wake",
+			"OS", "Version", "Uptime", "Start Time (PunMonitor)",
+			"Boot Time (System)", "Wake Up Time (PunMonitor Start)", "Last Active", "Last Idle Start", "Last Shutdown", "Idle Time",
 			"Tunnel ID",
 			"FPS", "Monthly Limit MB",
 			"Report Generated",
@@ -969,7 +1054,7 @@ func startHTTPServer() {
 		writer.Write([]string{
 			hostname, hostname, getLocalIP(), getWANIP(),
 			runtime.GOOS + " " + runtime.GOARCH, binaryVersion, uptimeStr, startTime.Format("2006-01-02 15:04:05"),
-			bootTime, lastStartup, lastActive, lastIdleStart, lastShutdown, lastWake,
+			bootTime, wakeUpTime, lastActive, lastIdleStart, lastShutdown, totalIdle,
 			cfg.CloudflareTunnelID,
 			fmt.Sprintf("%.1f", cfg.MaxFPS), fmt.Sprintf("%d", cfg.MonthlyLimitMB),
 			time.Now().Format("2006-01-02 15:04:05"),
@@ -1035,6 +1120,34 @@ func startHTTPServer() {
 		}
 		hiddenAgents.Store(req.AgentID, req.Hide)
 		llog("info", "Agent %s hidden=%v", req.AgentID, req.Hide)
+		saveSettings()
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	http.HandleFunc("/api/remove-agent", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Remove from agent connections
+		agentConnsMu.Lock()
+		if conn, ok := agentConns[req.AgentID]; ok {
+			conn.Close()
+			delete(agentConns, req.AgentID)
+		}
+		agentConnsMu.Unlock()
+		// Remove from system info
+		agentSystemInfo.Delete(req.AgentID)
+		// Remove from hidden agents
+		hiddenAgents.Store(req.AgentID, false)
+		llog("info", "Agent %s removed", req.AgentID)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
@@ -1075,6 +1188,8 @@ func startHTTPServer() {
 			return
 		}
 		go selfUpdate(req.URL)
+		cfg.UpdateURL = req.URL
+		saveSettings()
 		agentUpdateMsg, _ := json.Marshal(map[string]string{
 			"type": "update",
 			"url":  req.URL,
@@ -1139,6 +1254,15 @@ func startHTTPServer() {
 							connAgentIDMu.Unlock()
 							if sysInfo, ok := msgMap["systemInfo"].(map[string]interface{}); ok {
 								agentSystemInfo.Store(agentID, sysInfo)
+								// Check if agent version is outdated and send update URL
+								if ver, _ := sysInfo["version"].(string); ver != "" && ver != binaryVersion && cfg.UpdateURL != "" {
+									llog("info", "Agent %s version %s outdated (server %s) – auto-updating", id, ver, binaryVersion)
+									updateMsg, _ := json.Marshal(map[string]string{
+										"type": "update",
+										"url":  cfg.UpdateURL,
+									})
+									conn.WriteMessage(websocket.TextMessage, updateMsg)
+								}
 							}
 						}
 					}
@@ -1585,6 +1709,27 @@ func main() {
 
 	initActivityStore()
 
+	// Accumulate idle time by sampling every 5 seconds
+	idleCtx, cancelIdle := context.WithCancel(context.Background())
+	defer cancelIdle()
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if globalActivity != nil && getIdleDuration() >= 5*time.Second {
+					globalActivity.mu.Lock()
+					globalActivity.state.TotalIdleMS += 5000
+					globalActivity.mu.Unlock()
+					globalActivity.save()
+				}
+			case <-idleCtx.Done():
+				return
+			}
+		}
+	}()
+
 	loadSettings()
 	loadElectionInterval()
 	if cfg.ElectionInterval == "" {
@@ -1712,7 +1857,7 @@ func formatTime(ms int64) string {
 	if ms == 0 {
 		return "never"
 	}
-	return time.UnixMilli(ms).Format("2006-01-02 15:04:05")
+	return time.UnixMilli(ms).Format("Jan 2 03:04 PM")
 }
 
 // --- ActivityStore ---
@@ -1725,6 +1870,7 @@ type SessionState struct {
 	LastActiveMS     int64  `json:"last_active_ms"`
 	LastWakeMS       int64  `json:"last_wake_ms"`
 	LastShutdownNote string `json:"last_shutdown_note,omitempty"`
+	TotalIdleMS      int64  `json:"total_idle_ms"`
 }
 
 type ActivityStore struct {
@@ -1805,6 +1951,11 @@ func (s *ActivityStore) recordLocked(typ, detail string) {
 func (s *ActivityStore) Summary() map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	idleStr := "never"
+	if s.state.TotalIdleMS > 0 {
+		totalSec := s.state.TotalIdleMS / 1000
+		idleStr = fmt.Sprintf("%dh %dm %ds", totalSec/3600, (totalSec%3600)/60, totalSec%60)
+	}
 	return map[string]string{
 		"boot_time":       formatTime(s.state.BootTimeMS),
 		"last_startup":    formatTime(s.state.LastStartupMS),
@@ -1812,6 +1963,7 @@ func (s *ActivityStore) Summary() map[string]string {
 		"last_active":     formatTime(s.state.LastActiveMS),
 		"last_idle_start": formatTime(s.state.LastIdleStartMS),
 		"last_wake":       formatTime(s.state.LastWakeMS),
+		"total_idle":      idleStr,
 	}
 }
 
@@ -2511,6 +2663,11 @@ func runAgentClient() {
 			connected = tryAgentGitHub(hostname)
 		}
 		if !connected {
+			// If all transports failed, check if leader is stale — if so, return to election loop
+			if cfg.GitHubRepo != "" && cfg.GitHubToken != "" && isLeaderStale() {
+				llog("info", "Leader is stale – returning to election loop to re-elect")
+				return
+			}
 			llog("error", "All transports failed for agent %s, retrying in %v", hostname, reconnectDelay)
 			time.Sleep(reconnectDelay)
 		}
@@ -2728,8 +2885,218 @@ func checkAgentCommandsAndRun() {
 }
 
 func tryAgentWebRTC(hostname, serverURL string) bool {
-	llog("info", "Agent %s attempting WebRTC connection to %s", hostname, serverURL)
-	return false
+	wsURL := serverURL
+	if strings.HasPrefix(wsURL, "https://") {
+		wsURL = "wss://" + wsURL[len("https://"):]
+	} else if strings.HasPrefix(wsURL, "http://") {
+		wsURL = "ws://" + wsURL[len("http://"):]
+	}
+	wsURL += "/ws"
+	conn, _, err := (&websocket.Dialer{}).Dial(wsURL, nil)
+	if err != nil {
+		llog("error", "Agent WebRTC WS connect to %s failed: %v", wsURL, err)
+		return false
+	}
+	hello, _ := json.Marshal(map[string]interface{}{
+		"type":    "hello",
+		"agentId": hostname,
+		"agent":   true,
+		"systemInfo": map[string]string{
+			"hostname": getHostname(),
+			"local_ip": getLocalIP(),
+			"wan_ip":   getWANIP(),
+			"os":       runtime.GOOS,
+			"arch":     runtime.GOARCH,
+			"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
+			"version":  binaryVersion,
+			"mode":     "agent",
+		},
+	})
+	if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
+		conn.Close()
+		return false
+	}
+
+	// Attempt WebRTC data channel creation
+	dc, webrtcReady := tryCreateAgentDataChannel(conn, hostname)
+	if webrtcReady {
+		llog("info", "Agent %s using WebRTC for frames with WS fallback", hostname)
+		go agentReadLoop(conn, hostname)
+		sendAgentFramesHybrid(conn, dc, hostname)
+	} else {
+		llog("info", "Agent %s WebRTC failed, falling back to WS frames", hostname)
+		go agentReadLoop(conn, hostname)
+		sendAgentFramesWS(conn, hostname)
+	}
+	return true
+}
+
+func tryCreateAgentDataChannel(wsConn *websocket.Conn, hostname string) (*webrtc.DataChannel, bool) {
+	config := webrtc.Configuration{
+		ICEServers: func() []webrtc.ICEServer {
+			servers := []webrtc.ICEServer{
+				{URLs: []string{"stun:stun.l.google.com:19302"}},
+			}
+			if cfg.TurnServerURL != "" {
+				cred := cfg.TurnServerCredential
+				servers = append(servers, webrtc.ICEServer{
+					URLs:       []string{cfg.TurnServerURL},
+					Username:   cfg.AgentID,
+					Credential: &cred,
+				})
+			}
+			return servers
+		}(),
+	}
+	api := webrtc.NewAPI()
+	pc, err := api.NewPeerConnection(config)
+	if err != nil {
+		llog("warn", "Agent WebRTC NewPeerConnection failed: %v", err)
+		return nil, false
+	}
+
+	dc, err := pc.CreateDataChannel("frames", nil)
+	if err != nil {
+		llog("warn", "Agent WebRTC CreateDataChannel failed: %v", err)
+		pc.Close()
+		return nil, false
+	}
+
+	dcReady := make(chan struct{})
+	dc.OnOpen(func() {
+		close(dcReady)
+	})
+
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		llog("warn", "Agent WebRTC CreateOffer failed: %v", err)
+		pc.Close()
+		return nil, false
+	}
+	if err := pc.SetLocalDescription(offer); err != nil {
+		llog("warn", "Agent WebRTC SetLocalDescription failed: %v", err)
+		pc.Close()
+		return nil, false
+	}
+
+	// Send offer over WS
+	offerMsg, _ := json.Marshal(map[string]interface{}{
+		"type":  "webrtc_offer",
+		"sdp":   offer.SDP,
+		"agent": true,
+	})
+	if err := wsConn.WriteMessage(websocket.TextMessage, offerMsg); err != nil {
+		pc.Close()
+		return nil, false
+	}
+
+	// Wait for answer via WS messages
+	answerCh := make(chan string)
+	iceCh := make(chan string)
+	go func() {
+		defer close(answerCh)
+		defer close(iceCh)
+		for {
+			_, msg, err := wsConn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var msgMap map[string]interface{}
+			if err := json.Unmarshal(msg, &msgMap); err != nil {
+				continue
+			}
+			switch msgMap["type"].(string) {
+			case "webrtc_answer":
+				if sdp, ok := msgMap["sdp"].(string); ok {
+					answerCh <- sdp
+				}
+			case "webrtc_ice":
+				if cand, ok := msgMap["candidate"].(string); ok {
+					iceCh <- cand
+				}
+			}
+		}
+	}()
+
+	// Handle ICE candidates
+	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c == nil { return }
+		candJSON, _ := json.Marshal(c.ToJSON())
+		iceMsg, _ := json.Marshal(map[string]interface{}{
+			"type":      "webrtc_ice",
+			"candidate": string(candJSON),
+		})
+		wsConn.WriteMessage(websocket.TextMessage, iceMsg)
+	})
+
+	select {
+	case sdp := <-answerCh:
+		answer := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: sdp}
+		if err := pc.SetRemoteDescription(answer); err != nil {
+			llog("warn", "Agent WebRTC SetRemoteDescription failed: %v", err)
+			pc.Close()
+			return nil, false
+		}
+	case <-time.After(15 * time.Second):
+		llog("warn", "Agent WebRTC answer timeout")
+		pc.Close()
+		return nil, false
+	}
+
+	// Collect ICE candidates briefly
+	go func() {
+		for cand := range iceCh {
+			var c webrtc.ICECandidateInit
+			if json.Unmarshal([]byte(cand), &c) == nil {
+				pc.AddICECandidate(c)
+			}
+		}
+	}()
+
+	select {
+	case <-dcReady:
+		return dc, true
+	case <-time.After(10 * time.Second):
+		llog("warn", "Agent WebRTC data channel timeout")
+		pc.Close()
+		return nil, false
+	}
+}
+
+func sendAgentFramesHybrid(wsConn *websocket.Conn, dc *webrtc.DataChannel, hostname string) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in agent hybrid sender: %v", r)
+		}
+	}()
+	fps := cfg.MaxFPS
+	if fps <= 0 { fps = 1 }
+	ticker := time.NewTicker(time.Duration(float64(time.Second) / fps))
+	defer ticker.Stop()
+	triedWS := false
+	for range ticker.C {
+		img, err := captureScreen()
+		if err != nil { continue }
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil { continue }
+		wm := WireMessage{Type: MSG_FRAME, Data: buf.Bytes(), AgentID: hostname}
+		msg, err := json.Marshal(wm)
+		if err != nil { continue }
+		// Try WebRTC first
+		if !triedWS {
+			if err := dc.Send(msg); err == nil {
+				continue
+			}
+			llog("warn", "Agent %s WebRTC send failed, falling back to WS", hostname)
+			triedWS = true
+		}
+		// Fallback to WS
+		if err := wsConn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			llog("error", "Agent %s WS send failed: %v", hostname, err)
+			wsConn.Close()
+			return
+		}
+	}
 }
 
 func tryAgentGitHub(hostname string) bool {
@@ -2738,10 +3105,6 @@ func tryAgentGitHub(hostname string) bool {
 		return false
 	}
 	llog("info", "Agent %s using GitHub transport: polling for commands and writing heartbeats", hostname)
-	// GitHub transport: poll for commands, write heartbeats, but no frame streaming
-	// Frames are not streamed via GitHub — agent just waits for commands
-	// Both heartbeat and command poll run at 60s each, staggered 30s apart = 120 req/hr total
-	// With 20 agents on GitHub: 2,400 req/hr = 48% of 5k limit
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	beatTick := 0
@@ -2752,8 +3115,49 @@ func tryAgentGitHub(hostname string) bool {
 		} else {
 			safeRun("gh-commands", checkAgentCommandsAndRun)
 		}
+		// Check leader staleness every 5 ticks (150s = 2.5 min)
+		if beatTick%5 == 0 {
+			if isLeaderStale() {
+				llog("info", "Leader is stale – returning from GitHub transport to re-elect")
+				return false
+			}
+		}
 	}
-	return true
+	return false
+}
+
+func isLeaderStale() bool {
+	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/primary_server.json", cfg.GitHubRepo)
+	req, _ := http.NewRequest("GET", rawURL, nil)
+	resp, err := httpFastClient.Do(req)
+	if err != nil {
+		llog("debug", "isLeaderStale: fetch failed: %v", err)
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		llog("info", "primary_server.json missing – leader is definitely stale")
+		return true
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+	var primary struct {
+		Host    string `json:"host"`
+		Updated int64  `json:"updated"`
+	}
+	if err := json.Unmarshal(body, &primary); err != nil {
+		return false
+	}
+	interval := getElectionInterval()
+	if primary.Host == cfg.AgentID {
+		return false
+	}
+	return time.Since(time.UnixMilli(primary.Updated)) > interval
 }
 
 func monitorWatchdogProcess() {
@@ -2807,11 +3211,24 @@ func NewWebRTCManager() *WebRTCManager {
 	}
 }
 
-func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket.Conn) {
+func (m *WebRTCManager) iceServers() []webrtc.ICEServer {
+	servers := []webrtc.ICEServer{
+		{URLs: []string{"stun:stun.l.google.com:19302"}},
+	}
+	if cfg.TurnServerURL != "" {
+		cred := cfg.TurnServerCredential
+		servers = append(servers, webrtc.ICEServer{
+			URLs:       []string{cfg.TurnServerURL},
+			Username:   cfg.AgentID,
+			Credential: &cred,
+		})
+	}
+	return servers
+}
+
+func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket.Conn, isAgent bool) {
 	config := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
-		},
+		ICEServers: m.iceServers(),
 	}
 
 	pc, err := m.api.NewPeerConnection(config)
@@ -2848,36 +3265,59 @@ func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket
 	var dc *webrtc.DataChannel
 	dcReady := make(chan struct{})
 
-	pc.OnDataChannel(func(d *webrtc.DataChannel) {
-		dc = d
-		d.OnOpen(func() {
-			llog("info", "WebRTC data channel open for %s", connID)
-			close(dcReady)
-
-			client := &WebRTCClient{
-				pc:          pc,
-				dc:          d,
-				connID:      connID,
-				connectedAt: time.Now(),
-			}
-			m.mu.Lock()
-			m.clients[connID] = client
-			m.mu.Unlock()
-			webrtcDataChannels.Store(connID, d)
+	if isAgent {
+		// Agent WebRTC: server receives frames from agent
+		pc.OnDataChannel(func(d *webrtc.DataChannel) {
+			dc = d
+			d.OnOpen(func() {
+				llog("info", "WebRTC agent data channel open for %s", connID)
+				close(dcReady)
+				client := &WebRTCClient{pc: pc, dc: d, connID: connID, connectedAt: time.Now()}
+				m.mu.Lock()
+				m.clients[connID] = client
+				m.mu.Unlock()
+				webrtcAgentDataChannels.Store(connID, d)
+			})
+			d.OnClose(func() {
+				llog("info", "WebRTC agent data channel closed for %s", connID)
+				webrtcAgentDataChannels.Delete(connID)
+				m.mu.Lock()
+				delete(m.clients, connID)
+				m.mu.Unlock()
+			})
+			d.OnMessage(func(msg webrtc.DataChannelMessage) {
+				// Agent sent data (frame) over WebRTC → broadcast to viewers
+				var wm WireMessage
+				if err := json.Unmarshal(msg.Data, &wm); err == nil && wm.Type == MSG_FRAME {
+					broadcastFrame(msg.Data, &wm)
+				}
+			})
 		})
-		d.OnClose(func() {
-			llog("info", "WebRTC data channel closed for %s", connID)
-			webrtcDataChannels.Delete(connID)
-			m.mu.Lock()
-			delete(m.clients, connID)
-			m.mu.Unlock()
+	} else {
+		// Dashboard WebRTC: server sends frames to viewer
+		pc.OnDataChannel(func(d *webrtc.DataChannel) {
+			dc = d
+			d.OnOpen(func() {
+				llog("info", "WebRTC data channel open for %s", connID)
+				close(dcReady)
+				client := &WebRTCClient{pc: pc, dc: d, connID: connID, connectedAt: time.Now()}
+				m.mu.Lock()
+				m.clients[connID] = client
+				m.mu.Unlock()
+				webrtcDataChannels.Store(connID, d)
+			})
+			d.OnClose(func() {
+				llog("info", "WebRTC data channel closed for %s", connID)
+				webrtcDataChannels.Delete(connID)
+				m.mu.Lock()
+				delete(m.clients, connID)
+				m.mu.Unlock()
+			})
 		})
-	})
+	}
 
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
-		if c == nil {
-			return
-		}
+		if c == nil { return }
 		candJSON, _ := json.Marshal(c.ToJSON())
 		msg, _ := json.Marshal(map[string]interface{}{
 			"type":      "webrtc_ice",
@@ -2889,6 +3329,7 @@ func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateClosed {
 			webrtcDataChannels.Delete(connID)
+			webrtcAgentDataChannels.Delete(connID)
 			m.mu.Lock()
 			delete(m.clients, connID)
 			m.mu.Unlock()
@@ -2901,7 +3342,7 @@ func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket
 			llog("info", "WebRTC ready for %s", connID)
 		case <-time.After(30 * time.Second):
 			if dc == nil {
-				llog("warn", "WebRTC data channel timeout for %s, falling back to WS", connID)
+				llog("warn", "WebRTC data channel timeout for %s", connID)
 				pc.Close()
 			}
 		}

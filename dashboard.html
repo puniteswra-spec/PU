@@ -137,6 +137,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
   font-size:10px;color:var(--text2);pointer-events:auto
 }
 .cctv-cell .cell-name{font-weight:600;color:var(--text);max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cctv-cell .cell-lanwan{font-size:9px;font-weight:700;color:var(--text);margin-left:8px;white-space:nowrap}
 .cctv-cell .cell-badge{font-size:9px;padding:2px 6px;border-radius:8px;background:var(--primary-dim);color:var(--primary);font-weight:600}
 .cctv-cell .cell-badge.live{background:rgba(76,175,80,.15);color:var(--primary)}
 .cctv-cell .cell-badge.control{background:var(--primary);color:#fff}
@@ -184,27 +185,54 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
   gap: 4px;
   align-items: center;
   flex-wrap: nowrap;
-  overflow-x: auto;
-  max-width: 400px;
+  overflow: visible;
+  position: relative;
   padding: 2px 0;
 }
-.agent-pills::-webkit-scrollbar { height: 2px; }
-.agent-pills::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.3); border-radius: 1px; }
-.agent-pill {
-  padding: 1px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.25);
-  background: rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.8);
-  font-size: 10px;
+.agent-dropdown-toggle {
+  padding: 4px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.3);
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+  font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
   transition: all .15s;
-  flex-shrink: 0;
   user-select: none;
 }
-.agent-pill:hover { background: rgba(255,255,255,0.2); color: #fff; }
-.agent-pill.active { background: rgba(255,255,255,0.3); color: #fff; border-color: rgba(255,255,255,0.5); }
+.agent-dropdown-toggle:hover { background: rgba(255,255,255,0.2); }
+.agent-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: #1a1a2e;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  min-width: 280px;
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 100;
+  padding: 4px 0;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+.agent-dropdown.open { display: block; }
+.agent-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 10px;
+  color: rgba(255,255,255,0.85);
+  transition: background .1s;
+}
+.agent-dropdown-item:hover { background: rgba(255,255,255,0.08); }
+.agent-dropdown-item input[type="checkbox"] { accent-color: #2d8cf0; margin: 0; }
+.agent-dropdown-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-dropdown::-webkit-scrollbar { width: 3px; }
+.agent-dropdown::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
 
 /* ── Auth-gated (hidden until admin login) ── */
 .auth-gated{display:none!important}
@@ -586,6 +614,7 @@ let remoteControlEnabled = false;
 const agentCells = {};
 let knownAgentIds = new Set();
 let hiddenAgents = new Set();
+let selectedAgents = new Set();
 let gridThrottle = {};
 
 // WebRTC
@@ -699,9 +728,6 @@ function handleFrame(d) {
   const aid = d.agentId || 'default';
   if (d.agentId) {
     activeAgentId = d.agentId;
-    knownAgentIds.add(d.agentId);
-    ensureAgentCell(d.agentId);
-    syncAgentListFromKnown();
   }
   renderFrame(aid, d.data);
 }
@@ -713,7 +739,7 @@ function handleMessage(d) {
   }
   if (d.type === 'status' || d.frames_captured !== undefined) { updateMetrics(d); return; }
   if (Array.isArray(d)) {
-    d.forEach(id => { knownAgentIds.add(id); ensureAgentCell(id); });
+    d.forEach(id => { knownAgentIds.add(id); });
     syncAgentListFromKnown();
     renderAgentSelect(d);
     return;
@@ -824,7 +850,10 @@ function ensureAgentCell(agentId) {
   cell.dataset.agentId = agentId;
   cell.innerHTML =
     '<div class="cell-header">' +
-      '<span class="cell-name" title="' + escapeHtml(agentId) + '">' + escapeHtml(agentId) + '</span>' +
+      '<span>' +
+        '<span class="cell-name" title="' + escapeHtml(agentId) + '">' + escapeHtml(agentId) + '</span>' +
+        '<span class="cell-lanwan" title="LAN / WAN">—</span>' +
+      '</span>' +
       '<span class="cell-badge live">Live</span>' +
       '<span class="cell-actions auth-gated" style="display:none;gap:3px;margin-left:auto">' +
         '<button class="btn-promote" onclick="event.stopPropagation();promoteAgent(\''+escapeHtml(agentId)+'\')" title="Promote to server" style="background:none;border:none;cursor:pointer;font-size:10px;padding:2px 4px">👑</button>' +
@@ -838,19 +867,20 @@ function ensureAgentCell(agentId) {
     '</div>' +
     '<div class="cell-info">' +
       '<span class="info-item"><span class="info-icon">🖥</span><span class="info-val info-hostname" title="Hostname">—</span></span>' +
-      '<span class="info-item"><span class="info-icon">🌐</span><span class="info-val info-ip" title="Local IP">—</span></span>' +
-      '<span class="info-item"><span class="info-icon">📡</span><span class="info-val info-wan" title="WAN IP">—</span></span>' +
       '<span class="info-item"><span class="info-icon">⚙</span><span class="info-val info-mode" title="Mode">—</span></span>' +
+      '<span class="info-item"><span class="info-icon">⏰</span><span class="info-val info-boot" title="System Boot Time">—</span></span>' +
+      '<span class="info-item"><span class="info-icon">💤</span><span class="info-val info-idle" title="Total Idle Time">—</span></span>' +
     '</div>';
 
   const canvas = cell.querySelector('.cell-canvas');
   const emptyEl = cell.querySelector('.cell-empty');
   const badgeEl = cell.querySelector('.cell-badge');
   const nameEl = cell.querySelector('.cell-name');
+  const lanWanEl = cell.querySelector('.cell-lanwan');
   const hostnameEl = cell.querySelector('.info-hostname');
-  const ipEl = cell.querySelector('.info-ip');
-  const wanEl = cell.querySelector('.info-wan');
   const modeEl = cell.querySelector('.info-mode');
+  const bootEl = cell.querySelector('.info-boot');
+  const idleEl = cell.querySelector('.info-idle');
 
   cell.addEventListener('click', () => {
     setControlledAgent(agentId);
@@ -866,12 +896,13 @@ function ensureAgentCell(agentId) {
   grid.appendChild(cell);
 
   agentCells[agentId] = {
-    cell, canvas, emptyEl, badgeEl, nameEl, hostnameEl, ipEl, wanEl, modeEl,
+    cell, canvas, emptyEl, badgeEl, nameEl, lanWanEl, hostnameEl, modeEl, bootEl, idleEl,
     lastB64: null, lastTs: 0, imgW: 0, imgH: 0
   };
   knownAgentIds.add(agentId);
   if (!controlledAgentId) setControlledAgent(agentId, false);
   fetchAgentInfo(agentId);
+  updateCellVisibility();
   return agentCells[agentId];
 }
 
@@ -881,17 +912,18 @@ function escapeHtml(s) {
 
 function syncAgentListFromKnown() {
   const list = [...knownAgentIds];
-  const visibleList = list.filter(id => !hiddenAgents.has(id));
-  if (visibleList.length) renderAgentSelect(visibleList);
   const el = document.getElementById('agents-list');
-  if (el && list.length) {
-    el.innerHTML = list.map(id => {
-      const isHidden = hiddenAgents.has(id);
-      return '<div style="padding:4px 0;display:flex;justify-content:space-between;align-items:center">'+
-        '<span style="cursor:pointer;color:var(--primary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="selectAgent(\''+escapeHtml(id).replace(/'/g,"\\'")+'\')">'+escapeHtml(id)+'</span>'+
-        '<button onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(id).replace(/'/g,"\\'")+'\')" title="'+(isHidden?'Show':'Hide')+'" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px;margin-right:4px">'+(isHidden?'👁‍🗨':'👁')+'</button>'+
-        '<button class="btn btn-sm btn-outline" style="font-size:8px;padding:2px 6px" onclick="focusAgent(\''+escapeHtml(id).replace(/'/g,"\\'")+'\')">Focus</button></div>';
-    }).join('');
+  if (!el || !list.length) return;
+  const html = list.map(id => {
+    const isHidden = hiddenAgents.has(id);
+    return '<div style="padding:4px 0;display:flex;justify-content:space-between;align-items:center">'+
+      '<span style="cursor:pointer;color:var(--primary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="selectAgent(\''+escapeHtml(id).replace(/'/g,"\\'")+'\')">'+escapeHtml(id)+'</span>'+
+      '<button onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(id).replace(/'/g,"\\'")+'\')" title="'+(isHidden?'Show':'Hide')+'" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px;margin-right:4px">'+(isHidden?'👁‍🗨':'👁')+'</button>'+
+      '<button class="btn btn-sm btn-outline" style="font-size:8px;padding:2px 6px" onclick="focusAgent(\''+escapeHtml(id).replace(/'/g,"\\'")+'\')">Focus</button></div>';
+  }).join('');
+  if (el._lastHtml !== html) {
+    el._lastHtml = html;
+    el.innerHTML = html;
   }
 }
 
@@ -920,7 +952,8 @@ function drawToCanvas(canvas, img, maxW, maxH) {
 }
 
 function renderToCell(agentId, b64data) {
-  const rec = ensureAgentCell(agentId);
+  const rec = agentCells[agentId];
+  if (!rec) return;
   const img = new Image();
   img.onload = () => {
     rec.emptyEl.style.display = 'none';
@@ -968,7 +1001,8 @@ function renderFrame(agentId, b64data) {
   frameCount++;
   ensureAgentCell(agentId);
   const rec = agentCells[agentId];
-  if (rec) rec.lastB64 = b64data;
+  if (!rec) return;
+  rec.lastB64 = b64data;
   renderToCell(agentId, b64data);
   if (viewMode === 'single' && controlledAgentId === agentId) {
     renderToMainCanvas(agentId, b64data);
@@ -1001,23 +1035,67 @@ function refreshAgents() {
    fetch('/api/agents').then(r=>r.json()).then(list => {
      const el = document.getElementById('agents-list');
      if (!Array.isArray(list) || list.length === 0) {
+       // Remove all stale cells when no agents connected
+       for (const id of Object.keys(agentCells)) {
+         agentCells[id].cell.remove();
+         delete agentCells[id];
+       }
+       knownAgentIds.clear();
        el.innerHTML = '<div style="padding:4px 0;color:var(--text3)">No agents connected</div>';
        return;
+     }
+     // Remove stale agents that are no longer connected
+     const activeSet = new Set(list);
+     for (const id of Object.keys(agentCells)) {
+       if (!activeSet.has(id)) {
+         agentCells[id].cell.remove();
+         delete agentCells[id];
+         knownAgentIds.delete(id);
+         if (controlledAgentId === id) controlledAgentId = null;
+       }
      }
      list.forEach(id => { knownAgentIds.add(id); ensureAgentCell(id); fetchAgentInfo(id); });
      syncAgentListFromKnown();
      renderAgentSelect(list);
    }).catch(()=>{});
-   // Also fetch hidden status
-   fetch('/api/agents/full').then(r=>r.json()).then(list => {
-     if (Array.isArray(list)) {
-       list.forEach(a => {
-         if (a.hidden) hiddenAgents.add(a.id);
-         else hiddenAgents.delete(a.id);
-       });
-       syncAgentListFromKnown();
-     }
-   }).catch(()=>{});
+    // Also fetch hidden status
+    fetch('/api/agents/full').then(r=>r.json()).then(list => {
+      if (Array.isArray(list)) {
+        list.forEach(a => {
+          if (a.hidden) hiddenAgents.add(a.id);
+          else hiddenAgents.delete(a.id);
+        });
+        syncAgentListFromKnown();
+        // Apply hidden class to grid cells after loading hidden status
+        for (const [agentId, cellObj] of Object.entries(agentCells)) {
+          if (hiddenAgents.has(agentId)) {
+            cellObj.cell.classList.add('agent-hidden');
+          } else {
+            cellObj.cell.classList.remove('agent-hidden');
+          }
+        }
+      }
+    }).catch(()=>{});
+}
+
+function updateCellVisibility() {
+  const hasFilter = selectedAgents.size > 0;
+  for (const [id, rec] of Object.entries(agentCells)) {
+    const show = !hasFilter || selectedAgents.has(id);
+    rec.cell.style.display = show ? '' : 'none';
+  }
+}
+
+function toggleAgentSelection(id) {
+  if (selectedAgents.has(id)) {
+    selectedAgents.delete(id);
+  } else {
+    selectedAgents.add(id);
+  }
+  document.querySelectorAll('.agent-pill').forEach(p => {
+    p.classList.toggle('selected', selectedAgents.has(p.textContent));
+  });
+  updateCellVisibility();
 }
 
 function selectAgent(id) {
@@ -1034,28 +1112,49 @@ function renderAgentSelect(list) {
     container.className = 'agent-pills';
     document.getElementById('agent-selector-container').appendChild(container);
   }
+  const key = list.join(',') + '|' + controlledAgentId + '|' + [...selectedAgents].sort().join(',');
+  if (container._lastKey === key) return;
+  container._lastKey = key;
   container.innerHTML = '';
+  // Create dropdown toggle
+  const toggle = document.createElement('button');
+  toggle.className = 'agent-dropdown-toggle';
+  const selectedCount = selectedAgents.size;
+  toggle.textContent = selectedCount > 0 ? selectedCount + ' selected' : 'All agents';
+  toggle.title = 'Click to select/deselect agents';
+  container.appendChild(toggle);
+
+  // Create dropdown list
+  const dd = document.createElement('div');
+  dd.className = 'agent-dropdown';
   list.forEach(id => {
     knownAgentIds.add(id);
-    const pill = document.createElement('span');
-    pill.className = 'agent-pill' + (id === controlledAgentId ? ' active' : '');
-    pill.textContent = id;
-    pill.title = 'View ' + id;
-    pill.addEventListener('click', () => {
-      if (controlledAgentId === id) {
-        setViewMode('grid');
-        setControlledAgent(null);
-      } else {
-        setControlledAgent(id);
-        setViewMode('single');
-      }
-      document.querySelectorAll('.agent-pill').forEach(p => p.classList.toggle('active', p.textContent === controlledAgentId));
+    const item = document.createElement('label');
+    item.className = 'agent-dropdown-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = selectedAgents.has(id) || selectedAgents.size === 0;
+    cb.addEventListener('change', () => {
+      toggleAgentSelection(id);
+      toggle.textContent = selectedAgents.size > 0 ? selectedAgents.size + ' selected' : 'All agents';
     });
-    container.appendChild(pill);
+    const span = document.createElement('span');
+    span.textContent = id;
+    item.appendChild(cb);
+    item.appendChild(span);
+    dd.appendChild(item);
   });
+  container.appendChild(dd);
+
+  // Toggle dropdown visibility
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    dd.classList.toggle('open');
+  });
+  document.addEventListener('click', () => dd.classList.remove('open'), { once: false });
+
   if (!controlledAgentId && list.length >= 1) {
     setControlledAgent(list[0], false);
-    document.querySelectorAll('.agent-pill').forEach(p => p.classList.toggle('active', p.textContent === list[0]));
   }
 }
 
@@ -1065,9 +1164,14 @@ function fetchAgentInfo(agentId) {
      const rec = agentCells[agentId];
      if (!rec) return;
      if (info.hostname && rec.hostnameEl) rec.hostnameEl.textContent = info.hostname;
-     if (info.local_ip && rec.ipEl) rec.ipEl.textContent = info.local_ip;
-     if (info.wan_ip && rec.wanEl) rec.wanEl.textContent = info.wan_ip;
      if (info.mode && rec.modeEl) rec.modeEl.textContent = info.mode.toUpperCase();
+     if (rec.lanWanEl) {
+       const local = info.local_ip || '—';
+       const wan = info.wan_ip || '—';
+       rec.lanWanEl.textContent = 'LAN: ' + local + ' / WAN: ' + wan;
+     }
+if (info.boot_time && rec.bootEl) rec.bootEl.textContent = info.boot_time;
+      if (info.idle_time && rec.idleEl) rec.idleEl.textContent = info.idle_time;
    }).catch(() => {});
 }
 

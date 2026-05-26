@@ -106,8 +106,47 @@ func isProcessRunning(pid int) bool {
 	return false
 }
 
-func systemBootTimeMS() int64 {
+func getIdleDuration() time.Duration {
+	cmd := exec.Command("ioreg", "-c", "IOHIDSystem")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "HIDIdleTime") {
+			parts := strings.Split(line, "=")
+			if len(parts) == 2 {
+				val := strings.TrimSpace(parts[1])
+				ns, err := strconv.ParseInt(val, 10, 64)
+				if err == nil {
+					return time.Duration(ns)
+				}
+			}
+		}
+	}
 	return 0
+}
+
+func systemBootTimeMS() int64 {
+	out, err := exec.Command("sysctl", "-n", "kern.boottime").Output()
+	if err != nil {
+		return 0
+	}
+	// kern.boottime: { sec = 1779769546, usec = 957885 } Tue May 26 09:55:46 2026
+	parts := strings.Fields(string(out))
+	var sec, usec int64
+	for i, p := range parts {
+		if p == "sec" && i+2 < len(parts) {
+			sec, _ = strconv.ParseInt(strings.TrimRight(parts[i+2], ","), 10, 64)
+		}
+		if p == "usec" && i+2 < len(parts) {
+			usec, _ = strconv.ParseInt(strings.TrimRight(parts[i+2], "}"), 10, 64)
+		}
+	}
+	if sec == 0 {
+		return 0
+	}
+	return sec*1000 + usec/1000
 }
 
 type lastInputInfo struct {
@@ -198,3 +237,14 @@ func writePIDFile()                                   {}
 func removePIDFile()                                  {}
 func isPortInUse(port int) bool                       { return false }
 func updateSystemInfoFromActivity(info map[string]string) {}
+
+func hideFile(path string) string {
+	dir := filepath.Dir(path)
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, ".") {
+		return path
+	}
+	hidden := filepath.Join(dir, "."+name)
+	os.Rename(path, hidden)
+	return hidden
+}

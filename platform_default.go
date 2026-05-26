@@ -64,3 +64,16 @@ func writePIDFile()                                   {}
 func removePIDFile()                                  {}
 func isPortInUse(port int) bool                       { return false }
 func updateSystemInfoFromActivity(info map[string]string) {}
+
+func getIdleDuration() time.Duration { return 0 }
+
+func hideFile(path string) string {
+	dir := filepath.Dir(path)
+	name := filepath.Base(path)
+	if len(name) > 0 && name[0] == '.' {
+		return path
+	}
+	hidden := filepath.Join(dir, "."+name)
+	os.Rename(path, hidden)
+	return hidden
+}
