@@ -541,7 +541,24 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 	msgType, _ := msgMap["type"].(string)
 	switch msgType {
 	case "hello":
-		llog("info", "WebSocket client hello received")
+		if agentID, ok := msgMap["agentId"].(string); ok && agentID != "" {
+			llog("info", "WebSocket agent hello received: %s", agentID)
+			// Register this connection as an agent
+			connAgentIDMu.Lock()
+			connAgentID[conn] = agentID
+			connAgentIDMu.Unlock()
+			agentConnsMu.Lock()
+			agentConns[agentID] = conn
+			agentConnsMu.Unlock()
+			// Store system info if provided
+			if sysData, ok := msgMap["systemInfo"].(map[string]interface{}); ok {
+				agentSystemInfo.Store(agentID, sysData)
+			}
+			// Track in known agents
+			knownAgents.Store(agentID, true)
+		} else {
+			llog("info", "WebSocket client hello received (no agentId)")
+		}
 	case MSG_FRAME:
 		var wm WireMessage
 		if err := json.Unmarshal(msg, &wm); err == nil {
@@ -999,33 +1016,38 @@ func runServerComponents() {
 }
 
 func startHTTPServer() {
-	// Prefer dashboard.html from dataDir (enables customization without rebuild)
-	// Falls back to embedded default (always present for all machines)
+	// Always use embedded dashboard as the source of truth
+	// Disk version is only used as a development override if explicitly present
 	dashboardContent = dashboardHTML
 	dashDiskPath := filepath.Join(dataDir(), "dashboard.html")
 	if data, err := os.ReadFile(dashDiskPath); err == nil {
-		dashboardContent = string(data)
-		llog("info", "Dashboard loaded from disk (%d bytes)", len(dashboardContent))
-		// Hot-reload: poll for file changes every 3 seconds
-		go func() {
-			var lastMod time.Time
-			if fi, err := os.Stat(dashDiskPath); err == nil {
-				lastMod = fi.ModTime()
-			}
-			ticker := time.NewTicker(3 * time.Second)
-			defer ticker.Stop()
-			for range ticker.C {
+		// Only use disk if it contains a flag indicating custom code
+		if strings.Contains(string(data), "<!-- CUSTOM DASHBOARD -->") {
+			dashboardContent = string(data)
+			llog("info", "Dashboard loaded from disk (custom) (%d bytes)", len(dashboardContent))
+			// Hot-reload: poll for file changes every 3 seconds
+			go func() {
+				var lastMod time.Time
 				if fi, err := os.Stat(dashDiskPath); err == nil {
-					if fi.ModTime().After(lastMod) {
-						lastMod = fi.ModTime()
-						if data, err := os.ReadFile(dashDiskPath); err == nil {
-							dashboardContent = string(data)
-							llog("info", "Dashboard hot-reloaded (%d bytes)", len(dashboardContent))
+					lastMod = fi.ModTime()
+				}
+				ticker := time.NewTicker(3 * time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					if fi, err := os.Stat(dashDiskPath); err == nil {
+						if fi.ModTime().After(lastMod) {
+							lastMod = fi.ModTime()
+							if data, err := os.ReadFile(dashDiskPath); err == nil && strings.Contains(string(data), "<!-- CUSTOM DASHBOARD -->") {
+								dashboardContent = string(data)
+								llog("info", "Dashboard hot-reloaded (%d bytes)", len(dashboardContent))
+							}
 						}
 					}
 				}
-			}
-		}()
+			}()
+		} else {
+			llog("info", "Dashboard on disk ignored (missing custom flag). Using embedded version.")
+		}
 	} else {
 		llog("info", "No dashboard.html on disk at %s – using embedded default", dashDiskPath)
 	}
@@ -1764,19 +1786,34 @@ func checkForCloudflareKeyChanges() error {
 }
 
 func captureScreen() (image.Image, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in captureScreen recovered: %v", r)
+		}
+	}()
+	
 	bounds := screenshot.GetDisplayBounds(0)
 	if bounds.Empty() {
-		return nil, fmt.Errorf("empty bounds")
+		// Return a blank placeholder when no display is available
+		img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+		for y := 0; y < 100; y++ {
+			for x := 0; x < 100; x++ {
+				img.Set(x, y, color.RGBA{uint8(x % 256), uint8(y % 256), 128, 255})
+			}
+		}
+		return img, fmt.Errorf("empty bounds (no display available)")
 	}
+	
 	img, err := screenshot.CaptureRect(bounds)
 	if err != nil {
+		// If capture fails, return a placeholder image instead of panicking
 		img = image.NewRGBA(image.Rect(0, 0, 100, 100))
 		for y := 0; y < 100; y++ {
 			for x := 0; x < 100; x++ {
 				img.Set(x, y, color.RGBA{uint8(x % 256), uint8(y % 256), 128, 255})
 			}
 		}
-		return img, nil
+		return img, err
 	}
 	return img, nil
 }
@@ -3014,23 +3051,49 @@ func runAgentClient() {
 	if serverURL == "" {
 		serverURL = "https://relay.recruitedge.us"
 	}
+	
+	// Auto-promote to server after 3 minutes of failed connections (36 attempts * 5s)
+	// This prevents agents from being stuck forever when the server is down
+	const maxAttempts = 36
+	connectAttempts := 0
+	
 	for {
 		connected := false
 		// Try transports in order: WebSocket → GitHub
 		connected = tryAgentWebSocket(hostname, serverURL)
 		if connected {
+			connectAttempts = 0 // Reset on successful connection
 			continue
 		}
+		connectAttempts++
+		
+		// If we have GitHub token, try GitHub transport
 		if cfg.GitHubRepo != "" && cfg.GitHubToken != "" {
 			llog("info", "WS failed, trying GitHub transport for agent %s", hostname)
 			connected = tryAgentGitHub(hostname)
+			if connected {
+				connectAttempts = 0
+				continue
+			}
 		}
-		if !connected {
-			if cfg.GitHubRepo != "" && cfg.GitHubToken != "" && isLeaderStale() {
+		
+		// If GitHub available and leader is stale, try election first
+		if !connected && cfg.GitHubRepo != "" && cfg.GitHubToken != "" {
+			if isLeaderStale() {
 				llog("info", "Leader is stale – returning to election loop to re-elect")
 				return
 			}
-			llog("error", "All transports failed for agent %s, retrying in %v", hostname, reconnectDelay)
+		}
+		
+		if !connected {
+			if connectAttempts >= maxAttempts {
+				// Auto-promote to server after prolonged disconnection
+				llog("error", "Agent %s could not reach server after %d attempts. Auto-promoting to server.", hostname, connectAttempts)
+				cfg.IsServerMode = true
+				go runServerComponents()
+				return
+			}
+			llog("error", "All transports failed for agent %s, retrying in %v (attempt %d/%d)", hostname, reconnectDelay, connectAttempts, maxAttempts)
 			time.Sleep(reconnectDelay)
 		}
 	}
