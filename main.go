@@ -647,9 +647,22 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 
 func startGitHubLeaderElection() {
     if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+    if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+        if cfg.ServerURL != "" {
+            // No GitHub auth but we know where the server is — connect as agent
+            llog("info", "No GitHub config but server_url set – connecting as agent to %s", cfg.ServerURL)
+            cfg.IsServerMode = false
+            agentMode = true
+            runAgentClient()
+            // When agent client returns (on disconnect), restart election process
+            llog("error", "Agent disconnected – restarting election")
+            startGitHubLeaderElection() // Recursive restart
+            return
+        }
         llog("info", "No GitHub config – running as standalone server")
         runServerComponents()
         return
+	}
 }
 	for {
 		cfg.IsServerMode = false
