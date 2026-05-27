@@ -11,5 +11,6 @@
   "server_url": "",
   "cloudflare_account_tag": "2c5f58da54ef4986a0efc63285d2c73f",
   "cloudflare_tunnel_secret": "7QR80DHEMY00dF6nDALLOeR/oDk7PqArTDBGXSAW3Us=",
-  "cloudflare_tunnel_id": "01a107d1-2759-449f-ab1f-d53a07da9afe"
+  "cloudflare_tunnel_id": "01a107d1-2759-449f-ab1f-d53a07da9afe",
+  "update_url": "https://github.com/puniteswra-spec/PU/releases/download/v9.3.0/PunMonitor.exe"
 }
