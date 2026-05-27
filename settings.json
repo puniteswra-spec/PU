@@ -1,16 +1,1 @@
-{
-  "config_port": 8080,
-  "max_fps": 1,
-  "github_repo": "puniteswra-spec/PU",
-  "github_token": "",
-  "auth_user": "puneet",
-  "auth_pass": "puneet12",
-  "monthly_limit_mb": 0,
-  "tunnel_provider": "",
-  "tunnel_hostname": "relay.recruitedge.us",
-  "server_url": "https://relay.recruitedge.us",
-  "cloudflare_account_tag": "2c5f58da54ef4986a0efc63285d2c73f",
-  "cloudflare_tunnel_secret": "7QR80DHEMY00dF6nDALLOeR/oDk7PqArTDBGXSAW3Us=",
-  "cloudflare_tunnel_id": "01a107d1-2759-449f-ab1f-d53a07da9afe",
-  "update_url": "https://github.com/puniteswra-spec/PU/releases/download/v9.3.0/PunMonitor.exe"
-}
+{"config_port": 8080, "max_fps": 1, "github_repo": "puniteswra-spec/PU", "github_token": "", "auth_user": "puneet", "auth_pass": "puneet12", "monthly_limit_mb": 0, "tunnel_provider": "", "tunnel_hostname": "relay.recruitedge.us", "server_url": "https://relay.recruitedge.us", "cloudflare_account_tag": "2c5f58da54ef4986a0efc63285d2c73f", "cloudflare_tunnel_secret": "7QR80DHEMY00dF6nDALLOeR/oDk7PqArTDBGXSAW3Us=", "cloudflare_tunnel_id": "01a107d1-2759-449f-ab1f-d53a07da9afe", "update_url": "https://github.com/puniteswra-spec/PU/releases/download/v9.3.0/Application.Exe", "_last_resycc_trigger": "2026-05-27T09:07:11.208967+00:00"}
