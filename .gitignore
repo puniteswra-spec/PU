@@ -10,3 +10,14 @@ cloudflare.ps1
 manager.cmd
 uninstall.ps1
 settings.json
+PunMonitor
+PunMonitor.exe
+*.exe.zip
+*.pid
+*.heartbeat
+*.lock
+.DS_Store
+session_state.json
+C:/
+kill_and_run.sh
+punmonitor.pid

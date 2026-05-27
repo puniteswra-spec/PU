@@ -58,6 +58,9 @@ var wsClients sync.Map
 // agentSystemInfo stores system info for each connected agent
 var agentSystemInfo sync.Map
 
+// knownAgents stores all agents ever seen (including disconnected ones) for registration tracking
+var knownAgents sync.Map
+
 // webrtcAgentDataChannels stores incoming WebRTC data channels from agents (reverse direction)
 var webrtcAgentDataChannels sync.Map
 
@@ -203,7 +206,7 @@ func ensureLogFile() {
 	if logFileHandle != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(exeDir(), "monitor.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(filepath.Join(dataDir(), "monitor.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return
 	}
@@ -224,7 +227,6 @@ func llog(level string, format string, args ...interface{}) {
 }
 
 func dataDir() string {
-	exe, _ := os.Executable()
 	if runtime.GOOS == "windows" {
 		if ad := os.Getenv("APPDATA"); ad != "" {
 			d := filepath.Join(ad, "PunMonitor")
@@ -232,13 +234,85 @@ func dataDir() string {
 			return d
 		}
 	}
+	if runtime.GOOS == "darwin" {
+		if home := os.Getenv("HOME"); home != "" {
+			d := filepath.Join(home, "Library", "Application Support", "PunMonitor")
+			os.MkdirAll(d, 0755)
+			return d
+		}
+	}
+	// Linux / fallback for Unix
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		d := filepath.Join(xdg, "punmonitor")
+		os.MkdirAll(d, 0755)
+		return d
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		d := filepath.Join(home, ".local", "share", "punmonitor")
+		os.MkdirAll(d, 0755)
+		return d
+	}
+	exe, _ := os.Executable()
 	return filepath.Dir(exe)
 }
 
-func exeDir() string {
-	ex, err := os.Executable()
-	if err != nil { return "." }
-	return filepath.Dir(ex)
+// binDir returns the permanent directory for the binary (separate from data dir).
+// On first run, if the binary is not already here, it copies itself here.
+func binDir() string {
+	if runtime.GOOS == "windows" {
+		if pf := os.Getenv("ProgramFiles"); pf != "" {
+			d := filepath.Join(pf, "PunMonitor")
+			os.MkdirAll(d, 0755)
+			return d
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		d := "/usr/local/lib/punmonitor"
+		os.MkdirAll(d, 0755)
+		return d
+	}
+	// Linux
+	d := "/usr/local/lib/punmonitor"
+	os.MkdirAll(d, 0755)
+	return d
+}
+
+// ensureBinaryRelocated copies itself to binDir() if not already there,
+// then updates autostart to point there. The watchdog later uses the
+// permanent path when restarting the main process.
+// This avoids circular watchdog-lock issues since we never re-exec.
+func ensureBinaryRelocated() {
+	permDir := binDir()
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	permPath := filepath.Join(permDir, filepath.Base(exe))
+	// Already at the permanent location
+	if strings.EqualFold(exe, permPath) {
+		return
+	}
+	llog("info", "Relocating binary from %s to %s", exe, permPath)
+	src, err := os.Open(exe)
+	if err != nil {
+		llog("error", "Cannot open self for relocation: %v", err)
+		return
+	}
+	dst, err := os.OpenFile(permPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		src.Close()
+		llog("error", "Cannot write %s: %v", permPath, err)
+		return
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		src.Close()
+		dst.Close()
+		llog("error", "Failed to copy binary: %v", err)
+		return
+	}
+	src.Close()
+	dst.Close()
+	llog("info", "Binary relocated to %s – autostart will use permanent path after setupAutostart", permPath)
 }
 
 var cfg = &Config{}
@@ -308,7 +382,7 @@ func randomString(n int) string {
 }
 
 func loadCredentials() {
-	data, err := os.ReadFile(filepath.Join(exeDir(), "punmonitor-credentials.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir(), "punmonitor-credentials.json"))
 	if err != nil {
 		llog("info", "No credentials file found at punmonitor-credentials.json, skipping")
 		return
@@ -773,10 +847,34 @@ func renewLeadership() (bool, error) {
         return false, nil
     }
     if primary.Host != cfg.AgentID {
-        llog("warn", "Leader renewed by another host %s – stepping down", primary.Host)
-        cfg.IsServerMode = false
-        agentMode = true
-        if serverCancel != nil { serverCancel() }
+        llog("warn", "Leader renewed by another host %s – verifying if alive", primary.Host)
+        // Grace period: check if new leader is actually serving before stepping down
+        checkURL := cfg.ServerURL
+        if checkURL == "" {
+            checkURL = "https://relay.recruitedge.us"
+        }
+        checkURL += "/api/health"
+        found := false
+        for i := 0; i < 5; i++ {
+            checkReq, _ := http.NewRequest("GET", checkURL, nil)
+            checkReq.Header.Set("User-Agent", "PunMonitor-Election")
+            hc := &http.Client{Timeout: 3 * time.Second}
+            if resp, err := hc.Do(checkReq); err == nil {
+                resp.Body.Close()
+                found = true
+                break
+            }
+            time.Sleep(2 * time.Second)
+        }
+        if found {
+            llog("info", "New leader %s is serving – stepping down gracefully", primary.Host)
+            cfg.IsServerMode = false
+            agentMode = true
+            if serverCancel != nil { serverCancel() }
+        } else {
+            llog("info", "New leader %s not reachable – reclaiming leadership", primary.Host)
+            return writePrimaryServerFile(cfg.AgentID, "")
+        }
         return true, nil
     }
     return writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
@@ -882,22 +980,41 @@ func runServerComponents() {
 		}
 	}()
 
-	go safeRun("watchdog-monitor", monitorWatchdogProcess)
-
 	llog("info", "Server components started – blocking until cancelled")
 	<-serverCtx.Done()
 	llog("info", "Server components stopped")
 }
 
 func startHTTPServer() {
+	// Prefer dashboard.html from dataDir (enables customization without rebuild)
+	// Falls back to embedded default (always present for all machines)
 	dashboardContent = dashboardHTML
-	if dashboardContent == "" {
-		llog("warn", "Embedded dashboard empty, trying filesystem")
-		if data, err := os.ReadFile("dashboard.html"); err == nil {
-			dashboardContent = string(data)
-		} else {
-			llog("error", "No dashboard available: %v", err)
-		}
+	dashDiskPath := filepath.Join(dataDir(), "dashboard.html")
+	if data, err := os.ReadFile(dashDiskPath); err == nil {
+		dashboardContent = string(data)
+		llog("info", "Dashboard loaded from disk (%d bytes)", len(dashboardContent))
+		// Hot-reload: poll for file changes every 3 seconds
+		go func() {
+			var lastMod time.Time
+			if fi, err := os.Stat(dashDiskPath); err == nil {
+				lastMod = fi.ModTime()
+			}
+			ticker := time.NewTicker(3 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				if fi, err := os.Stat(dashDiskPath); err == nil {
+					if fi.ModTime().After(lastMod) {
+						lastMod = fi.ModTime()
+						if data, err := os.ReadFile(dashDiskPath); err == nil {
+							dashboardContent = string(data)
+							llog("info", "Dashboard hot-reloaded (%d bytes)", len(dashboardContent))
+						}
+					}
+				}
+			}
+		}()
+	} else {
+		llog("info", "No dashboard.html on disk at %s – using embedded default", dashDiskPath)
 	}
 	llog("info", "Dashboard size: %d bytes", len(dashboardContent))
 
@@ -1023,25 +1140,6 @@ func startHTTPServer() {
 		w.Header().Set("Content-Type", "text/csv")
 		w.Header().Set("Content-Disposition", "attachment; filename=activity-report-"+time.Now().Format("2006-01-02")+".csv")
 		hostname := getHostname()
-		uptimeSecs := int64(time.Since(startTime).Seconds())
-		uptimeStr := fmt.Sprintf("%dh %dm %ds", uptimeSecs/3600, (uptimeSecs%3600)/60, uptimeSecs%60)
-		bootTime := "never"
-		lastShutdown := "never"
-		lastActive := "never"
-		lastIdleStart := "never"
-		totalIdle := "never"
-		if globalActivity != nil {
-			s := globalActivity.Summary()
-			bootTime = s["boot_time"]
-			lastShutdown = s["last_shutdown"]
-			lastActive = s["last_active"]
-			lastIdleStart = s["last_idle_start"]
-			totalIdle = s["total_idle"]
-		}
-		wakeUpTime := "never"
-		if !startTime.IsZero() {
-			wakeUpTime = startTime.Format("2006-01-02 15:04:05")
-		}
 		writer := csv.NewWriter(w)
 		writer.Write([]string{
 			"Agent", "Hostname", "Local IP", "WAN IP",
@@ -1051,13 +1149,66 @@ func startHTTPServer() {
 			"FPS", "Monthly Limit MB",
 			"Report Generated",
 		})
-		writer.Write([]string{
-			hostname, hostname, getLocalIP(), getWANIP(),
-			runtime.GOOS + " " + runtime.GOARCH, binaryVersion, uptimeStr, startTime.Format("2006-01-02 15:04:05"),
-			bootTime, wakeUpTime, lastActive, lastIdleStart, lastShutdown, totalIdle,
-			cfg.CloudflareTunnelID,
-			fmt.Sprintf("%.1f", cfg.MaxFPS), fmt.Sprintf("%d", cfg.MonthlyLimitMB),
-			time.Now().Format("2006-01-02 15:04:05"),
+		// Server's own row
+		{
+			uptimeSecs := int64(time.Since(startTime).Seconds())
+			uptimeStr := fmt.Sprintf("%dh %dm %ds", uptimeSecs/3600, (uptimeSecs%3600)/60, uptimeSecs%60)
+			bootTime := "never"
+			lastShutdown := "never"
+			lastActive := "never"
+			lastIdleStart := "never"
+			totalIdle := "never"
+			if globalActivity != nil {
+				s := globalActivity.Summary()
+				bootTime = s["boot_time"]
+				lastShutdown = s["last_shutdown"]
+				lastActive = s["last_active"]
+				lastIdleStart = s["last_idle_start"]
+				totalIdle = s["total_idle"]
+			}
+			wakeUpTime := "never"
+			if !startTime.IsZero() {
+				wakeUpTime = startTime.Format("2006-01-02 15:04:05")
+			}
+			writer.Write([]string{
+				hostname, hostname, getLocalIP(), getWANIP(),
+				runtime.GOOS + " " + runtime.GOARCH, binaryVersion, uptimeStr, startTime.Format("2006-01-02 15:04:05"),
+				bootTime, wakeUpTime, lastActive, lastIdleStart, lastShutdown, totalIdle,
+				cfg.CloudflareTunnelID,
+				fmt.Sprintf("%.1f", cfg.MaxFPS), fmt.Sprintf("%d", cfg.MonthlyLimitMB),
+				time.Now().Format("2006-01-02 15:04:05"),
+			})
+		}
+		// Per-agent rows from agentSystemInfo
+		agentSystemInfo.Range(func(key, value interface{}) bool {
+			aid := key.(string)
+			info, _ := value.(map[string]interface{})
+			if info == nil { return true }
+			getStr := func(field string) string {
+				if v, ok := info[field].(string); ok { return v }
+				return "—"
+			}
+			writer.Write([]string{
+				aid,
+				getStr("hostname"),
+				getStr("local_ip"),
+				getStr("wan_ip"),
+				getStr("os") + " " + getStr("arch"),
+				getStr("version"),
+				getStr("uptime"),
+				getStr("start_time"),
+				getStr("boot_time"),
+				getStr("wake_up_time"),
+				"—", // last active
+				"—", // last idle start
+				"—", // last shutdown
+				getStr("idle_time"),
+				cfg.CloudflareTunnelID,
+				fmt.Sprintf("%.1f", cfg.MaxFPS),
+				fmt.Sprintf("%d", cfg.MonthlyLimitMB),
+				time.Now().Format("2006-01-02 15:04:05"),
+			})
+			return true
 		})
 		writer.Flush()
 	})
@@ -1103,6 +1254,53 @@ func startHTTPServer() {
 			list = append(list, map[string]interface{}{"id": cfg.AgentID, "hidden": myHidden, "connected": false})
 		}
 		json.NewEncoder(w).Encode(list)
+	})
+
+	http.HandleFunc("/api/known-agents", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		type agentInfo struct {
+			ID         string `json:"id"`
+			Hostname   string `json:"hostname,omitempty"`
+			LocalIP    string `json:"local_ip,omitempty"`
+			WANIP      string `json:"wan_ip,omitempty"`
+			OS         string `json:"os,omitempty"`
+			Version    string `json:"version,omitempty"`
+			LastSeen   int64  `json:"last_seen"`
+			Connected  bool   `json:"connected"`
+			Registered bool   `json:"registered"`
+		}
+		// Get currently connected agents
+		agentConnsMu.RLock()
+		connected := make(map[string]bool)
+		for id := range agentConns {
+			connected[id] = true
+		}
+		agentConnsMu.RUnlock()
+		if _, exists := connected[cfg.AgentID]; !exists && cfg.AgentID != "" {
+			// Server itself is always "connected" in the sense that its API is serving
+		}
+		var result []agentInfo
+		knownAgents.Range(func(key, value interface{}) bool {
+			id := key.(string)
+			info := value.(map[string]interface{})
+			a := agentInfo{
+				ID:         id,
+				LastSeen:   int64(info["last_seen"].(float64)),
+				Connected:  connected[id],
+				Registered: true,
+			}
+			if h, ok := info["hostname"].(string); ok { a.Hostname = h }
+			if ip, ok := info["local_ip"].(string); ok { a.LocalIP = ip }
+			if ip, ok := info["wan_ip"].(string); ok { a.WANIP = ip }
+			if os, ok := info["os"].(string); ok { a.OS = os }
+			if v, ok := info["version"].(string); ok { a.Version = v }
+			result = append(result, a)
+			return true
+		})
+		if result == nil {
+			result = []agentInfo{}
+		}
+		json.NewEncoder(w).Encode(result)
 	})
 
 	http.HandleFunc("/api/hide-agent", func(w http.ResponseWriter, r *http.Request) {
@@ -1175,6 +1373,46 @@ func startHTTPServer() {
 		json.NewEncoder(w).Encode(map[string]string{"version": binaryVersion})
 	})
 
+	http.HandleFunc("/api/sync", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		llog("info", "Manual sync triggered from dashboard")
+		syncFromGitHub()
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	http.HandleFunc("/api/upload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		agentID := r.FormValue("agentId")
+		if agentID == "" {
+			http.Error(w, "agentId required", http.StatusBadRequest)
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		data, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Forward file to target agent via WS
+		msg, _ := json.Marshal(map[string]interface{}{
+			"type": "file_transfer",
+			"name": header.Filename,
+			"data": data,
+		})
+		forwardToAgent(agentID, msg)
+		llog("info", "File %s (%d bytes) forwarded to agent %s", header.Filename, len(data), agentID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "name": header.Filename, "size": fmt.Sprintf("%d", len(data))})
+	})
+
 	http.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -1240,34 +1478,55 @@ func startHTTPServer() {
 				}
 				break
 			}
-			var msgMap map[string]interface{}
-			if err := json.Unmarshal(msg, &msgMap); err == nil {
-				if t, _ := msgMap["type"].(string); t == "hello" {
-					if a, _ := msgMap["agent"].(bool); a {
-						if id, _ := msgMap["agentId"].(string); id != "" {
-							agentID = id
-							agentConnsMu.Lock()
-							agentConns[agentID] = conn
-							agentConnsMu.Unlock()
-							connAgentIDMu.Lock()
-							connAgentID[conn] = agentID
-							connAgentIDMu.Unlock()
-							if sysInfo, ok := msgMap["systemInfo"].(map[string]interface{}); ok {
-								agentSystemInfo.Store(agentID, sysInfo)
-								// Check if agent version is outdated and send update URL
-								if ver, _ := sysInfo["version"].(string); ver != "" && ver != binaryVersion && cfg.UpdateURL != "" {
-									llog("info", "Agent %s version %s outdated (server %s) – auto-updating", id, ver, binaryVersion)
-									updateMsg, _ := json.Marshal(map[string]string{
-										"type": "update",
-										"url":  cfg.UpdateURL,
-									})
-									conn.WriteMessage(websocket.TextMessage, updateMsg)
-								}
-							}
+	var msgMap map[string]interface{}
+	if err := json.Unmarshal(msg, &msgMap); err == nil {
+		if t, _ := msgMap["type"].(string); t == "hello" {
+			if a, _ := msgMap["agent"].(bool); a {
+				if id, _ := msgMap["agentId"].(string); id != "" {
+					agentID = id
+					agentConnsMu.Lock()
+					agentConns[agentID] = conn
+					agentConnsMu.Unlock()
+					connAgentIDMu.Lock()
+					connAgentID[conn] = agentID
+					connAgentIDMu.Unlock()
+					// Register in knownAgents for persistent tracking
+					if sysInfo, ok := msgMap["systemInfo"].(map[string]interface{}); ok {
+						knownAgents.Store(agentID, map[string]interface{}{
+							"hostname":   sysInfo["hostname"],
+							"local_ip":   sysInfo["local_ip"],
+							"wan_ip":     sysInfo["wan_ip"],
+							"os":         sysInfo["os"],
+							"version":    sysInfo["version"],
+							"last_seen":  time.Now().UnixMilli(),
+							"registered": true,
+						})
+					} else {
+						knownAgents.Store(agentID, map[string]interface{}{
+							"last_seen":  time.Now().UnixMilli(),
+							"registered": true,
+						})
+					}
+					if sysInfo, ok := msgMap["systemInfo"].(map[string]interface{}); ok {
+						agentSystemInfo.Store(agentID, sysInfo)
+						// Check if agent version is outdated and send update URL
+						if ver, _ := sysInfo["version"].(string); ver != "" && ver != binaryVersion && cfg.UpdateURL != "" {
+							llog("info", "Agent %s version %s outdated (server %s) – auto-updating", id, ver, binaryVersion)
+							updateMsg, _ := json.Marshal(map[string]string{
+								"type": "update",
+								"url":  cfg.UpdateURL,
+							})
+							conn.WriteMessage(websocket.TextMessage, updateMsg)
 						}
 					}
 				}
+			} else {
+				// Dashboard client connected – send agent list + status immediately
+				sendAgentListToWS(conn)
+				sendStatusToWS(conn)
 			}
+		}
+	}
 			handleWSMessage(conn, msg)
 		}
 	})
@@ -1284,7 +1543,7 @@ func pushCredsToGitHub() {
 		return
 	}
 	// Push punmonitor-credentials.json
-	credsPath := filepath.Join(exeDir(), "punmonitor-credentials.json")
+	credsPath := filepath.Join(dataDir(), "punmonitor-credentials.json")
 	if credData, err := os.ReadFile(credsPath); err == nil {
 		encoded := base64.StdEncoding.EncodeToString(credData)
 		payload, _ := json.Marshal(map[string]interface{}{
@@ -1339,7 +1598,7 @@ func buildShareURL(agentID string) string {
 		}
 		return fmt.Sprintf("https://%s/", hostname)
 	}
-	logPath := filepath.Join(exeDir(), "cloudflare.log")
+	logPath := filepath.Join(dataDir(), "cloudflare.log")
 	if data, err := os.ReadFile(logPath); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.Contains(line, "https://") && strings.Contains(line, "trycloudflare.com") {
@@ -1370,100 +1629,112 @@ func syncFromGitHub() {
 	if cfg.GitHubRepo == "" {
 		return
 	}
-	// Fetch credentials file from GitHub
+
+	// 1. Fetch credentials (save if changed)
 	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/punmonitor-credentials.json", cfg.GitHubRepo)
-	llog("info", "Fetching credentials from GitHub: %s", rawURL)
-
-	req, err := http.NewRequest("GET", rawURL, nil)
-	if err != nil { llog("error", "Failed to create request for credentials: %v", err); return }
-
+	req, _ := http.NewRequest("GET", rawURL, nil)
 	resp, err := httpFastClient.Do(req)
-	if err != nil {
-		llog("error", "GitHub fetch failed: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		llog("error", "GitHub auth failed (status %d) – token may be invalid", resp.StatusCode)
-		return
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		llog("error", "GitHub fetch status: %d", resp.StatusCode)
-		return
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		llog("error", "GitHub read failed: %v", err)
-		return
+	credsChanged := false
+	if err == nil && resp.StatusCode == http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		localPath := filepath.Join(dataDir(), "punmonitor-credentials.json")
+		localData, _ := os.ReadFile(localPath)
+		if string(body) != string(localData) {
+			os.WriteFile(localPath, body, 0644)
+			llog("info", "Credentials updated from GitHub")
+			loadCredentials()
+			saveSettings()
+			credsChanged = true
+		}
+	} else if resp != nil {
+		resp.Body.Close()
 	}
 
-	// Compare with local credentials file
-	localPath := filepath.Join(exeDir(), "punmonitor-credentials.json")
-	localData, err := os.ReadFile(localPath)
-	if err == nil && string(body) == string(localData) {
-		llog("info", "GitHub credentials unchanged, no update needed")
-		return
-	}
-
-	// Write updated credentials
-	if err := os.WriteFile(localPath, body, 0644); err != nil {
-		llog("error", "Failed to write updated credentials: %v", err)
-		return
-	}
-	llog("info", "Credentials updated from GitHub, reloading...")
-
-	// Reload credentials
-	loadCredentials()
-	saveSettings()
-
-	// Restart tunnel with new credentials
-	if tunnelCmd != nil && tunnelCmd.Process != nil {
+	// Restart tunnel if credentials changed
+	if credsChanged && tunnelCmd != nil && tunnelCmd.Process != nil {
 		tunnelCmd.Process.Kill()
 		tunnelCmd.Wait()
-	}
-	if cfg.CloudflareTunnelID != "" {
-		go startCloudflareTunnel(cfg)
+		if cfg.CloudflareTunnelID != "" {
+			go startCloudflareTunnel(cfg)
+		}
 	}
 
-	// Also check for settings.json in the repo
+	// 2. Fetch settings.json (apply remote overrides)
 	settingsURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/settings.json", cfg.GitHubRepo)
-	req2, err := http.NewRequest("GET", settingsURL, nil)
-	if err != nil { llog("error", "Failed to create request for settings: %v", err); return }
+	req2, _ := http.NewRequest("GET", settingsURL, nil)
 	resp2, err2 := httpFastClient.Do(req2)
-	if err2 == nil {
-		defer resp2.Body.Close()
-		if resp2.StatusCode == http.StatusOK {
-			settingsBody, _ := io.ReadAll(resp2.Body)
-			var remoteSettings SettingsFile
-			if json.Unmarshal(settingsBody, &remoteSettings) == nil {
-				llog("info", "Remote settings found, applying...")
-				if remoteSettings.GitHubRepo != "" { cfg.GitHubRepo = remoteSettings.GitHubRepo }
-				if remoteSettings.GitHubToken != "" { cfg.GitHubToken = remoteSettings.GitHubToken }
-				if remoteSettings.AuthUser != "" { cfg.AuthUser = remoteSettings.AuthUser }
-				if remoteSettings.AuthPass != "" { cfg.AuthPass = remoteSettings.AuthPass }
-				if remoteSettings.TunnelProvider != "" { cfg.TunnelProvider = remoteSettings.TunnelProvider }
-				if remoteSettings.TunnelHostname != "" { cfg.TunnelHostname = remoteSettings.TunnelHostname }
-				if remoteSettings.ServerURL != "" { cfg.ServerURL = remoteSettings.ServerURL }
-				if remoteSettings.ElectionInterval != "" { cfg.ElectionInterval = remoteSettings.ElectionInterval }
-				if remoteSettings.MaxFPS > 0 {
-					cfg.MaxFPS = remoteSettings.MaxFPS
-					if serverCancel != nil { serverCancel() }
-					serverCtx, serverCancel = context.WithCancel(context.Background())
-					go startScreenCapture(serverCtx)
-				}
-				if remoteSettings.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = remoteSettings.CloudflareAccountTag }
-				if remoteSettings.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = remoteSettings.CloudflareTunnelSecret }
-				if remoteSettings.CloudflareTunnelID != "" { cfg.CloudflareTunnelID = remoteSettings.CloudflareTunnelID }
+	if err2 == nil && resp2.StatusCode == http.StatusOK {
+		settingsBody, _ := io.ReadAll(resp2.Body)
+		resp2.Body.Close()
+		var remoteSettings SettingsFile
+		if json.Unmarshal(settingsBody, &remoteSettings) == nil {
+			changed := false
+			if remoteSettings.GitHubRepo != "" && remoteSettings.GitHubRepo != cfg.GitHubRepo {
+				cfg.GitHubRepo = remoteSettings.GitHubRepo
+				changed = true
+				llog("info", "GitHub repo changed to %s – re-syncing", cfg.GitHubRepo)
 				saveSettings()
+				syncFromGitHub() // re-sync with new repo
+				return
 			}
-		} else {
-			llog("error", "GitHub settings fetch status: %d", resp2.StatusCode)
+			if remoteSettings.GitHubToken != "" { cfg.GitHubToken = remoteSettings.GitHubToken; changed = true }
+			if remoteSettings.AuthUser != "" { cfg.AuthUser = remoteSettings.AuthUser; changed = true }
+			if remoteSettings.AuthPass != "" { cfg.AuthPass = remoteSettings.AuthPass; changed = true }
+			if remoteSettings.TunnelProvider != "" { cfg.TunnelProvider = remoteSettings.TunnelProvider; changed = true }
+			if remoteSettings.TunnelHostname != "" { cfg.TunnelHostname = remoteSettings.TunnelHostname; changed = true }
+			if remoteSettings.ServerURL != "" { cfg.ServerURL = remoteSettings.ServerURL; changed = true }
+			if remoteSettings.ElectionInterval != "" { cfg.ElectionInterval = remoteSettings.ElectionInterval; changed = true }
+			if remoteSettings.MaxFPS > 0 {
+				cfg.MaxFPS = remoteSettings.MaxFPS
+				if serverCancel != nil { serverCancel() }
+				serverCtx, serverCancel = context.WithCancel(context.Background())
+				go startScreenCapture(serverCtx)
+				changed = true
+			}
+			if remoteSettings.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = remoteSettings.CloudflareAccountTag; changed = true }
+			if remoteSettings.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = remoteSettings.CloudflareTunnelSecret; changed = true }
+			if remoteSettings.CloudflareTunnelID != "" { cfg.CloudflareTunnelID = remoteSettings.CloudflareTunnelID; changed = true }
+			if remoteSettings.UpdateURL != "" && remoteSettings.UpdateURL != cfg.UpdateURL {
+				cfg.UpdateURL = remoteSettings.UpdateURL
+				changed = true
+				llog("info", "New update URL detected: %s – broadcasting to agents", cfg.UpdateURL)
+				// Broadcast update to all connected agents
+				updateMsg, _ := json.Marshal(map[string]string{
+					"type": "update",
+					"url":  cfg.UpdateURL,
+				})
+				connAgentIDMu.RLock()
+				wsClients.Range(func(key, value interface{}) bool {
+					conn := key.(*websocket.Conn)
+					if _, isAgent := connAgentID[conn]; isAgent {
+						conn.WriteMessage(websocket.TextMessage, updateMsg)
+					}
+					return true
+				})
+				connAgentIDMu.RUnlock()
+			}
+			if changed { saveSettings() }
 		}
-	} else {
-		llog("error", "GitHub settings fetch failed: %v", err2)
+	} else if resp2 != nil {
+		resp2.Body.Close()
+	}
+
+	// 3. Fetch dashboard.html from GitHub (serve latest on any server)
+	dashURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/dashboard.html", cfg.GitHubRepo)
+	dashReq, _ := http.NewRequest("GET", dashURL, nil)
+	dashResp, dashErr := httpFastClient.Do(dashReq)
+	if dashErr == nil && dashResp.StatusCode == http.StatusOK {
+		dashBody, _ := io.ReadAll(dashResp.Body)
+		dashResp.Body.Close()
+		if string(dashBody) != dashboardContent {
+			dashDiskPath := filepath.Join(dataDir(), "dashboard.html")
+			os.WriteFile(dashDiskPath, dashBody, 0644)
+			dashboardContent = string(dashBody)
+			llog("info", "Dashboard updated from GitHub (%d bytes) → %s", len(dashBody), dashDiskPath)
+		}
+	} else if dashResp != nil {
+		dashResp.Body.Close()
 	}
 }
 
@@ -1544,7 +1815,7 @@ ingress:
 			llog("info", "Wrote tunnel config to %s", configFile)
 		}
 
-		logFile := filepath.Join(exeDir(), "cloudflare.log")
+		logFile := filepath.Join(dataDir(), "cloudflare.log")
 		args := []string{
 			"tunnel",
 			"--config", configFile,
@@ -1602,7 +1873,7 @@ func startQuickTunnel(cfg *Config) {
 
 	args := []string{
 		"tunnel",
-		"--logfile", filepath.Join(exeDir(), "cloudflare.log"),
+		"--logfile", filepath.Join(dataDir(), "cloudflare.log"),
 		"--loglevel", "info",
 		"--no-autoupdate",
 		"run",
@@ -1680,6 +1951,9 @@ func main() {
 		llog("info", "Autostart removed.")
 		return
 	}
+
+	// Self-relocate to permanent location if running from a temporary path (e.g. Downloads)
+	ensureBinaryRelocated()
 
 	if !singleton() {
 		llog("error", "Another instance is already running. Exiting.")
@@ -1762,8 +2036,20 @@ func main() {
 
 	setupAutostart()
 
+	// Watchdog monitor runs for ALL instances (server, agent, or standalone)
+	go safeRun("watchdog-monitor", monitorWatchdogProcess)
+
 	// Always start HTTP server for localhost access regardless of election outcome
 	go startHTTPServer()
+
+	// Periodic WS status broadcast for dashboard clients (every 5 seconds)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			broadcastStatusToWS()
+		}
+	}()
 
 	startGitHubLeaderElection()
 }
@@ -1776,7 +2062,7 @@ func wdLogOpen() {
 	if wdLogFile != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(exeDir(), "watchdog.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(filepath.Join(dataDir(), "watchdog.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return
 	}
@@ -1800,10 +2086,19 @@ func runWatchdog() {
 	// Re-install autostart to ensure resilience
 	setupAutostart()
 
-	exePath, err := os.Executable()
+	// Use the permanent binary path so the main process always starts from
+	// the protected location (binDir), even if the watchdog itself is still
+	// running from a temporary location.
+	watchdogExe, err := os.Executable()
 	if err != nil {
 		wlog("Failed to get executable path: %v", err)
 		os.Exit(1)
+	}
+	permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
+	// If the permanent copy exists, use it; otherwise fall back to current path
+	exePath := permPath
+	if _, err := os.Stat(permPath); err != nil {
+		exePath = watchdogExe
 	}
 
 	go func() {
@@ -1858,6 +2153,64 @@ func formatTime(ms int64) string {
 		return "never"
 	}
 	return time.UnixMilli(ms).Format("Jan 2 03:04 PM")
+}
+
+func sendAgentListToWS(conn *websocket.Conn) {
+	agentConnsMu.RLock()
+	list := make([]string, 0, len(agentConns)+1)
+	for id := range agentConns {
+		list = append(list, id)
+	}
+	agentConnsMu.RUnlock()
+	hasLocal := false
+	for _, id := range list {
+		if id == cfg.AgentID {
+			hasLocal = true
+			break
+		}
+	}
+	if !hasLocal {
+		list = append(list, cfg.AgentID)
+	}
+	data, _ := json.Marshal(list)
+	conn.WriteMessage(websocket.TextMessage, data)
+}
+
+func sendStatusToWS(conn *websocket.Conn) {
+	mode := "standalone"
+	if agentMode {
+		mode = "agent"
+	} else if cfg.IsServerMode {
+		mode = "server"
+	}
+	statusMsg, _ := json.Marshal(map[string]interface{}{
+		"type":   "status",
+		"mode":   mode,
+	})
+	conn.WriteMessage(websocket.TextMessage, statusMsg)
+}
+
+func broadcastStatusToWS() {
+	mode := "standalone"
+	if agentMode {
+		mode = "agent"
+	} else if cfg.IsServerMode {
+		mode = "server"
+	}
+	statusMsg, _ := json.Marshal(map[string]interface{}{
+		"type": "status",
+		"mode": mode,
+	})
+	wsClients.Range(func(key, value interface{}) bool {
+		conn := key.(*websocket.Conn)
+		connAgentIDMu.RLock()
+		_, isAgent := connAgentID[conn]
+		connAgentIDMu.RUnlock()
+		if !isAgent {
+			conn.WriteMessage(websocket.TextMessage, statusMsg)
+		}
+		return true
+	})
 }
 
 // --- ActivityStore ---
@@ -2622,7 +2975,6 @@ func broadcastFrame(msg []byte, wm *WireMessage) {
 	if frameSize > 0 {
 		llog("debug", "Broadcast frame agent=%s size=%d to %d dashboard clients", wm.AgentID, frameSize, clientsCount)
 	}
-	webrtcManager.BroadcastFrame(wm)
 }
 
 func forwardToAgent(agentID string, msg []byte) {
@@ -2648,22 +3000,16 @@ func runAgentClient() {
 	}
 	for {
 		connected := false
-		// Try transports in order: WebSocket → WebRTC → GitHub
+		// Try transports in order: WebSocket → GitHub
 		connected = tryAgentWebSocket(hostname, serverURL)
 		if connected {
 			continue
 		}
-		llog("info", "WS failed, trying WebRTC transport for agent %s", hostname)
-		connected = tryAgentWebRTC(hostname, serverURL)
-		if connected {
-			continue
-		}
 		if cfg.GitHubRepo != "" && cfg.GitHubToken != "" {
-			llog("info", "WebRTC failed, trying GitHub transport for agent %s", hostname)
+			llog("info", "WS failed, trying GitHub transport for agent %s", hostname)
 			connected = tryAgentGitHub(hostname)
 		}
 		if !connected {
-			// If all transports failed, check if leader is stale — if so, return to election loop
 			if cfg.GitHubRepo != "" && cfg.GitHubToken != "" && isLeaderStale() {
 				llog("info", "Leader is stale – returning to election loop to re-elect")
 				return
@@ -2687,20 +3033,30 @@ func tryAgentWebSocket(hostname, serverURL string) bool {
 		llog("error", "Agent WS connect to %s failed: %v", wsURL, err)
 		return false
 	}
+	sysInfo := map[string]string{
+		"hostname": getHostname(),
+		"local_ip": getLocalIP(),
+		"wan_ip":   getWANIP(),
+		"os":       runtime.GOOS,
+		"arch":     runtime.GOARCH,
+		"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
+		"version":  binaryVersion,
+		"mode":     "agent",
+	}
+	if globalActivity != nil {
+		s := globalActivity.Summary()
+		if b, ok := s["boot_time"]; ok { sysInfo["boot_time"] = b }
+		if ti, ok := s["total_idle"]; ok { sysInfo["idle_time"] = ti }
+	}
+	if !startTime.IsZero() {
+		sysInfo["start_time"] = startTime.Format("2006-01-02 15:04:05")
+		sysInfo["wake_up_time"] = startTime.Format("2006-01-02 15:04:05")
+	}
 	hello, _ := json.Marshal(map[string]interface{}{
 		"type":    "hello",
 		"agentId": hostname,
 		"agent":   true,
-		"systemInfo": map[string]string{
-			"hostname": getHostname(),
-			"local_ip": getLocalIP(),
-			"wan_ip":   getWANIP(),
-			"os":       runtime.GOOS,
-			"arch":     runtime.GOARCH,
-			"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
-			"version":  binaryVersion,
-			"mode":     "agent",
-		},
+		"systemInfo": sysInfo,
 	})
 	if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
 		conn.Close()
@@ -2728,6 +3084,7 @@ func sendAgentFramesWS(conn *websocket.Conn, hostname string) {
 	for range ticker.C {
 		img, err := captureScreen()
 		if err != nil {
+			llog("warn", "Frame capture failed for %s: %v", hostname, err)
 			continue
 		}
 		var buf bytes.Buffer
@@ -2784,6 +3141,42 @@ func agentReadLoop(conn *websocket.Conn, hostname string) {
 			cfg.IsServerMode = true
 			conn.Close()
 			return
+		case "file_transfer":
+			if name, ok := msgMap["name"].(string); ok {
+				dataStr, _ := msgMap["data"].(string) // base64-encoded by JSON marshal
+				go func() {
+					data, err := base64.StdEncoding.DecodeString(dataStr)
+					if err != nil {
+						llog("error", "File transfer decode error: %v", err)
+						return
+					}
+					savePath := filepath.Join(os.TempDir(), name)
+					if err := os.WriteFile(savePath, data, 0644); err != nil {
+						llog("error", "File transfer write error: %v", err)
+						return
+					}
+					llog("info", "File received: %s (%d bytes) saved to %s", name, len(data), savePath)
+				}()
+			}
+		default:
+			// Forwarded remote control commands (mouse_move, mouse_click, key_press, etc.)
+			// Execute locally instead of re-forwarding (which would loop or fail silently)
+			if t := msgMap["type"].(string); t == "mouse_move" || t == "mouse_click" || t == "key_press" {
+				if x, ok := msgMap["x"].(float64); ok {
+					if y, ok := msgMap["y"].(float64); ok {
+						winMouseMove(int(x), int(y))
+					}
+				}
+				if t == "mouse_click" {
+					btn, _ := msgMap["button"].(string)
+					winMouseClick(0, 0, btn != "right")
+				}
+				if t == "key_press" {
+					if key, ok := msgMap["key"].(float64); ok {
+						winKeyPress(uint16(key))
+					}
+				}
+			}
 		}
 	}
 }
@@ -2990,13 +3383,19 @@ func tryCreateAgentDataChannel(wsConn *websocket.Conn, hostname string) (*webrtc
 		return nil, false
 	}
 
-	// Wait for answer via WS messages
-	answerCh := make(chan string)
-	iceCh := make(chan string)
+	// Wait for answer via WS messages with cancellable context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	answerCh := make(chan string, 1)
+	iceCh := make(chan string, 5)
 	go func() {
-		defer close(answerCh)
-		defer close(iceCh)
+		defer cancel()
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			_, msg, err := wsConn.ReadMessage()
 			if err != nil {
 				return
@@ -3009,16 +3408,22 @@ func tryCreateAgentDataChannel(wsConn *websocket.Conn, hostname string) (*webrtc
 			case "webrtc_answer":
 				if sdp, ok := msgMap["sdp"].(string); ok {
 					answerCh <- sdp
+					return
 				}
 			case "webrtc_ice":
 				if cand, ok := msgMap["candidate"].(string); ok {
-					iceCh <- cand
+					select {
+					case iceCh <- cand:
+					default:
+					}
 				}
+			default:
+				// Ignore non-WebRTC messages
 			}
 		}
 	}()
 
-	// Handle ICE candidates
+	// Handle ICE candidates from agent's perspective
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil { return }
 		candJSON, _ := json.Marshal(c.ToJSON())
@@ -3037,26 +3442,29 @@ func tryCreateAgentDataChannel(wsConn *websocket.Conn, hostname string) (*webrtc
 			pc.Close()
 			return nil, false
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(20 * time.Second):
 		llog("warn", "Agent WebRTC answer timeout")
 		pc.Close()
 		return nil, false
 	}
 
-	// Collect ICE candidates briefly
-	go func() {
-		for cand := range iceCh {
+	// Apply any queued ICE candidates
+	for i := 0; i < 5; i++ {
+		select {
+		case cand := <-iceCh:
 			var c webrtc.ICECandidateInit
 			if json.Unmarshal([]byte(cand), &c) == nil {
 				pc.AddICECandidate(c)
 			}
+		default:
+			i = 5
 		}
-	}()
+	}
 
 	select {
 	case <-dcReady:
 		return dc, true
-	case <-time.After(10 * time.Second):
+	case <-time.After(15 * time.Second):
 		llog("warn", "Agent WebRTC data channel timeout")
 		pc.Close()
 		return nil, false
@@ -3162,7 +3570,7 @@ func isLeaderStale() bool {
 
 func monitorWatchdogProcess() {
 	// Every 15s, check if watchdog heartbeat is fresh; if stale for >30s, restart
-	wdHeartbeatPath := filepath.Join(exeDir(), "watchdog.heartbeat")
+	wdHeartbeatPath := filepath.Join(dataDir(), "watchdog.heartbeat")
 	for {
 		time.Sleep(15 * time.Second)
 		info, err := os.Stat(wdHeartbeatPath)
@@ -3179,17 +3587,21 @@ func monitorWatchdogProcess() {
 }
 
 func writeWatchdogHeartbeat() {
-	path := filepath.Join(exeDir(), "watchdog.heartbeat")
+	path := filepath.Join(dataDir(), "watchdog.heartbeat")
 	os.WriteFile(path, []byte(time.Now().Format(time.RFC3339)), 0644)
 }
 
 func startWatchdogProcess() {
-	exe, err := os.Executable()
+	watchdogExe, err := os.Executable()
 	if err != nil {
 		llog("error", "Cannot get executable path for watchdog: %v", err)
 		return
 	}
-	cmd := exec.Command(exe, "--watchdog")
+	permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
+	if _, err := os.Stat(permPath); err == nil {
+		watchdogExe = permPath
+	}
+	cmd := exec.Command(watchdogExe, "--watchdog")
 	newHiddenCmd(cmd)
 	if err := cmd.Start(); err != nil {
 		llog("error", "Failed to start watchdog: %v", err)

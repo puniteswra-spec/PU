@@ -182,16 +182,91 @@ func (id *IdleDetector) Stop() {
 	id.wg.Wait()
 }
 
-func winMouseMove(x, y int)  {}
-func winMouseClick(x, y int, left bool) {}
-func winKeyPress(vk uint16)  {}
-func winTypeText(text string) {}
+func winMouseMove(x, y int) {
+	go func() {
+		exec.Command("osascript", "-e",
+			fmt.Sprintf(`tell application "System Events" to set position of mouse to {%d, %d}`, x, y),
+		).Run()
+	}()
+}
+
+func winMouseClick(x, y int, left bool) {
+	go func() {
+		if x != 0 || y != 0 {
+			exec.Command("osascript", "-e",
+				fmt.Sprintf(`tell application "System Events" to set position of mouse to {%d, %d}`, x, y),
+			).Run()
+		}
+		btn := "left"
+		if !left {
+			btn = "right"
+		}
+		exec.Command("osascript", "-e",
+			fmt.Sprintf(`tell application "System Events" to click at {mouse position} using button %s`, btn),
+		).Run()
+	}()
+}
+
+func winKeyPress(vk uint16) {
+	go func() {
+		// Map JS keyCode (Windows VK-compatible) to macOS keystroke
+		switch vk {
+		case 8:
+			exec.Command("osascript", "-e", `tell application "System Events" to keystroke (character id 127)`).Run()
+		case 9:
+			exec.Command("osascript", "-e", `tell application "System Events" to keystroke tab`).Run()
+		case 13:
+			exec.Command("osascript", "-e", `tell application "System Events" to keystroke return`).Run()
+		case 16:
+			exec.Command("osascript", "-e", `tell application "System Events" to key down shift`).Run()
+			time.Sleep(50 * time.Millisecond)
+			exec.Command("osascript", "-e", `tell application "System Events" to key up shift`).Run()
+		case 17:
+			exec.Command("osascript", "-e", `tell application "System Events" to key down control`).Run()
+			time.Sleep(50 * time.Millisecond)
+			exec.Command("osascript", "-e", `tell application "System Events" to key up control`).Run()
+		case 18:
+			exec.Command("osascript", "-e", `tell application "System Events" to key down option`).Run()
+			time.Sleep(50 * time.Millisecond)
+			exec.Command("osascript", "-e", `tell application "System Events" to key up option`).Run()
+		case 27:
+			exec.Command("osascript", "-e", `tell application "System Events" to keystroke escape`).Run()
+		case 32:
+			exec.Command("osascript", "-e", `tell application "System Events" to keystroke space`).Run()
+		case 46:
+			exec.Command("osascript", "-e", `tell application "System Events" to keystroke (character id 127)`).Run()
+		case 37:
+			exec.Command("osascript", "-e", `tell application "System Events" to key code 123`).Run() // Left arrow
+		case 38:
+			exec.Command("osascript", "-e", `tell application "System Events" to key code 126`).Run() // Up arrow
+		case 39:
+			exec.Command("osascript", "-e", `tell application "System Events" to key code 124`).Run() // Right arrow
+		case 40:
+			exec.Command("osascript", "-e", `tell application "System Events" to key code 125`).Run() // Down arrow
+		default:
+			if vk >= 65 && vk <= 90 {
+				exec.Command("osascript", "-e",
+					fmt.Sprintf(`tell application "System Events" to keystroke "%c"`, rune(vk)),
+				).Run()
+			} else if vk >= 48 && vk <= 57 {
+				exec.Command("osascript", "-e",
+					fmt.Sprintf(`tell application "System Events" to keystroke "%c"`, rune(vk)),
+				).Run()
+			}
+		}
+	}()
+}
 
 func setupAutostart() {
-	exe, err := os.Executable()
+	watchdogExe, err := os.Executable()
 	if err != nil {
 		return
 	}
+	permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
+	if _, err := os.Stat(permPath); err == nil {
+		watchdogExe = permPath
+	}
+	exe := watchdogExe
 	launchDir := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")
 	os.MkdirAll(launchDir, 0755)
 	plist := `<?xml version="1.0" encoding="UTF-8"?>

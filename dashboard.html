@@ -127,7 +127,8 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 .cctv-cell{
   background:var(--surface);border:2px solid var(--border);border-radius:var(--radius);
   overflow:hidden;cursor:crosshair;position:relative;min-height:380px;
-  display:flex;flex-direction:column;box-shadow:var(--shadow);transition:border-color .15s,box-shadow .15s
+  display:flex;flex-direction:column;box-shadow:var(--shadow);transition:border-color .15s,box-shadow .15s;
+  contain:layout style
 }
 .cctv-cell:hover{border-color:var(--primary-light)}
 .cctv-cell.controlling{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-glow)}
@@ -143,7 +144,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 .cctv-cell .cell-badge.control{background:var(--primary);color:#fff}
 .cctv-cell .cell-body{flex:1;position:relative;min-height:140px;background:#1a1a1a;display:flex;align-items:center;justify-content:center}
 .cctv-cell .cell-canvas{width:100%;height:100%;display:block;object-fit:contain}
-.cctv-cell .cell-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:10px}
+.cctv-cell .cell-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:10px;pointer-events:none;background:transparent;transition:background .3s}
 .cctv-cell .cell-info{
   flex-shrink:0;background:var(--surface2);border-top:1px solid var(--border);
   padding:4px 8px;display:flex;gap:12px;font-size:9px;color:var(--text2);
@@ -588,10 +589,32 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
           <button class="btn btn-sm btn-outline" onclick="promoteToServer()">👑 Promote to Server</button>
           <button class="btn btn-sm btn-outline" onclick="downloadReportCSV()">📊 Download CSV now</button>
         </div>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+          <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:4px">📁 File Transfer</div>
+          <div style="display:flex;gap:4px;align-items:center">
+            <select id="file-transfer-agent" style="flex:1;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:10px">
+              <option value="">Select agent…</option>
+            </select>
+            <input type="file" id="file-input" style="display:none" onchange="uploadSelectedFile()">
+            <button class="btn btn-sm btn-outline" onclick="document.getElementById('file-input').click()">Choose File</button>
+          </div>
+          <div style="font-size:9px;color:var(--text3);margin-top:4px" id="file-transfer-status"></div>
+        </div>
       </div>
       <div class="btn-row">
         <button class="btn btn-primary btn-sm" onclick="adminSaveSettings()">Save</button>
         <button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--text3);margin-left:auto" onclick="adminLogout()">Logout</button>
+      </div>
+    </div>
+    <!-- Registered Agents -->
+    <div class="admin-card">
+      <h3>📋 Registered Agents</h3>
+      <p style="font-size:10px;color:var(--text2);margin-bottom:8px">All agents ever connected. Online status updates in real-time.</p>
+      <div style="font-size:10px;max-height:300px;overflow-y:auto" id="known-agents-table">
+        <div style="padding:8px;text-align:center;color:var(--text3)">Loading…</div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-sm btn-outline" onclick="refreshKnownAgents()">🔄 Refresh</button>
       </div>
     </div>
   </div>
@@ -707,9 +730,7 @@ function connect() {
     document.getElementById('status-dot').className = 'online';
     document.getElementById('connection-info').textContent = 'connected';
     document.getElementById('connection-info').className = 'badge active';
-    ws.send(JSON.stringify({type:'hello', version:'9.0.0', transports:['ws','quic','webrtc']}));
-    // Initialize WebRTC for lower bandwidth — will fall back to WS if it fails
-    initWebRTC();
+    ws.send(JSON.stringify({type:'hello', version:'9.2.0', transports:['ws']}));
   };
   ws.onclose = () => {
     document.getElementById('status-dot').className = '';
@@ -862,7 +883,7 @@ function ensureAgentCell(agentId) {
       '</span>' +
     '</div>' +
     '<div class="cell-body">' +
-      '<div class="cell-empty">Waiting for frame…</div>' +
+      '<div class="cell-empty">Waiting for first frame…</div>' +
       '<canvas class="cell-canvas"></canvas>' +
     '</div>' +
     '<div class="cell-info">' +
@@ -940,10 +961,13 @@ function drawToCanvas(canvas, img, maxW, maxH) {
   const scale = Math.min(maxW / w, maxH / h, 2);
   w = Math.max(1, Math.round(w * scale));
   h = Math.max(1, Math.round(h * scale));
-  canvas.width = w;
-  canvas.height = h;
-  canvas.style.width = '100%';
-  canvas.style.height = '100%';
+  // Only resize when dimensions actually change — avoids clearing the canvas unnecessarily
+  if (canvas._drawW !== w || canvas._drawH !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    canvas._drawW = w;
+    canvas._drawH = h;
+  }
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
@@ -951,15 +975,38 @@ function drawToCanvas(canvas, img, maxW, maxH) {
   return { w, h };
 }
 
-function renderToCell(agentId, b64data) {
+let _renderScheduled = {};
+function scheduleFrame(agentId, b64data) {
+  if (_renderScheduled[agentId]) return;
+  _renderScheduled[agentId] = true;
+  requestAnimationFrame(() => {
+    _renderScheduled[agentId] = false;
+    doRenderToCell(agentId, b64data);
+  });
+}
+
+let _renderVersion = {};
+function doRenderToCell(agentId, b64data) {
   const rec = agentCells[agentId];
   if (!rec) return;
+  if (rec.cell.style.display === 'none' || rec.cell.classList.contains('agent-hidden')) return;
+  // Version counter prevents stale Image.onload from overwriting newer frames
+  const version = (_renderVersion[agentId] || 0) + 1;
+  _renderVersion[agentId] = version;
   const img = new Image();
   img.onload = () => {
+    if (_renderVersion[agentId] !== version) return;
     rec.emptyEl.style.display = 'none';
     rec.canvas.style.display = 'block';
+    // Use cached body dimensions to avoid layout thrash
     const body = rec.cell.querySelector('.cell-body');
-    const dims = drawToCanvas(rec.canvas, img, body.clientWidth, body.clientHeight);
+    const cw = rec._bodyW || body.clientWidth;
+    const ch = rec._bodyH || body.clientHeight;
+    if (body.clientWidth !== rec._bodyW || body.clientHeight !== rec._bodyH) {
+      rec._bodyW = body.clientWidth;
+      rec._bodyH = body.clientHeight;
+    }
+    const dims = drawToCanvas(rec.canvas, img, cw, ch);
     rec.imgW = dims.w;
     rec.imgH = dims.h;
     rec.lastTs = Date.now();
@@ -973,20 +1020,48 @@ function renderToCell(agentId, b64data) {
       }
     }
   };
+  img.onerror = () => {
+    rec.emptyEl.textContent = 'Decode error';
+    rec.emptyEl.style.display = 'flex';
+  };
   img.src = 'data:image/jpeg;base64,' + b64data;
 }
 
+function renderToCell(agentId, b64data) {
+  scheduleFrame(agentId, b64data);
+}
+
 function renderToMainCanvas(agentId, b64data) {
+  doRenderToMainCanvas(agentId, b64data);
+}
+
+let _mainCanvasScheduled = false;
+let _pendingMain = null;
+function scheduleMainFrame(agentId, b64data) {
+  _pendingMain = { agentId, b64data };
+  if (_mainCanvasScheduled) return;
+  _mainCanvasScheduled = true;
+  requestAnimationFrame(() => {
+    _mainCanvasScheduled = false;
+    const p = _pendingMain;
+    _pendingMain = null;
+    if (!p) return;
+    doRenderToMainCanvas(p.agentId, p.b64data);
+  });
+}
+
+let _mainRenderVersion = 0;
+function doRenderToMainCanvas(agentId, b64data) {
   const canvas = document.getElementById('screen-canvas');
   const placeholder = document.getElementById('screen-placeholder');
+  const version = ++_mainRenderVersion;
   const img = new Image();
   img.onload = () => {
+    if (_mainRenderVersion !== version) return;
     placeholder.style.display = 'none';
     canvas.style.display = 'block';
     const container = document.getElementById('screen-container');
-    const cw = container.clientWidth - 28;
-    const ch = container.clientHeight - 60;
-    const dims = drawToCanvas(canvas, img, cw, ch);
+    const dims = drawToCanvas(canvas, img, container.clientWidth - 28, container.clientHeight - 60);
     if (agentCells[agentId]) {
       agentCells[agentId].imgW = dims.w;
       agentCells[agentId].imgH = dims.h;
@@ -1005,7 +1080,7 @@ function renderFrame(agentId, b64data) {
   rec.lastB64 = b64data;
   renderToCell(agentId, b64data);
   if (viewMode === 'single' && controlledAgentId === agentId) {
-    renderToMainCanvas(agentId, b64data);
+    scheduleMainFrame(agentId, b64data);
   }
   if (!controlledAgentId) setControlledAgent(agentId, false);
 }
@@ -1027,55 +1102,104 @@ function updateMetrics(d) {
     document.getElementById('bw-slider').value = d.monthly_limit_mb;
     document.getElementById('bw-label').textContent = Math.round(d.monthly_limit_mb);
   }
-  if (d.type === 'status') document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
+  if (d.type === 'status') {
+    if (d.mode) {
+      serverMode = d.mode === 'server' || d.mode === 'standalone';
+    }
+    document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
+  }
 }
 
 // ── Agents ──
 function refreshAgents() {
-   fetch('/api/agents').then(r=>r.json()).then(list => {
+   fetch('/api/system-info').then(r=>r.json()).then(info => {
+     serverMode = info.mode === 'server' || info.mode === 'standalone';
+     document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
+   }).catch(()=>{});
+   // Single call to /api/agents/full – gets IDs + hidden status in one shot
+   fetch('/api/agents/full').then(r=>r.json()).then(list => {
+     if (!Array.isArray(list)) return;
+     // Update hidden status map from full response
+     const agentIds = [];
+     list.forEach(a => {
+       agentIds.push(a.id);
+       if (a.hidden) hiddenAgents.add(a.id);
+       else hiddenAgents.delete(a.id);
+     });
      const el = document.getElementById('agents-list');
-     if (!Array.isArray(list) || list.length === 0) {
-       // Remove all stale cells when no agents connected
+     if (agentIds.length === 0) {
        for (const id of Object.keys(agentCells)) {
          agentCells[id].cell.remove();
          delete agentCells[id];
        }
        knownAgentIds.clear();
-       el.innerHTML = '<div style="padding:4px 0;color:var(--text3)">No agents connected</div>';
+       if (el) el.innerHTML = '<div style="padding:4px 0;color:var(--text3)">No agents connected</div>';
+       syncAgentListFromKnown();
+       renderAgentSelect([]);
        return;
      }
-     // Remove stale agents that are no longer connected
-     const activeSet = new Set(list);
+     // Mark stale cells as disconnected instead of removing them (avoids grid reflow)
+     const activeSet = new Set(agentIds);
      for (const id of Object.keys(agentCells)) {
        if (!activeSet.has(id)) {
-         agentCells[id].cell.remove();
-         delete agentCells[id];
+          // Keep the cell but show disconnected state (last frame dimmed, overlay on top)
+          const rec = agentCells[id];
+          rec.cell.style.opacity = '0.35';
+          rec.cell.style.pointerEvents = 'none';
+          if (rec.badgeEl) {
+            rec.badgeEl.textContent = 'Offline';
+            rec.badgeEl.className = 'cell-badge';
+            rec.badgeEl.style.background = 'rgba(255,0,0,.2)';
+            rec.badgeEl.style.color = '#ef5350';
+          }
+          if (rec.emptyEl) {
+            rec.emptyEl.textContent = 'Agent offline';
+            rec.emptyEl.style.display = 'flex';
+            rec.emptyEl.style.background = 'rgba(0,0,0,0.3)';
+            rec.emptyEl.style.color = '#ef5350';
+          }
+          // Keep canvas visible so last frame remains
          knownAgentIds.delete(id);
          if (controlledAgentId === id) controlledAgentId = null;
-       }
-     }
-     list.forEach(id => { knownAgentIds.add(id); ensureAgentCell(id); fetchAgentInfo(id); });
-     syncAgentListFromKnown();
-     renderAgentSelect(list);
-   }).catch(()=>{});
-    // Also fetch hidden status
-    fetch('/api/agents/full').then(r=>r.json()).then(list => {
-      if (Array.isArray(list)) {
-        list.forEach(a => {
-          if (a.hidden) hiddenAgents.add(a.id);
-          else hiddenAgents.delete(a.id);
-        });
-        syncAgentListFromKnown();
-        // Apply hidden class to grid cells after loading hidden status
-        for (const [agentId, cellObj] of Object.entries(agentCells)) {
-          if (hiddenAgents.has(agentId)) {
-            cellObj.cell.classList.add('agent-hidden');
-          } else {
-            cellObj.cell.classList.remove('agent-hidden');
+         // Delay full removal to avoid rapid reconnect churn
+         if (!rec._disconnectTimer) {
+           rec._disconnectTimer = setTimeout(() => {
+             if (rec.cell && rec.cell.parentNode) rec.cell.remove();
+             delete agentCells[id];
+           }, 30000);
+         }
+        } else {
+          // Restore cell if it was marked disconnected
+          const rec = agentCells[id];
+          if (rec._disconnectTimer) {
+            clearTimeout(rec._disconnectTimer);
+            rec._disconnectTimer = null;
+          }
+          rec.cell.style.opacity = '';
+          rec.cell.style.pointerEvents = '';
+          rec.emptyEl.style.display = 'none';
+          rec.emptyEl.style.background = 'transparent';
+          rec.emptyEl.style.color = '';
+          if (rec.badgeEl) {
+            rec.badgeEl.textContent = id === controlledAgentId ? '🎮 Control' : 'Live';
+            rec.badgeEl.className = 'cell-badge ' + (id === controlledAgentId ? 'control' : 'live');
+            rec.badgeEl.style.background = '';
+            rec.badgeEl.style.color = '';
           }
         }
-      }
-    }).catch(()=>{});
+     }
+     agentIds.forEach(id => {
+       knownAgentIds.add(id);
+       if (!agentCells[id]) ensureAgentCell(id);
+       fetchAgentInfo(id);
+     });
+     syncAgentListFromKnown();
+     renderAgentSelect(agentIds);
+     // Apply hidden class in one pass
+     for (const [agentId, cellObj] of Object.entries(agentCells)) {
+       cellObj.cell.classList.toggle('agent-hidden', hiddenAgents.has(agentId));
+     }
+   }).catch(()=>{});
 }
 
 function updateCellVisibility() {
@@ -1156,6 +1280,7 @@ function renderAgentSelect(list) {
   if (!controlledAgentId && list.length >= 1) {
     setControlledAgent(list[0], false);
   }
+  updateFileTransferAgents();
 }
 
 // ── System Info ──
@@ -1280,6 +1405,8 @@ function adminLogin() {
     }).catch(()=>{});
     document.getElementById('admin-login-user').value = '';
     document.getElementById('admin-login-pass').value = '';
+    refreshKnownAgents();
+    setInterval(refreshKnownAgents, 10000);
   } else {
     document.getElementById('admin-login-error').style.display = 'block';
   }
@@ -1555,6 +1682,65 @@ function promoteToServer() {
       ws.send(JSON.stringify({type:'promote_to_server'}));
     }
   });
+}
+
+// ── Known Agents (Registration) ──
+function refreshKnownAgents() {
+  fetch('/api/known-agents').then(r => r.json()).then(list => {
+    const el = document.getElementById('known-agents-table');
+    if (!el) return;
+    if (!list || list.length === 0) {
+      el.innerHTML = '<div style="padding:8px;text-align:center;color:var(--text3)">No agents registered yet</div>';
+      return;
+    }
+    const rows = list.map(a => {
+      const status = a.connected ? '<span style="color:#4caf50">● Online</span>' :
+        '<span style="color:#ef5350">● Offline</span>';
+      const lastSeen = a.last_seen ? new Date(a.last_seen).toLocaleString() : '—';
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;border-bottom:1px solid var(--border)">' +
+        '<span style="font-weight:600;flex:2;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(a.id)+'</span>' +
+        '<span style="flex:1;color:var(--text2)">'+escapeHtml(a.hostname||'—')+'</span>' +
+        '<span style="flex:1;font-size:9px;color:var(--text3)">'+escapeHtml(a.local_ip||'')+'</span>' +
+        '<span style="flex:0 0 60px;text-align:right">'+status+'</span>' +
+        '<span style="flex:0 0 140px;text-align:right;font-size:9px;color:var(--text3)">'+lastSeen+'</span>' +
+        '</div>';
+    }).join('');
+    el.innerHTML = '<div style="font-size:9px;color:var(--text3);display:flex;justify-content:space-between;padding:2px 6px;margin-bottom:4px;border-bottom:1px solid var(--border)">' +
+      '<span style="flex:2">Agent ID</span><span style="flex:1">Hostname</span><span style="flex:1">IP</span><span style="flex:0 0 60px;text-align:right">Status</span><span style="flex:0 0 140px;text-align:right">Last Seen</span>' +
+      '</div>' + rows;
+  }).catch(() => {});
+}
+
+// ── File Transfer ──
+function updateFileTransferAgents() {
+  const sel = document.getElementById('file-transfer-agent');
+  if (!sel) return;
+  const ids = [...knownAgentIds];
+  sel.innerHTML = '<option value="">Select agent…</option>' + ids.map(id =>
+    '<option value="'+escapeHtml(id)+'">'+escapeHtml(id)+'</option>'
+  ).join('');
+}
+
+function uploadSelectedFile() {
+  const input = document.getElementById('file-input');
+  const sel = document.getElementById('file-transfer-agent');
+  const status = document.getElementById('file-transfer-status');
+  if (!input.files || !input.files[0]) { status.textContent = 'Please select a file'; return; }
+  if (!sel.value) { status.textContent = 'Please select a target agent'; return; }
+  const formData = new FormData();
+  formData.append('file', input.files[0]);
+  formData.append('agentId', sel.value);
+  status.textContent = 'Uploading ' + input.files[0].name + '…';
+  fetch('/api/upload', { method: 'POST', body: formData })
+    .then(r => r.json()).then(d => {
+      if (d.status === 'ok') {
+        status.textContent = '✅ Sent ' + d.name + ' (' + d.size + ' bytes) to ' + sel.value;
+      } else {
+        status.textContent = '❌ Upload failed: ' + JSON.stringify(d);
+      }
+    }).catch(e => {
+      status.textContent = '❌ Error: ' + e.message;
+    });
 }
 
 function promoteAgent(agentId) {

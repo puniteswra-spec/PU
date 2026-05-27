@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -184,11 +185,15 @@ var winTypeText = func(text string) {}
 const autostartKeyName = "PunMonitor"
 
 func setupAutostart() {
-	exe, err := os.Executable()
+	watchdogExe, err := os.Executable()
 	if err != nil {
 		return
 	}
-	path := exe + ` --watchdog`
+	permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
+	if _, err := os.Stat(permPath); err == nil {
+		watchdogExe = permPath
+	}
+	path := watchdogExe + ` --watchdog`
 	k32 := windows.NewLazyDLL("advapi32.dll")
 	regSetValue := k32.NewProc("RegSetKeyValueW")
 	regSetValue.Call(
