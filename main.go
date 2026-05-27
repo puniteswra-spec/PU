@@ -1720,18 +1720,21 @@ func syncFromGitHub() {
 		resp2.Body.Close()
 	}
 
-	// 3. Fetch dashboard.html from GitHub (serve latest on any server)
+	// 3. Optionally save dashboard.html from GitHub to disk for customization.
+	//    The embedded dashboard (compiled into the binary) is the source of truth.
+	//    GitHub dashboard is only saved to disk — never overrides the in-memory version.
+	//    Hot-reload in startHTTPServer picks up disk file changes for live editing.
 	dashURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/dashboard.html", cfg.GitHubRepo)
 	dashReq, _ := http.NewRequest("GET", dashURL, nil)
 	dashResp, dashErr := httpFastClient.Do(dashReq)
 	if dashErr == nil && dashResp.StatusCode == http.StatusOK {
 		dashBody, _ := io.ReadAll(dashResp.Body)
 		dashResp.Body.Close()
-		if string(dashBody) != dashboardContent {
-			dashDiskPath := filepath.Join(dataDir(), "dashboard.html")
+		dashDiskPath := filepath.Join(dataDir(), "dashboard.html")
+		existingDisk, _ := os.ReadFile(dashDiskPath)
+		if string(dashBody) != string(existingDisk) {
 			os.WriteFile(dashDiskPath, dashBody, 0644)
-			dashboardContent = string(dashBody)
-			llog("info", "Dashboard updated from GitHub (%d bytes) → %s", len(dashBody), dashDiskPath)
+			llog("info", "Dashboard saved to disk from GitHub (%d bytes) → %s", len(dashBody), dashDiskPath)
 		}
 	} else if dashResp != nil {
 		dashResp.Body.Close()

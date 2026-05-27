@@ -728,8 +728,9 @@ function connect() {
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
     document.getElementById('status-dot').className = 'online';
-    document.getElementById('connection-info').textContent = 'connected';
+    document.getElementById('connection-info').textContent = 'connected – waiting for frames';
     document.getElementById('connection-info').className = 'badge active';
+    resetFrameTimer();
     ws.send(JSON.stringify({type:'hello', version:'9.2.0', transports:['ws']}));
   };
   ws.onclose = () => {
@@ -975,13 +976,17 @@ function drawToCanvas(canvas, img, maxW, maxH) {
   return { w, h };
 }
 
+let _renderPending = {};
 let _renderScheduled = {};
 function scheduleFrame(agentId, b64data) {
+  _renderPending[agentId] = b64data;
   if (_renderScheduled[agentId]) return;
   _renderScheduled[agentId] = true;
   requestAnimationFrame(() => {
     _renderScheduled[agentId] = false;
-    doRenderToCell(agentId, b64data);
+    const data = _renderPending[agentId] || b64data;
+    _renderPending[agentId] = null;
+    doRenderToCell(agentId, data);
   });
 }
 
@@ -1072,8 +1077,17 @@ function doRenderToMainCanvas(agentId, b64data) {
 
 // ── Frame Rendering ──
 let frameCount = 0;
+let frameTimer = null;
+function resetFrameTimer() {
+  if (frameTimer) clearTimeout(frameTimer);
+  frameTimer = setTimeout(() => {
+    document.getElementById('status-dot').className = 'warning';
+    document.getElementById('connection-info').textContent = 'connected – no frames for 10s';
+  }, 10000);
+}
 function renderFrame(agentId, b64data) {
   frameCount++;
+  resetFrameTimer();
   ensureAgentCell(agentId);
   const rec = agentCells[agentId];
   if (!rec) return;
