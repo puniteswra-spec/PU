@@ -3,153 +3,76 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
 
-// DeployTarget represents a discovered machine on the network
 type DeployTarget struct {
 	IP       string
 	Hostname string
-	OS       string // "windows", "darwin", "linux"
-	Arch     string // "amd64", "arm64"
-	OpenPort bool
+	OS       string
+	Arch     string
 	HasAgent bool
+	HasPort8080 bool
 }
 
-// discoverNetwork scans the local network for live machines
-func discoverNetwork() []DeployTarget {
-	llog("info", "Scanning local network for machines...")
-	
-	// Get local IP and subnet
-	localIP := getLocalIP()
-	if localIP == "unknown" {
-		llog("error", "Cannot determine local IP for network scan")
-		return nil
-	}
-	
-	// Extract subnet (e.g., 192.168.1.x)
-	parts := strings.Split(localIP, ".")
-	if len(parts) != 4 {
-		llog("error", "Invalid IP format: %s", localIP)
-		return nil
-	}
-	subnet := strings.Join(parts[:3], ".")
-	
-	llog("info", "Scanning subnet %s.0/24 (local IP: %s)", subnet, localIP)
-	
-	var targets []DeployTarget
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	
-	// Scan all 254 IPs in parallel (limited concurrency)
-	sem := make(chan struct{}, 50)
-	
-	for i := 1; i <= 254; i++ {
-		ip := fmt.Sprintf("%s.%d", subnet, i)
-		if ip == localIP {
-			continue // Skip self
-		}
-		
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(ip string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			
-			// Ping with short timeout
-			if pingHost(ip, 500*time.Millisecond) {
-				mu.Lock()
-				targets = append(targets, DeployTarget{IP: ip, OpenPort: true})
-				mu.Unlock()
-			}
-		}(ip)
-	}
-	
-	wg.Wait()
-	
-	llog("info", "Found %d live machines on network", len(targets))
-	
-	// Detect OS for each target
-	for i := range targets {
-		detectOS(&targets[i])
-	}
-	
-	return targets
+type DeployCredentials struct {
+	Username string
+	Password string
+	Domain   string
 }
 
-// pingHost sends a single ping to check if host is alive
-func pingHost(ip string, timeout time.Duration) bool {
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("ping", "-n", "1", "-w", fmt.Sprintf("%d", timeout.Milliseconds()), ip)
-	} else {
-		cmd = exec.Command("ping", "-c", "1", "-W", fmt.Sprintf("%.0f", timeout.Seconds()), ip)
-	}
-	return cmd.Run() == nil
+var deployCreds DeployCredentials
+var deployCredsMu sync.RWMutex
+
+func SetDeployCredentials(user, pass, domain string) {
+	deployCredsMu.Lock()
+	defer deployCredsMu.Unlock()
+	deployCreds = DeployCredentials{Username: user, Password: pass, Domain: domain}
 }
 
-// detectOS identifies the OS and architecture of a remote machine
-func detectOS(target *DeployTarget) {
-	// Try SSH first (works for Mac and Linux)
-	sshConn := fmt.Sprintf("user@%s", target.IP)
-	cmd := exec.Command("ssh", "-o", "ConnectTimeout=2", "-o", "StrictHostKeyChecking=no", sshConn, "uname -s -m 2>/dev/null || echo 'unknown'")
-	if output, err := cmd.Output(); err == nil {
-		out := strings.TrimSpace(string(output))
-		if strings.Contains(out, "Darwin") {
-			target.OS = "darwin"
-			if strings.Contains(out, "arm64") {
-				target.Arch = "arm64"
-			} else {
-				target.Arch = "amd64"
-			}
-			target.Hostname = getRemoteHostname(sshConn)
-			return
-		} else if strings.Contains(out, "Linux") {
-			target.OS = "linux"
-			if strings.Contains(out, "aarch64") || strings.Contains(out, "arm64") {
-				target.Arch = "arm64"
-			} else {
-				target.Arch = "amd64"
-			}
-			target.Hostname = getRemoteHostname(sshConn)
-			return
-		}
-	}
-	
-	// Try WinRM/PowerShell for Windows
-	psConn := fmt.Sprintf("%s", target.IP)
-	cmd = exec.Command("powershell", "-Command", 
-		fmt.Sprintf("Test-NetConnection -ComputerName %s -Port 445 -InformationLevel Quiet", psConn))
-	if output, err := cmd.Output(); err == nil && strings.TrimSpace(string(output)) == "True" {
-		target.OS = "windows"
-		target.Arch = "amd64" // Assume x64 for Windows
-		target.Hostname = getRemoteWindowsHostname(target.IP)
-		return
-	}
-	
-	// If we can't determine, mark as unknown
-	target.OS = "unknown"
-	target.Hostname = "unknown"
+func GetDeployCredentials() DeployCredentials {
+	deployCredsMu.RLock()
+	defer deployCredsMu.RUnlock()
+	return deployCreds
 }
 
-// getRemoteHostname gets hostname via SSH
-func getRemoteHostname(sshConn string) string {
-	cmd := exec.Command("ssh", "-o", "ConnectTimeout=2", "-o", "StrictHostKeyChecking=no", sshConn, "hostname 2>/dev/null")
-	if output, err := cmd.Output(); err == nil {
-		return strings.TrimSpace(string(output))
-	}
-	return "unknown"
+func HasDeployCredentials() bool {
+	deployCredsMu.RLock()
+	defer deployCredsMu.RUnlock()
+	return deployCreds.Username != ""
 }
 
-// getRemoteWindowsHostname gets hostname via SMB
-func getRemoteWindowsHostname(ip string) string {
-	// Try to get hostname via nbtstat or similar
+func checkPort(host string, port int, timeout time.Duration) bool {
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+func isPunMonitorRunning(ip string) bool {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://%s:8080/api/health", ip))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
+func getRemoteHostname(ip string) string {
 	cmd := exec.Command("nbtstat", "-A", ip)
-	if output, err := cmd.Output(); err == nil {
+	output, err := cmd.Output()
+	if err == nil {
 		lines := strings.Split(string(output), "\n")
 		for _, line := range lines {
 			if strings.Contains(line, "<00>") && strings.Contains(line, "UNIQUE") {
@@ -160,182 +83,153 @@ func getRemoteWindowsHostname(ip string) string {
 			}
 		}
 	}
-	return "unknown"
-}
-
-// deployToTarget copies the binary and starts it on a remote machine
-func deployToTarget(target DeployTarget, binaryPath string, serverURL string) error {
-	llog("info", "Deploying to %s (%s/%s) at %s", target.Hostname, target.OS, target.Arch, target.IP)
-	
-	switch target.OS {
-	case "darwin", "linux":
-		return deployViaSSH(target, binaryPath, serverURL)
-	case "windows":
-		return deployViaWinRM(target, binaryPath, serverURL)
-	default:
-		return fmt.Errorf("unsupported OS: %s", target.OS)
-	}
-}
-
-// deployViaSSH copies and starts the binary on Mac/Linux via SSH
-func deployViaSSH(target DeployTarget, binaryPath string, serverURL string) error {
-	sshConn := fmt.Sprintf("user@%s", target.IP)
-	
-	// Determine remote path
-	remotePath := "/tmp/PunMonitor"
-	if target.OS == "darwin" {
-		remotePath = "/tmp/PunMonitor"
-	} else {
-		remotePath = "/tmp/punmonitor"
-	}
-	
-	// Copy binary
-	llog("info", "Copying binary to %s:%s", target.IP, remotePath)
-	cmd := exec.Command("scp", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
-		binaryPath, fmt.Sprintf("%s:%s", sshConn, remotePath))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("SCP failed: %v - %s", err, string(output))
-	}
-	
-	// Make executable
-	cmd = exec.Command("ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
-		sshConn, fmt.Sprintf("chmod +x %s", remotePath))
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("chmod failed: %v", err)
-	}
-	
-	// Start the binary with server_url
-	llog("info", "Starting PunMonitor on %s", target.IP)
-	startCmd := fmt.Sprintf("nohup %s > /dev/null 2>&1 &", remotePath)
-	cmd = exec.Command("ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
-		sshConn, startCmd)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("start failed: %v", err)
-	}
-	
-	llog("info", "Successfully deployed to %s (%s)", target.Hostname, target.IP)
-	return nil
-}
-
-// deployViaWinRM copies and starts the binary on Windows via WinRM/PSRemoting
-func deployViaWinRM(target DeployTarget, binaryPath string, serverURL string) error {
-	// For Windows, we use WinRM or PSRemoting
-	// This requires the user to have admin access
-	
-	remotePath := fmt.Sprintf("C:\\Users\\Public\\PunMonitor.exe")
-	
-	// Copy binary using WinRM
-	llog("info", "Copying binary to %s:%s", target.IP, remotePath)
-	copyCmd := fmt.Sprintf("Copy-Item -Path '\\\\%s\\share\\PunMonitor.exe' -Destination '%s' -Force", 
-		target.IP, remotePath)
-	cmd := exec.Command("powershell", "-Command", copyCmd)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// Fallback: try using SMB directly
-		llog("warn", "PSRemoting failed, trying direct copy: %v", err)
-		return fmt.Errorf("deployment to Windows requires manual setup: %v - %s", err, string(output))
-	}
-	
-	// Start the binary
-	startCmd := fmt.Sprintf("Start-Process -FilePath '%s' -WindowStyle Hidden", remotePath)
-	cmd = exec.Command("powershell", "-Command", 
-		fmt.Sprintf("Invoke-Command -ComputerName %s -ScriptBlock { %s }", target.IP, startCmd))
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("start failed: %v", err)
-	}
-	
-	llog("info", "Successfully deployed to %s (%s)", target.Hostname, target.IP)
-	return nil
-}
-
-// runDeployment runs the full deployment process
-func runDeployment() {
-	llog("info", "=== Starting Network Deployment ===")
-	llog("info", "This machine: %s (%s/%s)", getHostname(), runtime.GOOS, runtime.GOARCH)
-	
-	// Get the path to the current binary
-	exePath := getDeployBinaryPath()
-	
-	// Discover network
-	targets := discoverNetwork()
-	if len(targets) == 0 {
-		llog("info", "No machines found on network")
-		return
-	}
-	
-	// Print discovered machines
-	llog("info", "Discovered machines:")
-	for _, t := range targets {
-		status := "unknown"
-		if t.OS != "unknown" {
-			status = fmt.Sprintf("%s/%s", t.OS, t.Arch)
-		}
-		llog("info", "  %s - %s (%s)", t.IP, t.Hostname, status)
-	}
-	
-	// Deploy to each target
-	success := 0
-	failed := 0
-	for _, target := range targets {
-		if target.OS == "unknown" {
-			llog("warn", "Skipping %s - OS unknown", target.IP)
-			failed++
-			continue
-		}
-		
-		if err := deployToTarget(target, exePath, cfg.ServerURL); err != nil {
-			llog("error", "Failed to deploy to %s: %v", target.IP, err)
-			failed++
-		} else {
-			success++
-		}
-	}
-	
-	llog("info", "=== Deployment Complete ===")
-	llog("info", "Success: %d, Failed: %d, Total: %d", success, failed, len(targets))
-}
-
-// --- Helper functions ---
-
-// getLocalSubnet returns the local subnet in CIDR notation
-func getLocalSubnet() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
-	}
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
-			}
-		}
-	}
 	return ""
 }
 
-// checkPort checks if a specific port is open on a host
-func checkPort(host string, port int, timeout time.Duration) bool {
-	addr := fmt.Sprintf("%s:%d", host, port)
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+func deployToWindowsTarget(target DeployTarget, binaryPath string, serverURL string) error {
+	creds := GetDeployCredentials()
+	if creds.Username == "" {
+		return fmt.Errorf("no deploy credentials configured")
+	}
+
+	domainUser := creds.Username
+	if creds.Domain != "" {
+		domainUser = creds.Domain + "\\" + creds.Username
+	}
+
+	remotePath := fmt.Sprintf("\\\\%s\\C$\\Users\\Public\\PunMonitor.exe", target.IP)
+
+	llog("info", "Deploy: mapping network share to %s", target.IP)
+	netUseCmd := fmt.Sprintf(`net use \\%s\IPC$ /user:%s "%s"`, target.IP, domainUser, creds.Password)
+	if out, err := exec.Command("cmd", "/c", netUseCmd).CombinedOutput(); err != nil {
+		llog("warn", "net use IPC failed for %s: %v — %s", target.IP, err, string(out))
+	}
+
+	llog("info", "Deploy: copying binary to %s", remotePath)
+	copyCmd := fmt.Sprintf(`copy /Y "%s" "%s"`, binaryPath, remotePath)
+	if out, err := exec.Command("cmd", "/c", copyCmd).CombinedOutput(); err != nil {
+		llog("error", "Copy failed to %s: %v — %s", target.IP, err, string(out))
+
+		netUseDel := fmt.Sprintf(`net use \\%s\IPC$ /delete`, target.IP)
+		exec.Command("cmd", "/c", netUseDel).Run()
+		return fmt.Errorf("copy failed: %v", err)
+	}
+	llog("info", "Deploy: binary copied to %s", target.IP)
+
+	remoteExe := `C:\Users\Public\PunMonitor.exe`
+	schtasksCmd := fmt.Sprintf(`schtasks /Create /S %s /RU "%s" /RP "%s" /TN "PunMonitor" /TR "%s --watchdog" /SC ONLOGON /F`, target.IP, domainUser, creds.Password, remoteExe)
+	if out, err := exec.Command("cmd", "/c", schtasksCmd).CombinedOutput(); err != nil {
+		llog("warn", "schtasks failed for %s: %v — %s, trying wmic", target.IP, err, string(out))
+
+		wmicCmd := fmt.Sprintf(`wmic /node:"%s" /user:"%s" /password:"%s" process call create "%s --watchdog"`, target.IP, domainUser, creds.Password, remoteExe)
+		if out2, err2 := exec.Command("cmd", "/c", wmicCmd).CombinedOutput(); err2 != nil {
+			llog("error", "wmic failed for %s: %v — %s", target.IP, err2, string(out2))
+
+			psexecCmd := fmt.Sprintf(`psexec \\\\%s -u "%s" -p "%s" -d -i "%s" --watchdog`, target.IP, domainUser, creds.Password, remoteExe)
+			if out3, err3 := exec.Command("cmd", "/c", psexecCmd).CombinedOutput(); err3 != nil {
+				llog("error", "All remote start methods failed for %s: %v — %s", target.IP, err3, string(out3))
+				netUseDel := fmt.Sprintf(`net use \\%s\IPC$ /delete`, target.IP)
+				exec.Command("cmd", "/c", netUseDel).Run()
+				return fmt.Errorf("copy succeeded but remote start failed")
+			}
+		}
+	}
+
+	netUseDel := fmt.Sprintf(`net use \\%s\IPC$ /delete`, target.IP)
+	exec.Command("cmd", "/c", netUseDel).Run()
+
+	llog("info", "Deploy: PunMonitor started on %s (%s)", target.Hostname, target.IP)
+	return nil
+}
+
+func autoDeployToPeer(peer *PeerInfo) {
+	if peer.AgentID == cfg.AgentID {
+		return
+	}
+	if peer.Mode == "server" || peer.Mode == "agent" {
+		return
+	}
+	if isPunMonitorRunning(peer.IP) {
+		llog("info", "Auto-deploy: %s already running PunMonitor — skipping", peer.Hostname)
+		return
+	}
+
+	if !HasDeployCredentials() {
+		llog("info", "Auto-deploy: %s needs PunMonitor but no credentials configured — skipping", peer.Hostname)
+		return
+	}
+
+	llog("info", "Auto-deploy: installing PunMonitor on %s (%s)", peer.Hostname, peer.IP)
+
+	exePath, err := os.Executable()
 	if err != nil {
-		return false
+		llog("error", "Auto-deploy: cannot get own binary path: %v", err)
+		return
 	}
-	conn.Close()
-	return true
+	permPath := filepath.Join(binDir(), filepath.Base(exePath))
+	if _, err := os.Stat(permPath); err == nil {
+		exePath = permPath
+	}
+
+	if err := deployToWindowsTarget(DeployTarget{IP: peer.IP, Hostname: peer.Hostname}, exePath, cfg.ServerURL); err != nil {
+		llog("error", "Auto-deploy to %s failed: %v", peer.Hostname, err)
+	} else {
+		llog("info", "Auto-deploy: %s installed successfully", peer.Hostname)
+	}
 }
 
-// getBinaryName returns the appropriate binary name for the target OS
-func getBinaryName(os string) string {
-	if os == "windows" {
-		return "PunMonitor.exe"
-	}
-	return "PunMonitor"
-}
+func runDeployment() {
+	llog("info", "=== Starting Network Deployment ===")
+	llog("info", "This machine: %s (%s/%s)", getHostname(), runtime.GOOS, runtime.GOARCH)
 
-// getDeployBinaryPath returns the path to the binary for deployment
-func getDeployBinaryPath() string {
-	exePath, err := exec.LookPath("punmonitor")
-	if err == nil {
-		return exePath
+	exePath, err := os.Executable()
+	if err != nil {
+		llog("error", "Cannot get binary path: %v", err)
+		return
 	}
-	return "./PunMonitor"
+	permPath := filepath.Join(binDir(), filepath.Base(exePath))
+	if _, err := os.Stat(permPath); err == nil {
+		exePath = permPath
+	}
+
+	if globalDiscovery == nil {
+		llog("error", "Discovery not initialized")
+		return
+	}
+
+	peers := globalDiscovery.GetPeers()
+	llog("info", "Found %d peers via UDP discovery", len(peers))
+
+	if len(peers) == 0 {
+		llog("info", "No peers found. Waiting 15 seconds for discovery...")
+		time.Sleep(15 * time.Second)
+		peers = globalDiscovery.GetPeers()
+		llog("info", "Found %d peers after wait", len(peers))
+	}
+
+	success := 0
+	failed := 0
+	for _, peer := range peers {
+		if isPunMonitorRunning(peer.IP) {
+			llog("info", "  %s (%s) — already running", peer.Hostname, peer.IP)
+			continue
+		}
+
+		if !HasDeployCredentials() {
+			llog("warn", "  %s (%s) — needs install but no credentials. Use dashboard Settings to configure.", peer.Hostname, peer.IP)
+			failed++
+			continue
+		}
+
+		if err := deployToWindowsTarget(DeployTarget{IP: peer.IP, Hostname: peer.Hostname}, exePath, cfg.ServerURL); err != nil {
+			llog("error", "  %s (%s) — FAILED: %v", peer.Hostname, peer.IP, err)
+			failed++
+		} else {
+			llog("info", "  %s (%s) — deployed OK", peer.Hostname, peer.IP)
+			success++
+		}
+	}
+
+	llog("info", "=== Deployment Complete ===")
+	llog("info", "Success: %d, Failed: %d, Total: %d", success, failed, len(peers))
 }

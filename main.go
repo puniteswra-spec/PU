@@ -44,6 +44,99 @@ var (
 	connAgentID  = make(map[*websocket.Conn]string)
 )
 
+type AgentStats struct {
+	mu             sync.Mutex
+	Transport      string  `json:"transport"`
+	LatencyMS      float64 `json:"latency_ms"`
+	BytesReceived  int64   `json:"bytes_received"`
+	BytesPerSec    float64 `json:"bytes_per_sec"`
+	FramesReceived int64   `json:"frames_received"`
+	FramesPerSec   float64 `json:"frames_per_sec"`
+	LastFrameTime  int64   `json:"last_frame_time"`
+	Health         string  `json:"health"`
+	ConnectedAt    int64   `json:"connected_at"`
+	LastPingSent   int64   `json:"-"`
+	LastPongRecv   int64   `json:"-"`
+	recentBytes    []int64
+	recentFrames   []int64
+}
+
+func NewAgentStats() *AgentStats {
+	return &AgentStats{
+		Transport:    "unknown",
+		Health:       "unknown",
+		ConnectedAt:  time.Now().UnixMilli(),
+		recentBytes:  make([]int64, 0, 10),
+		recentFrames: make([]int64, 0, 10),
+	}
+}
+
+func (s *AgentStats) RecordBytes(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.BytesReceived += int64(n)
+	s.recentBytes = append(s.recentBytes, int64(n))
+	if len(s.recentBytes) > 10 {
+		s.recentBytes = s.recentBytes[1:]
+	}
+	var sum int64
+	for _, v := range s.recentBytes {
+		sum += v
+	}
+	s.BytesPerSec = float64(sum) / float64(len(s.recentBytes)) / 2.0
+}
+
+func (s *AgentStats) RecordFrame() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.FramesReceived++
+	s.LastFrameTime = time.Now().UnixMilli()
+	s.recentFrames = append(s.recentFrames, 1)
+	if len(s.recentFrames) > 10 {
+		s.recentFrames = s.recentFrames[1:]
+	}
+	var sum int64
+	for _, v := range s.recentFrames {
+		sum += v
+	}
+	s.FramesPerSec = float64(sum) / float64(len(s.recentFrames)) / 2.0
+}
+
+func (s *AgentStats) UpdateHealth() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.LastFrameTime == 0 {
+		s.Health = "waiting"
+		return
+	}
+	age := time.Since(time.UnixMilli(s.LastFrameTime))
+	if age < 5*time.Second {
+		s.Health = "good"
+	} else if age < 15*time.Second {
+		s.Health = "slow"
+	} else {
+		s.Health = "stale"
+	}
+}
+
+func (s *AgentStats) Snapshot() map[string]interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return map[string]interface{}{
+		"transport":       s.Transport,
+		"latency_ms":      s.LatencyMS,
+		"bytes_received":  s.BytesReceived,
+		"bytes_per_sec":   s.BytesPerSec,
+		"frames_received": s.FramesReceived,
+		"frames_per_sec":  s.FramesPerSec,
+		"last_frame_time": s.LastFrameTime,
+		"health":          s.Health,
+		"connected_at":    s.ConnectedAt,
+	}
+}
+
+var agentStats sync.Map
+
 type WireMessage struct {
     Type    string `json:"type"`
     Data    []byte `json:"data,omitempty"`
@@ -122,6 +215,9 @@ type SettingsFile struct {
     UpdateURL              string           `json:"update_url,omitempty"`
     TurnServerURL          string           `json:"turn_server_url,omitempty"`
     TurnServerCredential   string           `json:"turn_server_credential,omitempty"`
+    DeployUser             string           `json:"deploy_user,omitempty"`
+    DeployPass             string           `json:"deploy_pass,omitempty"`
+    DeployDomain           string           `json:"deploy_domain,omitempty"`
 }
 
 type CaptureTier int
@@ -332,6 +428,22 @@ var agentMode bool
 var agentModeMu sync.RWMutex
 var connAgentIDMu sync.RWMutex
 
+// LAN discovery and election
+var globalLAN *LANLeaderElection
+var lanElectionDone = make(chan struct{})
+
+// Assist sessions (browser-based remote screen sharing)
+type AssistSession struct {
+	ID        string
+	UserConn  *websocket.Conn
+	AdminConn *websocket.Conn
+	CreatedAt time.Time
+	Active    bool
+}
+
+var assistSessions = make(map[string]*AssistSession)
+var assistSessionsMu sync.RWMutex
+
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil { return "unknown" }
@@ -440,6 +552,9 @@ func saveSettings() error {
         UpdateURL:              cfg.UpdateURL,
         TurnServerURL:          cfg.TurnServerURL,
         TurnServerCredential:   cfg.TurnServerCredential,
+        DeployUser:             deployCreds.Username,
+        DeployPass:             deployCreds.Password,
+        DeployDomain:           deployCreds.Domain,
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil { return err }
@@ -474,6 +589,10 @@ func loadSettings() {
 	if s.UpdateURL != "" { cfg.UpdateURL = s.UpdateURL }
 	if s.TurnServerURL != "" { cfg.TurnServerURL = s.TurnServerURL }
 	if s.TurnServerCredential != "" { cfg.TurnServerCredential = s.TurnServerCredential }
+	if s.DeployUser != "" {
+		SetDeployCredentials(s.DeployUser, s.DeployPass, s.DeployDomain)
+		llog("info", "Loaded deploy credentials for user %s", s.DeployUser)
+	}
 	llog("info", "Loaded saved settings from %s", settingsFilePath())
 }
 
@@ -616,7 +735,10 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 		go webrtcManager.HandleOffer(connID, sdp, conn, isAgent)
 	case "webrtc_ice":
 		candidate, _ := msgMap["candidate"].(string)
-		webrtcManager.HandleICE("", candidate)
+		webrtcManager.mu.Lock()
+		connID := webrtcManager.wsToID[conn]
+		webrtcManager.mu.Unlock()
+		webrtcManager.HandleICE(connID, candidate)
 	case "mouse_move":
 		if target, ok := msgMap["agentId"].(string); ok && target != "" {
 			forwardToAgent(target, msg)
@@ -642,6 +764,33 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 		if key, ok := msgMap["key"].(float64); ok {
 			winKeyPress(uint16(key))
 		}
+	case "command_output", "dir_listing", "file_download", "upload_result":
+		routeAgentResponse(msgMap)
+	case "exec_command", "list_dir", "download_file", "upload_file":
+		agentHandleTerminalMessage(msgMap)
+	case "ping":
+		ts, _ := msgMap["ts"].(float64)
+		connID := ""
+		agentConnsMu.RLock()
+		agentIDForConn := connAgentID[conn]
+		agentConnsMu.RUnlock()
+		if agentIDForConn != "" {
+			connID = agentIDForConn
+		}
+		_ = connID
+		pongMsg, _ := json.Marshal(map[string]interface{}{
+			"type": "pong",
+			"ts":   int64(ts),
+		})
+		conn.WriteMessage(websocket.TextMessage, pongMsg)
+	case "pong":
+		ts, _ := msgMap["ts"].(float64)
+		agentConnsMu.RLock()
+		aid := connAgentID[conn]
+		agentConnsMu.RUnlock()
+		if aid != "" {
+			handleAgentPong(aid, int64(ts))
+		}
 	default:
 		llog("debug", "Received WebSocket message type=%s", msgType)
 	}
@@ -652,115 +801,237 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 
 
 func startGitHubLeaderElection() {
-    if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
-        if cfg.ServerURL != "" && !cfg.IsServerMode {
-            // No GitHub auth but we know where the server is — connect as agent
-            llog("info", "No GitHub config but server_url set – connecting as agent to %s", cfg.ServerURL)
-            cfg.IsServerMode = false
-            agentModeMu.Lock()
-            agentMode = true
-            agentModeMu.Unlock()
-            runAgentClient()
-            // When agent client returns (on disconnect), restart election process
-            llog("error", "Agent disconnected – restarting election")
-            startGitHubLeaderElection()
-            return
-        }
-        llog("info", "No GitHub config – running as standalone server")
-        runServerComponents()
-        return
-    }
-    // Election loop with GitHub — ANY machine can become server
-    // All machines participate. Winner runs the tunnel and HTTP server.
-    for {
-        cfg.IsServerMode = false
-        agentModeMu.Lock()
-        agentMode = false
-        agentModeMu.Unlock()
-        leader, err := tryClaimLeadership()
-        if err != nil {
-            electionRetries++
-            if electionRetries >= 3 {
-                llog("error", "Election failed after %d retries: %v – checking for existing server", electionRetries, err)
-                electionRetries = 0
-                serverURL := cfg.ServerURL
-                if serverURL == "" {
-                    serverURL = "https://relay.recruitedge.us"
-                }
-                checkURL := serverURL + "/api/health"
-                foundServer := false
-                for i := 0; i < 15; i++ {
-                    checkReq, _ := http.NewRequest("GET", checkURL, nil)
-                    checkReq.Header.Set("User-Agent", "PunMonitor-Election")
-                    httpClient := &http.Client{Timeout: 5 * time.Second}
-                    checkResp, checkErr := httpClient.Do(checkReq)
-                    if checkErr == nil && checkResp.StatusCode == 200 {
-                        checkResp.Body.Close()
-                        // CRITICAL: Verify the server is NOT us (tunnel loops back)
-                        // Check by fetching /api/version from the detected server
-                        verifyReq, _ := http.NewRequest("GET", serverURL+"/api/system-info", nil)
-                        verifyReq.Header.Set("User-Agent", "PunMonitor-Election")
-                        verifyResp, verifyErr := httpClient.Do(verifyReq)
-                        if verifyErr == nil && verifyResp.StatusCode == 200 {
-                            var sysInfo map[string]string
-                            if json.NewDecoder(verifyResp.Body).Decode(&sysInfo) == nil {
-                                verifyResp.Body.Close()
-                                if sysInfo["hostname"] == myHostname || sysInfo["hostname"] == getHostname() {
-                                    llog("info", "Detected server is ourselves (%s) – not connecting as agent", sysInfo["hostname"])
-                                    continue
-                                }
-                            } else {
-                                verifyResp.Body.Close()
-                            }
-                        } else if verifyResp != nil {
-                            verifyResp.Body.Close()
-                        }
-                        llog("info", "Existing server detected at %s after ~%ds – connecting as agent", serverURL, i*3)
-                        foundServer = true
-                        break
-                    }
-                    if checkErr != nil {
-                        llog("debug", "Health check attempt %d/15: %v", i+1, checkErr)
-                    } else {
-                        checkResp.Body.Close()
-                    }
-                    time.Sleep(3 * time.Second)
-                }
-                if foundServer {
-                    agentModeMu.Lock()
-                    agentMode = true
-                    agentModeMu.Unlock()
-                    runAgentClient()
-                } else {
-                    llog("info", "No existing server detected after 45s – running as standalone server")
-                    cfg.IsServerMode = true
-                    runServerComponents()
-                }
-                llog("error", "Fallback cycle ended, re-electing after jitter")
-                time.Sleep(jitterDuration(10, 20))
-                continue
-            }
-            llog("error", "Election error (%d/3): %v – retrying", electionRetries, err)
-            time.Sleep(jitterDuration(3, 7))
-            continue
-        }
-        electionRetries = 0
-        if leader {
-            llog("info", "Elected as leader on %s — starting server + tunnel", myHostname)
-            cfg.IsServerMode = true
-            runServerComponents()
-            llog("error", "Server stopped, re-electing after jitter")
-            time.Sleep(jitterDuration(10, 20))
-        } else {
-            llog("info", "Not the leader – connecting as agent")
-            agentModeMu.Lock()
-            agentMode = true
-            agentModeMu.Unlock()
-            runAgentClient()
-            llog("error", "Agent disconnected, re-electing after jitter")
-            time.Sleep(jitterDuration(5, 10))
-        }
-    }
+	// === PHASE 1: LAN discovery + election (works without internet) ===
+	self := &PeerInfo{
+		AgentID:  cfg.AgentID,
+		Hostname: myHostname,
+		IP:       getLocalIP(),
+		Port:     cfg.ConfigPort,
+		Mode:     "standalone",
+		Version:  binaryVersion,
+		Uptime:   time.Since(startTime).Seconds(),
+	}
+	globalDiscovery = NewPeerDiscovery(self)
+	globalLAN = NewLANLeaderElection(globalDiscovery)
+
+	lanLeaderCh := make(chan struct{})
+	lanAgentCh := make(chan string, 1)
+
+	globalLAN.SetCallbacks(
+		func() {
+			// LAN elected us as leader
+			select {
+			case <-lanLeaderCh:
+			default:
+				close(lanLeaderCh)
+			}
+		},
+		func(serverURL string) {
+			// LAN found a server or lost server
+			select {
+			case lanAgentCh <- serverURL:
+			default:
+			}
+		},
+	)
+
+	lanCtx, lanCancel := context.WithCancel(context.Background())
+	defer lanCancel()
+	globalLAN.Start(lanCtx)
+
+	// Wait up to 8 seconds for LAN election result
+	select {
+	case <-lanLeaderCh:
+		llog("info", "LAN election: elected as server — starting server components")
+		cfg.IsServerMode = true
+		agentModeMu.Lock()
+		agentMode = false
+		agentModeMu.Unlock()
+		globalDiscovery.UpdateSelf("server", true)
+		runServerComponents()
+		// After server stops, continue to re-elect
+		llog("error", "Server stopped — re-electing")
+		time.Sleep(jitterDuration(5, 10))
+		// Fall through to full election loop
+	case serverURL := <-lanAgentCh:
+		llog("info", "LAN election: found server at %s — connecting as agent", serverURL)
+		cfg.ServerURL = serverURL
+		cfg.IsServerMode = false
+		agentModeMu.Lock()
+		agentMode = true
+		agentModeMu.Unlock()
+		globalDiscovery.UpdateSelf("agent", false)
+		runAgentClient()
+		llog("error", "Agent disconnected from LAN server — re-electing")
+		time.Sleep(jitterDuration(5, 10))
+		// Fall through to full election loop
+	case <-time.After(8 * time.Second):
+		llog("info", "LAN election: no result after 8s — proceeding to full election")
+	}
+
+	// === PHASE 2: Full election loop (LAN + relay + GitHub fallback) ===
+	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+		// No GitHub — keep trying: server_url → relay → LAN retry → eventually self-promote
+		attempts := 0
+		for {
+			// 1. If we have a configured server URL, try connecting
+			if cfg.ServerURL != "" && !cfg.IsServerMode {
+				llog("info", "Connecting to configured server: %s", cfg.ServerURL)
+				cfg.IsServerMode = false
+				agentModeMu.Lock()
+				agentMode = true
+				agentModeMu.Unlock()
+				globalDiscovery.UpdateSelf("agent", false)
+				runAgentClient()
+				llog("error", "Disconnected from %s — retrying", cfg.ServerURL)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			// 2. Try relay.recruitedge.us
+			relayURL := "https://relay.recruitedge.us"
+			llog("info", "Trying relay at %s (attempt %d)", relayURL, attempts+1)
+			if checkServerHealth(relayURL) {
+				llog("info", "Relay reachable — connecting as agent")
+				cfg.ServerURL = relayURL
+				cfg.IsServerMode = false
+				agentModeMu.Lock()
+				agentMode = true
+				agentModeMu.Unlock()
+				globalDiscovery.UpdateSelf("agent", false)
+				runAgentClient()
+				llog("error", "Disconnected from relay — retrying")
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			attempts++
+
+			// 3. After many failed attempts, become server (only ONE machine does this)
+			if attempts >= 2 {
+				// Check if ANY other machine on LAN is already a server
+				serverPeer := globalDiscovery.GetServer()
+				if serverPeer != nil && checkServerHealth(fmt.Sprintf("http://%s:%d", serverPeer.IP, serverPeer.Port)) {
+					llog("info", "Found LAN server %s — connecting as agent", serverPeer.Hostname)
+					cfg.ServerURL = fmt.Sprintf("http://%s:%d", serverPeer.IP, serverPeer.Port)
+					cfg.IsServerMode = false
+					agentModeMu.Lock()
+					agentMode = true
+					agentModeMu.Unlock()
+					globalDiscovery.UpdateSelf("agent", false)
+					runAgentClient()
+					attempts = 0
+					continue
+				}
+
+				// No server found anywhere — become server (highest uptime wins via discovery)
+				llog("info", "No server found after %d attempts — becoming server", attempts)
+				cfg.IsServerMode = true
+				globalDiscovery.UpdateSelf("server", true)
+				runServerComponents()
+				// After server stops, restart election
+				llog("error", "Server stopped — re-electing")
+				attempts = 0
+				time.Sleep(jitterDuration(5, 10))
+				continue
+			}
+
+			// 4. Not yet time to self-promote — wait and retry
+			llog("info", "No server found — retrying in 30s (attempt %d/2)", attempts)
+			time.Sleep(30 * time.Second)
+		}
+	}
+
+	// Election loop with GitHub — ANY machine can become server
+	for {
+		cfg.IsServerMode = false
+		agentModeMu.Lock()
+		agentMode = false
+		agentModeMu.Unlock()
+		leader, err := tryClaimLeadership()
+		if err != nil {
+			electionRetries++
+			if electionRetries >= 3 {
+				llog("error", "Election failed after %d retries: %v – checking for existing server", electionRetries, err)
+				electionRetries = 0
+				serverURL := cfg.ServerURL
+				if serverURL == "" {
+					serverURL = "https://relay.recruitedge.us"
+				}
+				checkURL := serverURL + "/api/health"
+				foundServer := false
+				for i := 0; i < 15; i++ {
+					checkReq, _ := http.NewRequest("GET", checkURL, nil)
+					checkReq.Header.Set("User-Agent", "PunMonitor-Election")
+					httpClient := &http.Client{Timeout: 5 * time.Second}
+					checkResp, checkErr := httpClient.Do(checkReq)
+					if checkErr == nil && checkResp.StatusCode == 200 {
+						checkResp.Body.Close()
+						verifyReq, _ := http.NewRequest("GET", serverURL+"/api/system-info", nil)
+						verifyReq.Header.Set("User-Agent", "PunMonitor-Election")
+						verifyResp, verifyErr := httpClient.Do(verifyReq)
+						if verifyErr == nil && verifyResp.StatusCode == 200 {
+							var sysInfo map[string]string
+							if json.NewDecoder(verifyResp.Body).Decode(&sysInfo) == nil {
+								verifyResp.Body.Close()
+								if sysInfo["hostname"] == myHostname || sysInfo["hostname"] == getHostname() {
+									llog("info", "Detected server is ourselves (%s) – not connecting as agent", sysInfo["hostname"])
+									continue
+								}
+							} else {
+								verifyResp.Body.Close()
+							}
+						} else if verifyResp != nil {
+							verifyResp.Body.Close()
+						}
+						llog("info", "Existing server detected at %s after ~%ds – connecting as agent", serverURL, i*3)
+						foundServer = true
+						break
+					}
+					if checkErr != nil {
+						llog("debug", "Health check attempt %d/15: %v", i+1, checkErr)
+					} else {
+						checkResp.Body.Close()
+					}
+					time.Sleep(3 * time.Second)
+				}
+				if foundServer {
+					agentModeMu.Lock()
+					agentMode = true
+					agentModeMu.Unlock()
+					runAgentClient()
+				} else {
+					llog("info", "No existing server detected after 45s – running as standalone server")
+					cfg.IsServerMode = true
+					runServerComponents()
+				}
+				llog("error", "Fallback cycle ended, re-electing after jitter")
+				time.Sleep(jitterDuration(10, 20))
+				continue
+			}
+			llog("error", "Election error (%d/3): %v – retrying", electionRetries, err)
+			time.Sleep(jitterDuration(3, 7))
+			continue
+		}
+		electionRetries = 0
+		if leader {
+			llog("info", "Elected as leader on %s — starting server + tunnel", myHostname)
+			cfg.IsServerMode = true
+			globalDiscovery.UpdateSelf("server", true)
+			runServerComponents()
+			llog("error", "Server stopped, re-electing after jitter")
+			time.Sleep(jitterDuration(10, 20))
+		} else {
+			llog("info", "Not the leader – connecting as agent")
+			agentModeMu.Lock()
+			agentMode = true
+			agentModeMu.Unlock()
+			globalDiscovery.UpdateSelf("agent", false)
+			runAgentClient()
+			llog("error", "Agent disconnected, re-electing after jitter")
+			time.Sleep(jitterDuration(5, 10))
+		}
+	}
 }
 
 func jitterDuration(minSec, maxSec int) time.Duration {
@@ -788,7 +1059,7 @@ func tryClaimLeadership() (bool, error) {
     }
     defer resp.Body.Close()
 
-    llog("debug", "Election: GET %s returned %d (token=%s...)", apiURL, resp.StatusCode, cfg.GitHubToken[:min(len(cfg.GitHubToken), 8)])
+    llog("debug", "Election: GET %s returned %d", apiURL, resp.StatusCode)
 
     if resp.StatusCode == http.StatusNotFound {
         llog("info", "No primary_server.json found, attempting to claim leadership")
@@ -1028,6 +1299,26 @@ func runServerComponents() {
 		}
 	}()
 
+	// Auto-deploy: when we become server, scan for peers and deploy PunMonitor
+	go safeRun("auto-deploy", func() {
+		time.Sleep(10 * time.Second)
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if globalDiscovery != nil && HasDeployCredentials() {
+					peers := globalDiscovery.GetPeers()
+					for _, peer := range peers {
+						go autoDeployToPeer(peer)
+					}
+				}
+			case <-serverCtx.Done():
+				return
+			}
+		}
+	})
+
 	go func() {
 		ticker := time.NewTicker(2 * time.Minute)
 		for range ticker.C {
@@ -1222,9 +1513,10 @@ func startHTTPServer() {
 		writer.Write([]string{
 			"Agent ID", "Hostname", "Local IP", "WAN IP",
 			"OS", "Architecture", "Binary Version", "Mode",
-			"Uptime", "Start Time", "Boot Time (System)", "Wake Up Time",
-			"Last Active", "Last Idle Start", "Last Shutdown", "Total Idle Time",
-			"Cloudflare Tunnel ID", "FPS", "Monthly Limit MB", "Bytes Sent",
+			"Transport", "Health", "Latency (ms)", "Jitter (ms)", "Packet Loss %",
+			"Reconnections", "Bytes Received", "Frames Received", "Frames/sec",
+			"Uptime", "Start Time", "Boot Time", "Wake Up Time",
+			"Total Idle Time",
 			"Report Date", "Report Time",
 		})
 		// Server's own row
@@ -1232,16 +1524,10 @@ func startHTTPServer() {
 			uptimeSecs := int64(time.Since(startTime).Seconds())
 			uptimeStr := fmt.Sprintf("%dh %dm %ds", uptimeSecs/3600, (uptimeSecs%3600)/60, uptimeSecs%60)
 			bootTime := "—"
-			lastShutdown := "—"
-			lastActive := "—"
-			lastIdleStart := "—"
 			totalIdle := "—"
 			if globalActivity != nil {
 				s := globalActivity.Summary()
 				bootTime = s["boot_time"]
-				lastShutdown = s["last_shutdown"]
-				lastActive = s["last_active"]
-				lastIdleStart = s["last_idle_start"]
 				totalIdle = s["total_idle"]
 			}
 			wakeUpTime := "—"
@@ -1251,15 +1537,14 @@ func startHTTPServer() {
 			writer.Write([]string{
 				cfg.AgentID, hostname, getLocalIP(), getWANIP(),
 				runtime.GOOS, runtime.GOARCH, binaryVersion, "server",
+				"local", "n/a", "0", "0", "0",
+				"0", "0", "0", "0",
 				uptimeStr, startTime.Format("2006-01-02 15:04:05"),
-				bootTime, wakeUpTime, lastActive, lastIdleStart, lastShutdown, totalIdle,
-				cfg.CloudflareTunnelID,
-				fmt.Sprintf("%.1f", cfg.MaxFPS), fmt.Sprintf("%d", cfg.MonthlyLimitMB),
-				"—",
+				bootTime, wakeUpTime, totalIdle,
 				time.Now().Format("2006-01-02"), time.Now().Format("15:04:05"),
 			})
 		}
-		// Per-agent rows from agentSystemInfo
+		// Per-agent rows from agentSystemInfo + agentStats
 		agentSystemInfo.Range(func(key, value interface{}) bool {
 			aid, ok := key.(string)
 			if !ok { return true }
@@ -1268,6 +1553,26 @@ func startHTTPServer() {
 			getStr := func(field string) string {
 				if v, ok := info[field].(string); ok { return v }
 				return "—"
+			}
+			transport := "—"
+			health := "—"
+			latency := "0"
+			jitter := "0"
+			pktLoss := "0"
+			reconn := "0"
+			bytesRec := "0"
+			framesRec := "0"
+			fps := "0"
+			if v, ok := agentStats.Load(aid); ok {
+				s := v.(*AgentStats)
+				snap := s.Snapshot()
+				if t, ok := snap["transport"].(string); ok { transport = t }
+				if h, ok := snap["health"].(string); ok { health = h }
+				if l, ok := snap["latency_ms"].(float64); ok { latency = fmt.Sprintf("%.1f", l) }
+				if j, ok := snap["bytes_per_sec"].(float64); ok { jitter = fmt.Sprintf("%.1f", j) }
+				if f, ok := snap["frames_per_sec"].(float64); ok { fps = fmt.Sprintf("%.1f", f) }
+				bytesRec = fmt.Sprintf("%d", snap["bytes_received"])
+				framesRec = fmt.Sprintf("%d", snap["frames_received"])
 			}
 			writer.Write([]string{
 				aid,
@@ -1278,27 +1583,21 @@ func startHTTPServer() {
 				getStr("arch"),
 				getStr("version"),
 				"agent",
+				transport, health, latency, jitter, pktLoss,
+				reconn, bytesRec, framesRec, fps,
 				getStr("uptime"),
 				getStr("start_time"),
 				getStr("boot_time"),
 				getStr("wake_up_time"),
-				"—", // last active
-				"—", // last idle start
-				"—", // last shutdown
 				getStr("idle_time"),
-				"—",
-				fmt.Sprintf("%.1f", cfg.MaxFPS),
-				fmt.Sprintf("%d", cfg.MonthlyLimitMB),
-				"—",
 				time.Now().Format("2006-01-02"), time.Now().Format("15:04:05"),
 			})
 			return true
 		})
-		// Also include known agents that are currently disconnected
+		// Also include known (disconnected) agents
 		knownAgents.Range(func(key, value interface{}) bool {
 			aid, ok := key.(string)
 			if !ok { return true }
-			// Skip if already in agentSystemInfo (connected)
 			if _, exists := agentSystemInfo.Load(aid); exists { return true }
 			info, _ := value.(map[string]interface{})
 			if info == nil { return true }
@@ -1308,36 +1607,26 @@ func startHTTPServer() {
 				}
 				return "—"
 			}
-			lastSeen := "—"
-			if ls, ok := info["last_seen"].(float64); ok {
-				lastSeen = time.UnixMilli(int64(ls)).Format("2006-01-02 15:04:05")
-			}
-			_ = lastSeen
 			writer.Write([]string{
-				aid,
-				getStr("hostname"),
-				getStr("local_ip"),
-				getStr("wan_ip"),
-				getStr("os"),
-				"—",
-				getStr("version"),
-				"offline",
-				"—",
-				"—",
-				"—",
-				"—",
-				"—",
-				"—",
-				"—",
-				"—",
-				"—",
-				"—",
-				"—",
-				"—",
+				aid, getStr("hostname"), getStr("local_ip"), getStr("wan_ip"),
+				getStr("os"), "—", getStr("version"), "offline",
+				"—", "offline", "—", "—", "—",
+				"—", "—", "—", "—",
+				"—", "—", "—", "—", "—",
 				time.Now().Format("2006-01-02"), time.Now().Format("15:04:05"),
 			})
 			return true
 		})
+		// Audit log entries as separate section
+		if globalAudit != nil {
+			writer.Write([]string{})
+			writer.Write([]string{"=== AUDIT LOG ==="})
+			writer.Write([]string{"Timestamp", "Action", "Agent ID", "User", "Detail"})
+			for _, e := range globalAudit.Recent(500) {
+				ts := time.UnixMilli(e.Timestamp).Format("2006-01-02 15:04:05")
+				writer.Write([]string{ts, e.Action, e.AgentID, e.User, e.Detail})
+			}
+		}
 		writer.Flush()
 	})
 
@@ -1495,9 +1784,166 @@ func startHTTPServer() {
 		json.NewEncoder(w).Encode(getTransportStatus())
 	})
 
+	http.HandleFunc("/api/agent-stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		stats := make(map[string]interface{})
+		agentStats.Range(func(key, value interface{}) bool {
+			aid, ok := key.(string)
+			if !ok { return true }
+			s := value.(*AgentStats)
+			s.UpdateHealth()
+			stats[aid] = s.Snapshot()
+			return true
+		})
+		json.NewEncoder(w).Encode(stats)
+	})
+
 	http.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"version": binaryVersion})
+	})
+
+	http.HandleFunc("/api/setup-status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		needsSetup := cfg.ServerURL == "" && cfg.GitHubRepo == ""
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"needs_setup":  needsSetup,
+			"server_url":   cfg.ServerURL,
+			"auth_user":    cfg.AuthUser,
+			"has_auth":     cfg.AuthUser != "",
+			"has_tunnel":   cfg.CloudflareTunnelID != "",
+			"is_server":    cfg.IsServerMode,
+			"agent_id":     cfg.AgentID,
+			"hostname":     getHostname(),
+		})
+	})
+
+	http.HandleFunc("/api/setup", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ServerURL       string `json:"server_url"`
+			AuthUser        string `json:"auth_user"`
+			AuthPass        string `json:"auth_pass"`
+			MaxFPS          float64 `json:"max_fps"`
+			TunnelHostname  string `json:"tunnel_hostname"`
+			CloudflareID    string `json:"cloudflare_tunnel_id"`
+			CloudflareSecret string `json:"cloudflare_tunnel_secret"`
+			CloudflareTag   string `json:"cloudflare_account_tag"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ServerURL != "" {
+			cfg.ServerURL = req.ServerURL
+		}
+		if req.AuthUser != "" {
+			cfg.AuthUser = req.AuthUser
+			cfg.AuthPass = req.AuthPass
+		}
+		if req.MaxFPS > 0 {
+			cfg.MaxFPS = req.MaxFPS
+		} else {
+			cfg.MaxFPS = 1.0
+		}
+		if req.TunnelHostname != "" {
+			cfg.TunnelHostname = req.TunnelHostname
+		}
+		if req.CloudflareID != "" {
+			cfg.CloudflareTunnelID = req.CloudflareID
+			cfg.CloudflareTunnelSecret = req.CloudflareSecret
+			cfg.CloudflareAccountTag = req.CloudflareTag
+		}
+		cfg.ConfigPort = 8080
+		saveSettings()
+		RecordAudit("setup_complete", cfg.AgentID, "admin", req.ServerURL)
+		llog("info", "Setup completed — server_url=%s auth=%s", cfg.ServerURL, cfg.AuthUser)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "msg": "Setup complete. Restart the application to apply changes."})
+	})
+
+	http.HandleFunc("/download/", func(w http.ResponseWriter, r *http.Request) {
+		exePath, err := os.Executable()
+		if err != nil {
+			http.Error(w, "cannot locate binary", http.StatusInternalServerError)
+			return
+		}
+		permPath := filepath.Join(binDir(), filepath.Base(exePath))
+		if _, err := os.Stat(permPath); err == nil {
+			exePath = permPath
+		}
+		w.Header().Set("Content-Disposition", "attachment; filename=\"PunMonitor.exe\"")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeFile(w, r, exePath)
+	})
+
+	http.HandleFunc("/api/audit", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if globalAudit == nil {
+			json.NewEncoder(w).Encode([]AuditEntry{})
+			return
+		}
+		json.NewEncoder(w).Encode(globalAudit.Recent(200))
+	})
+
+	http.HandleFunc("/api/terminal", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ID      string `json:"id"`
+			Command string `json:"command"`
+			AgentID string `json:"agentId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		handleTerminalCommand(req.ID, req.Command, req.AgentID, "dashboard")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	http.HandleFunc("/api/files/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ID      string `json:"id"`
+			Path    string `json:"path"`
+			AgentID string `json:"agentId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		handleDirListRequest(req.ID, req.Path, req.AgentID, "dashboard")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	http.HandleFunc("/api/files/download", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ID      string `json:"id"`
+			Path    string `json:"path"`
+			AgentID string `json:"agentId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		handleFileDownloadRequest(req.ID, req.Path, req.AgentID, "dashboard")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
 	http.HandleFunc("/api/sync", func(w http.ResponseWriter, r *http.Request) {
@@ -1505,6 +1951,88 @@ func startHTTPServer() {
 		llog("info", "Manual sync triggered from dashboard")
 		syncFromGitHub()
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	http.HandleFunc("/api/deploy-credentials", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "GET" {
+			creds := GetDeployCredentials()
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"configured": creds.Username != "",
+				"username":   creds.Username,
+				"domain":     creds.Domain,
+			})
+			return
+		}
+		if r.Method == "POST" {
+			var req struct {
+				Username string `json:"username"`
+				Password string `json:"password"`
+				Domain   string `json:"domain"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			SetDeployCredentials(req.Username, req.Password, req.Domain)
+			llog("info", "Deploy credentials configured for user %s", req.Username)
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	})
+
+	http.HandleFunc("/api/deploy", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if !HasDeployCredentials() {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":  "error",
+				"message": "No deploy credentials configured. Set them via /api/deploy-credentials first.",
+			})
+			return
+		}
+		go runDeployment()
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "msg": "Deployment started — check logs for progress"})
+	})
+
+	http.HandleFunc("/api/migrate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ServerURL string `json:"server_url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ServerURL == "" {
+			http.Error(w, "server_url required", http.StatusBadRequest)
+			return
+		}
+		cfg.ServerURL = req.ServerURL
+		saveSettings()
+		RecordAudit("server_migrate", "", "dashboard", req.ServerURL)
+		migrateMsg, _ := json.Marshal(map[string]interface{}{
+			"type":      "migrate",
+			"server_url": req.ServerURL,
+		})
+		connAgentIDMu.RLock()
+		wsClients.Range(func(key, value interface{}) bool {
+			conn := key.(*websocket.Conn)
+			if _, isAgent := connAgentID[conn]; isAgent {
+				conn.WriteMessage(websocket.TextMessage, migrateMsg)
+			}
+			return true
+		})
+		connAgentIDMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "msg": "Migration command sent to all agents"})
 	})
 
 	http.HandleFunc("/api/upload", func(w http.ResponseWriter, r *http.Request) {
@@ -1571,6 +2099,173 @@ func startHTTPServer() {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "msg": "Update sent to server + agents"})
 	})
 
+	// --- Assist: browser-based remote screen sharing ---
+
+	http.HandleFunc("/assist/new", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		id := randomString(8)
+		assistSessionsMu.Lock()
+		assistSessions[id] = &AssistSession{
+			ID:        id,
+			CreatedAt: time.Now(),
+			Active:    true,
+		}
+		assistSessionsMu.Unlock()
+		RecordAudit("assist_created", "", "admin", id)
+		json.NewEncoder(w).Encode(map[string]string{
+			"id":  id,
+			"url": fmt.Sprintf("/assist/%s", id),
+		})
+	})
+
+	http.HandleFunc("/assist/list", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		assistSessionsMu.RLock()
+		var list []map[string]interface{}
+		for _, s := range assistSessions {
+			list = append(list, map[string]interface{}{
+				"id":        s.ID,
+				"active":    s.Active,
+				"createdAt": s.CreatedAt.UnixMilli(),
+				"hasUser":   s.UserConn != nil,
+				"hasAdmin":  s.AdminConn != nil,
+			})
+		}
+		assistSessionsMu.RUnlock()
+		if list == nil {
+			list = []map[string]interface{}{}
+		}
+		json.NewEncoder(w).Encode(list)
+	})
+
+	http.HandleFunc("/assist/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/assist/")
+		if id == "" || id == "new" || id == "list" || id == "ws" {
+			return
+		}
+		assistPath := filepath.Join(filepath.Dir(os.Args[0]), "assist.html")
+		if data, err := os.ReadFile(assistPath); err == nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(data)
+		} else {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, "<html><body><h2>Assist Session %s</h2><p>assist.html not found.</p></body></html>", id)
+		}
+	})
+
+	http.HandleFunc("/view/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/view/")
+		if id == "" {
+			return
+		}
+		viewerPath := filepath.Join(filepath.Dir(os.Args[0]), "viewer.html")
+		if data, err := os.ReadFile(viewerPath); err == nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(data)
+		} else {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, "<html><body><h2>Viewer for %s</h2><p>viewer.html not found.</p></body></html>", id)
+		}
+	})
+
+	http.HandleFunc("/assist-ws/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/assist-ws/")
+		if id == "" {
+			return
+		}
+		upgrader := websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool { return true },
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		assistSessionsMu.Lock()
+		session, exists := assistSessions[id]
+		if !exists {
+			session = &AssistSession{ID: id, CreatedAt: time.Now(), Active: true}
+			assistSessions[id] = session
+		}
+		assistSessionsMu.Unlock()
+
+		_, firstMsg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var hello map[string]interface{}
+		json.Unmarshal(firstMsg, &hello)
+
+		isAdmin := hello["type"] == "assist_admin_view"
+		if isAdmin {
+			assistSessionsMu.Lock()
+			session.AdminConn = conn
+			assistSessionsMu.Unlock()
+			llog("info", "Assist: admin viewing session %s", id)
+			if session.UserConn != nil {
+				joinMsg, _ := json.Marshal(map[string]string{"type": "assist_viewer_joined"})
+				session.UserConn.WriteMessage(websocket.TextMessage, joinMsg)
+			}
+			RecordAudit("assist_view", id, "admin", "")
+		} else {
+			assistSessionsMu.Lock()
+			session.UserConn = conn
+			assistSessionsMu.Unlock()
+			llog("info", "Assist: user joined session %s", id)
+		}
+
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				if isAdmin && session.UserConn != nil {
+					leftMsg, _ := json.Marshal(map[string]string{"type": "assist_viewer_left"})
+					session.UserConn.WriteMessage(websocket.TextMessage, leftMsg)
+				}
+				if !isAdmin {
+					assistSessionsMu.Lock()
+					session.Active = false
+					assistSessionsMu.Unlock()
+				}
+				return
+			}
+			var msgMap map[string]interface{}
+			json.Unmarshal(msg, &msgMap)
+
+			msgType, _ := msgMap["type"].(string)
+			switch msgType {
+			case "assist_frame":
+				// Forward frame from user to admin
+				if session.AdminConn != nil {
+					session.AdminConn.WriteMessage(websocket.TextMessage, msg)
+				}
+			case "assist_chat":
+				// Forward chat both ways
+				if isAdmin && session.UserConn != nil {
+					session.UserConn.WriteMessage(websocket.TextMessage, msg)
+				} else if !isAdmin && session.AdminConn != nil {
+					session.AdminConn.WriteMessage(websocket.TextMessage, msg)
+				}
+			case "assist_mouse", "assist_key":
+				// Forward control commands from admin to user
+				if session.UserConn != nil {
+					session.UserConn.WriteMessage(websocket.TextMessage, msg)
+				}
+			case "assist_file":
+				// Forward file data both ways
+				if isAdmin && session.UserConn != nil {
+					session.UserConn.WriteMessage(websocket.TextMessage, msg)
+				} else if !isAdmin && session.AdminConn != nil {
+					session.AdminConn.WriteMessage(websocket.TextMessage, msg)
+				}
+			}
+		}
+	})
+
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
@@ -1617,6 +2312,10 @@ func startHTTPServer() {
 					connAgentIDMu.Lock()
 					connAgentID[conn] = agentID
 					connAgentIDMu.Unlock()
+					stats := NewAgentStats()
+					stats.Transport = "websocket"
+					agentStats.Store(agentID, stats)
+					go startAgentPingLoop(agentID)
 					// Register in knownAgents for persistent tracking
 					if sysInfo, ok := msgMap["systemInfo"].(map[string]interface{}); ok {
 						knownAgents.Store(agentID, map[string]interface{}{
@@ -1662,6 +2361,26 @@ func startHTTPServer() {
 	})
 
 	addr := fmt.Sprintf(":%d", cfg.ConfigPort)
+	httpsAddr := fmt.Sprintf(":%d", cfg.ConfigPort+443)
+
+	go func() {
+		certFile, keyFile, err := ensureTLSCert()
+		if err != nil {
+			llog("info", "TLS cert generation failed: %v — HTTPS disabled", err)
+			return
+		}
+		tlsCfg, err := createTLSConfig(certFile, keyFile)
+		if err != nil {
+			llog("info", "TLS config failed: %v — HTTPS disabled", err)
+			return
+		}
+		srv := &http.Server{Addr: httpsAddr, Handler: nil, TLSConfig: tlsCfg}
+		llog("info", "Starting HTTPS server on %s", httpsAddr)
+		if err := srv.ListenAndServeTLS("", ""); err != nil {
+			llog("warn", "HTTPS server failed: %v", err)
+		}
+	}()
+
 	llog("info", "Starting HTTP server on %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		llog("error", "HTTP server failed: %v", err)
@@ -1878,6 +2597,81 @@ func checkForServerUpdates() error {
 
 func checkForCloudflareKeyChanges() error {
 	return nil
+}
+
+func runPull(serverURL string) {
+	fmt.Println("PunMonitor Installer")
+	fmt.Println("====================")
+	fmt.Printf("Server: %s\n", serverURL)
+
+	// Step 1: Check server is reachable
+	fmt.Print("Checking server... ")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(serverURL + "/api/health")
+	if err != nil {
+		fmt.Printf("FAILED\nCannot reach server at %s: %v\n", serverURL, err)
+		os.Exit(1)
+	}
+	resp.Body.Close()
+	fmt.Println("OK")
+
+	// Step 2: Download binary
+	downloadURL := serverURL + "/download/PunMonitor.exe"
+	fmt.Printf("Downloading from %s... ", downloadURL)
+	resp2, err := client.Get(downloadURL)
+	if err != nil {
+		fmt.Printf("FAILED\nDownload failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		fmt.Printf("FAILED\nServer returned status %d\n", resp2.StatusCode)
+		os.Exit(1)
+	}
+
+	// Step 3: Save to permanent location
+	permDir := binDir()
+	permPath := filepath.Join(permDir, "PunMonitor.exe")
+	fmt.Printf("Installing to %s... ", permPath)
+
+	exe, _ := os.Executable()
+	if strings.EqualFold(exe, permPath) {
+		permPath = filepath.Join(dataDir(), "PunMonitor.exe")
+	}
+
+	out, err := os.Create(permPath)
+	if err != nil {
+		fmt.Printf("FAILED\nCannot write %s: %v\n", permPath, err)
+		os.Exit(1)
+	}
+	written, err := io.Copy(out, resp2.Body)
+	out.Close()
+	if err != nil {
+		os.Remove(permPath)
+		fmt.Printf("FAILED\nWrite error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("OK (%d bytes)\n", written)
+
+	// Step 4: Set up autostart
+	fmt.Print("Installing autostart... ")
+	setupAutostart()
+	fmt.Println("OK")
+
+	// Step 5: Start the watchdog (which starts the main process)
+	fmt.Print("Starting PunMonitor... ")
+
+	if runtime.GOOS == "windows" {
+		startCmd := fmt.Sprintf(`start "" "%s" --watchdog`, permPath)
+		exec.Command("cmd", "/c", startCmd).Start()
+	} else {
+		exec.Command(permPath, "--watchdog").Start()
+	}
+
+	fmt.Println("OK")
+	fmt.Println("")
+	fmt.Println("PunMonitor installed and running!")
+	fmt.Printf("Dashboard: http://%s:8080\n", getLocalIP())
 }
 
 func captureScreen() (image.Image, error) {
@@ -2125,6 +2919,15 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "--pull" {
+		serverURL := "http://127.0.0.1:8080"
+		if len(os.Args) > 2 {
+			serverURL = os.Args[2]
+		}
+		runPull(serverURL)
+		return
+	}
+
 	// Self-relocate to permanent location if running from a temporary path (e.g. Downloads)
 	ensureBinaryRelocated()
 
@@ -2155,6 +2958,7 @@ func main() {
 	cfg.TunnelHostname = "relay.recruitedge.us"
 
 	initActivityStore()
+	InitAuditLog()
 
 	// Accumulate idle time by sampling every 5 seconds
 	idleCtx, cancelIdle := context.WithCancel(context.Background())
@@ -2224,69 +3028,18 @@ func main() {
 		}
 	}()
 
-	// Periodic network discovery — scan for new machines every 10 minutes
-	// When machines join the same network, they auto-discover and connect
-	go func() {
-		time.Sleep(2 * time.Minute) // Wait for initial setup
-		ticker := time.NewTicker(10 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			scanAndConnectPeers()
-		}
-	}()
+	// LAN discovery is started inside startGitHubLeaderElection
+	// No separate scan goroutine needed — UDP broadcast handles it
 
 	startGitHubLeaderElection()
 }
 
-// scanAndConnectPeers periodically checks if new machines have appeared on the network
-// This allows machines to auto-discover each other when they join the same network
+// scanAndConnectPeers is now handled by the LAN discovery + election system.
+// This function is kept for backward compatibility but is a no-op.
 func scanAndConnectPeers() {
-	// Only scan if we're not already connected as server
-	if cfg.IsServerMode {
-		return
-	}
-	
-	localIP := getLocalIP()
-	if localIP == "unknown" {
-		return
-	}
-	
-	// Extract subnet
-	parts := strings.Split(localIP, ".")
-	if len(parts) != 4 {
-		return
-	}
-	subnet := strings.Join(parts[:3], ".")
-	
-	// Quick scan: check common PunMonitor ports on nearby IPs
-	for i := 1; i <= 254; i++ {
-		ip := fmt.Sprintf("%s.%d", subnet, i)
-		if ip == localIP {
-			continue
-		}
-		
-		// Check if PunMonitor is running on this IP (port 8080)
-		if checkPort(ip, 8080, 1*time.Second) {
-			// Try to connect to this machine as server
-			testURL := fmt.Sprintf("http://%s:8080", ip)
-			client := &http.Client{Timeout: 3 * time.Second}
-			resp, err := client.Get(testURL + "/api/health")
-			if err == nil && resp.StatusCode == 200 {
-				resp.Body.Close()
-				llog("info", "Discovered PunMonitor server at %s — connecting", ip)
-				// Update server URL and reconnect
-				cfg.ServerURL = testURL
-				cfg.IsServerMode = false
-				agentModeMu.Lock()
-				agentMode = true
-				agentModeMu.Unlock()
-				return // Will reconnect via election loop
-			}
-			if resp != nil {
-				resp.Body.Close()
-			}
-		}
-	}
+	// LAN peer discovery is handled by globalDiscovery (UDP broadcast).
+	// LAN leader election is handled by globalLAN Election.
+	// This function is no longer needed.
 }
 
 var wdLogFile *os.File
@@ -2571,16 +3324,35 @@ func selfUpdate(downloadURL string) {
 			llog("error", "PANIC in self-update: %v", r)
 		}
 	}()
-	llog("info", "Self-update: downloading from %s", downloadURL)
+	llog("info", "=== Self-update: starting clean install from %s ===", downloadURL)
+
+	// Step 1: Kill watchdog (but NOT ourselves — we need to download first)
+	llog("info", "Update: stopping watchdog process...")
+	if runtime.GOOS == "windows" {
+		// Kill only the watchdog child process, not PunMonitor.exe itself
+		exec.Command("taskkill", "/F", "/IM", "PunMonitor.exe", "/T", "/FI", "PID ne "+fmt.Sprintf("%d", os.Getpid())).Run()
+	} else {
+		exec.Command("pkill", "-P", "1", "-f", "PunMonitor.*--watchdog").Run()
+	}
+
+	// Step 2: Remove autostart temporarily
+	llog("info", "Update: removing autostart...")
+	removeAutostart()
+
+	// Step 3: Clean old logs and temp files
+	llog("info", "Update: cleaning old files...")
+	cleanOldFiles()
+
+	// Step 4: Download new binary
 	exe, err := os.Executable()
 	if err != nil {
-		llog("error", "Self-update: cannot get executable path: %v", err)
+		llog("error", "Update: cannot get executable path: %v", err)
 		return
 	}
 	newExe := exe + ".new"
 	out, err := os.Create(newExe)
 	if err != nil {
-		llog("error", "Self-update: cannot create temp file: %v", err)
+		llog("error", "Update: cannot create temp file: %v", err)
 		return
 	}
 
@@ -2588,7 +3360,7 @@ func selfUpdate(downloadURL string) {
 	if err != nil {
 		out.Close()
 		os.Remove(newExe)
-		llog("error", "Self-update: download failed: %v", err)
+		llog("error", "Update: download failed: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -2596,7 +3368,7 @@ func selfUpdate(downloadURL string) {
 	if resp.StatusCode != http.StatusOK {
 		out.Close()
 		os.Remove(newExe)
-		llog("error", "Self-update: download status %d", resp.StatusCode)
+		llog("error", "Update: download status %d", resp.StatusCode)
 		return
 	}
 
@@ -2604,7 +3376,7 @@ func selfUpdate(downloadURL string) {
 	out.Close()
 	if err != nil {
 		os.Remove(newExe)
-		llog("error", "Self-update: write failed: %v", err)
+		llog("error", "Update: write failed: %v", err)
 		return
 	}
 
@@ -2612,35 +3384,87 @@ func selfUpdate(downloadURL string) {
 		os.Chmod(newExe, 0755)
 	}
 
-	llog("info", "Self-update: downloaded to %s, spawning updater", newExe)
+	llog("info", "Update: downloaded to %s, spawning clean installer", newExe)
 
+	// Step 5: Spawn batch/shell that replaces binary + restarts
 	if runtime.GOOS == "windows" {
-		script := filepath.Join(os.TempDir(), "pun_update.bat")
-		os.WriteFile(script, []byte(
-			"@echo off\r\n"+
-				"timeout /t 2 /nobreak >nul\r\n"+
-				"copy /Y \""+newExe+"\" \""+exe+"\" >nul\r\n"+
-				"del \""+newExe+"\"\r\n"+
-				"start \"\" \""+exe+"\"\r\n",
-		), 0644)
-		cmd := exec.Command("cmd", "/c", "start", "/b", script)
+		script := filepath.Join(os.TempDir(), "pun_clean_install.bat")
+		batContent := "@echo off\r\n" +
+			"echo [PunMonitor] Waiting for old process to exit...\r\n" +
+			"timeout /t 3 /nobreak >nul\r\n" +
+			"echo [PunMonitor] Replacing binary...\r\n" +
+			"copy /Y \"" + newExe + "\" \"" + exe + "\" >nul 2>&1\r\n" +
+			"del \"" + newExe + "\" >nul 2>&1\r\n" +
+			"echo [PunMonitor] Cleaning temp files...\r\n" +
+			"del /q \"%TEMP%\\PunMonitor*.exe\" >nul 2>&1\r\n" +
+			"del /q \"%TEMP%\\pun_*.bat\" >nul 2>&1\r\n" +
+			"echo [PunMonitor] Reinstalling autostart...\r\n" +
+			"\"" + exe + "\" --install >nul 2>&1\r\n" +
+			"echo [PunMonitor] Starting fresh instance...\r\n" +
+			"start \"\" \"" + exe + "\" --watchdog\r\n" +
+			"echo [PunMonitor] Update complete!\r\n"
+		os.WriteFile(script, []byte(batContent), 0644)
+		cmd := exec.Command("cmd", "/c", "start", "/b", "/min", script)
 		newHiddenCmd(cmd)
 		cmd.Start()
 	} else {
-		script := filepath.Join(os.TempDir(), "pun_update.sh")
-		os.WriteFile(script, []byte(
-			"#!/bin/sh\n"+
-				"sleep 2\n"+
-				"cp \""+newExe+"\" \""+exe+"\"\n"+
-				"rm \""+newExe+"\"\n"+
-				"\""+exe+"\" &\n",
-		), 0755)
+		script := filepath.Join(os.TempDir(), "pun_clean_install.sh")
+		shContent := "#!/bin/sh\n" +
+			"sleep 3\n" +
+			"cp \"" + newExe + "\" \"" + exe + "\"\n" +
+			"chmod +x \"" + exe + "\"\n" +
+			"rm -f \"" + newExe + "\"\n" +
+			"rm -f /tmp/PunMonitor*.exe /tmp/pun_*.sh\n" +
+			"\"" + exe + "\" --install 2>/dev/null\n" +
+			"\"" + exe + "\" --watchdog &\n"
+		os.WriteFile(script, []byte(shContent), 0755)
 		cmd := exec.Command("/bin/sh", script)
 		newHiddenCmd(cmd)
 		cmd.Start()
 	}
-	llog("info", "Self-update: updater launched, exiting")
+	llog("info", "Update: clean installer launched, exiting current process")
 	os.Exit(0)
+}
+
+func cleanOldFiles() {
+	dir := dataDir()
+
+	// Remove log files
+	logFiles := []string{
+		"monitor.log", "watchdog.log", "cloudflare.log",
+		"error.log", "output.log", "stderr.log", "stdout.log",
+		"punmonitor.log",
+	}
+	for _, f := range logFiles {
+		os.Remove(filepath.Join(dir, f))
+	}
+
+	// Remove old binary copies
+	binDirPath := binDir()
+	os.RemoveAll(binDirPath)
+
+	// Remove old temp files
+	if runtime.GOOS == "windows" {
+		tmpDir := os.TempDir()
+		entries, _ := os.ReadDir(tmpDir)
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasPrefix(name, "PunMonitor") || strings.HasPrefix(name, "pun_") {
+				os.Remove(filepath.Join(tmpDir, name))
+			}
+		}
+	}
+
+	// Remove watchdog heartbeat
+	os.Remove(filepath.Join(dir, "watchdog.heartbeat"))
+
+	// Remove PID file
+	os.Remove(filepath.Join(dir, "punmonitor.pid"))
+
+	// Remove old session state (fresh start)
+	os.Remove(filepath.Join(dir, "session_state.json"))
+
+	llog("info", "Update: cleaned old files from %s", dir)
 }
 
 // --- EnsureCloudflaredInstalled ---
@@ -3187,6 +4011,7 @@ type WebRTCClient struct {
 type WebRTCManager struct {
 	mu      sync.Mutex
 	clients map[string]*WebRTCClient
+	wsToID  map[*websocket.Conn]string
 	api     *webrtc.API
 }
 
@@ -3197,7 +4022,16 @@ var webrtcDataChannels sync.Map
 
 func broadcastFrame(msg []byte, wm *WireMessage) {
 	frameSize := len(msg)
-	// Collect dashboard client connections (not agents)
+
+	if wm != nil && wm.AgentID != "" {
+		if v, ok := agentStats.Load(wm.AgentID); ok {
+			stats := v.(*AgentStats)
+			stats.RecordBytes(frameSize)
+			stats.RecordFrame()
+			stats.UpdateHealth()
+		}
+	}
+
 	var dashConns []*websocket.Conn
 	wsClients.Range(func(key, value interface{}) bool {
 		conn := key.(*websocket.Conn)
@@ -3237,66 +4071,96 @@ func forwardToAgent(agentID string, msg []byte) {
 
 func runAgentClient() {
 	hostname := cfg.AgentID
-	
-	reconnectDelay := 5 * time.Second
+	reconnectDelay := 1 * time.Second
+	maxDelay := 30 * time.Second
 	serverURL := cfg.ServerURL
 	if serverURL == "" {
 		serverURL = "https://relay.recruitedge.us"
 	}
-	
-	// Periodic sync from GitHub even as agent (for server URL changes, updates, etc.)
+	lastKnownLocalIP := getLocalIP()
+	connectAttempts := 0
+	maxAttempts := 36
+
+	// Periodic: re-detect IP, check server health, sync settings
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
+			// Re-detect IP (WiFi roaming, VPN, etc.)
+			currentIP := getLocalIP()
+			if currentIP != lastKnownLocalIP && currentIP != "unknown" {
+				llog("info", "Agent IP changed %s → %s — re-registering", lastKnownLocalIP, currentIP)
+				lastKnownLocalIP = currentIP
+			}
+			// Check server health
+			if !checkServerHealth(serverURL) {
+				llog("warn", "Agent: server %s unreachable — will attempt reconnect", serverURL)
+			}
+			// Sync settings for server URL changes
 			syncFromGitHub()
-			// If server_url changed, restart connection
 			newURL := cfg.ServerURL
-			if newURL == "" { newURL = "https://relay.recruitedge.us" }
+			if newURL == "" {
+				newURL = "https://relay.recruitedge.us"
+			}
 			if newURL != serverURL {
-				llog("info", "Server URL changed from %s to %s – reconnecting", serverURL, newURL)
+				llog("info", "Server URL changed %s → %s — reconnecting", serverURL, newURL)
 				serverURL = newURL
 			}
 		}
 	}()
-	
-	// Auto-promote to server after 3 minutes of failed connections (36 attempts * 5s)
-	// This prevents agents from being stuck forever when the server is down
-	connectAttempts := 0
-	maxAttempts := 36
-	
+
 	for {
 		connected := false
-		// Try transports in order: WebSocket → GitHub
+		// Try transports in order: WebSocket → WebRTC → GitHub
 		connected = tryAgentWebSocket(hostname, serverURL)
 		if connected {
 			connectAttempts = 0
+			reconnectDelay = 1 * time.Second
 			continue
 		}
 		connectAttempts++
-		
-		// If we have GitHub token, try GitHub transport
+		agentConnQuality.RecordReconnect()
+
+		// Try WebRTC
+		if !connected {
+			connected = tryAgentWebRTC(hostname, serverURL)
+			if connected {
+				connectAttempts = 0
+				reconnectDelay = 1 * time.Second
+				continue
+			}
+		}
+
+		// Try GitHub transport
 		if cfg.GitHubRepo != "" && cfg.GitHubToken != "" {
-			llog("info", "WS failed, trying GitHub transport for agent %s", hostname)
 			connected = tryAgentGitHub(hostname)
 		}
+
 		if !connected {
 			if cfg.GitHubRepo != "" && cfg.GitHubToken != "" && isLeaderStale() {
-				llog("info", "Leader is stale – returning to election loop to re-elect")
+				llog("info", "Leader stale — returning to election loop")
 				return
 			}
-			llog("error", "All transports failed for agent %s, retrying in %v", hostname, reconnectDelay)
+			if connectAttempts >= maxAttempts {
+				// Before auto-promoting, check if ANY server is alive
+				serverAlive := checkServerHealth(serverURL)
+				if !serverAlive {
+					llog("error", "Agent %s: no server reachable after %d attempts — auto-promoting to server", hostname, connectAttempts)
+					cfg.IsServerMode = true
+					go runServerComponents()
+					return
+				}
+				llog("info", "Server alive at %s but agent can't connect — resetting attempts", serverURL)
+				connectAttempts = 0
+			}
+			llog("error", "All transports failed for agent %s, retrying in %v (attempt %d)", hostname, reconnectDelay, connectAttempts)
 			time.Sleep(reconnectDelay)
+			// Exponential backoff: 1s → 2s → 4s → 8s → 16s → 30s cap
+			reconnectDelay = reconnectDelay * 2
+			if reconnectDelay > maxDelay {
+				reconnectDelay = maxDelay
+			}
 		}
-		if connectAttempts >= maxAttempts {
-			// Auto-promote to server after prolonged disconnection
-			llog("error", "Agent %s could not reach server after %d attempts. Auto-promoting to server.", hostname, connectAttempts)
-			cfg.IsServerMode = true
-			go runServerComponents()
-			return
-		}
-		llog("error", "All transports failed for agent %s, retrying in %v (attempt %d/%d)", hostname, reconnectDelay, connectAttempts, maxAttempts)
-		time.Sleep(reconnectDelay)
 	}
 }
 
@@ -3313,6 +4177,7 @@ func tryAgentWebSocket(hostname, serverURL string) bool {
 		llog("error", "Agent WS connect to %s failed: %v", wsURL, err)
 		return false
 	}
+	setAgentWSConn(conn)
 	sysInfo := map[string]string{
 		"hostname": getHostname(),
 		"local_ip": getLocalIP(),
@@ -3336,6 +4201,10 @@ func tryAgentWebSocket(hostname, serverURL string) bool {
 		"type":    "hello",
 		"agentId": hostname,
 		"agent":   true,
+		"session": map[string]interface{}{
+			"reconnections": agentConnQuality.Reconnections,
+			"uptime":        time.Since(startTime).Seconds(),
+		},
 		"systemInfo": sysInfo,
 	})
 	if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
@@ -3430,13 +4299,36 @@ func agentReadLoop(conn *websocket.Conn, hostname string) {
 						llog("error", "File transfer decode error: %v", err)
 						return
 					}
-					savePath := filepath.Join(os.TempDir(), name)
+					safeName := filepath.Base(name)
+					if safeName == "." || safeName == "/" || safeName == "\\" {
+						safeName = "received_file"
+					}
+					savePath := filepath.Join(os.TempDir(), safeName)
 					if err := os.WriteFile(savePath, data, 0644); err != nil {
 						llog("error", "File transfer write error: %v", err)
 						return
 					}
-					llog("info", "File received: %s (%d bytes) saved to %s", name, len(data), savePath)
+					llog("info", "File received: %s (%d bytes) saved to %s", safeName, len(data), savePath)
 				}()
+			}
+		case "exec_command", "list_dir", "download_file", "upload_file":
+			agentHandleTerminalMessage(msgMap)
+		case "ping":
+			ts, _ := msgMap["ts"].(float64)
+			pongMsg, _ := json.Marshal(map[string]interface{}{
+				"type": "pong",
+				"ts":   int64(ts),
+			})
+			conn.WriteMessage(websocket.TextMessage, pongMsg)
+		case "pong":
+			ts, _ := msgMap["ts"].(float64)
+			agentHandlePong(int64(ts))
+		case "migrate":
+			if newURL, ok := msgMap["server_url"].(string); ok && newURL != "" {
+				llog("info", "Agent %s received migration to %s", hostname, newURL)
+				cfg.ServerURL = newURL
+				saveSettings()
+				conn.Close()
 			}
 		default:
 			// Forwarded remote control commands (mouse_move, mouse_click, key_press, etc.)
@@ -3899,6 +4791,7 @@ func NewWebRTCManager() *WebRTCManager {
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(s))
 	return &WebRTCManager{
 		clients: make(map[string]*WebRTCClient),
+		wsToID:  make(map[*websocket.Conn]string),
 		api:     api,
 	}
 }
@@ -3928,6 +4821,10 @@ func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket
 		llog("error", "WebRTC NewPeerConnection: %v", err)
 		return
 	}
+
+	m.mu.Lock()
+	m.wsToID[wsConn] = connID
+	m.mu.Unlock()
 
 	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}
 	if err := pc.SetRemoteDescription(offer); err != nil {
@@ -3969,6 +4866,16 @@ func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket
 				m.clients[connID] = client
 				m.mu.Unlock()
 				webrtcAgentDataChannels.Store(connID, d)
+				connAgentIDMu.RLock()
+				agentIDForStats := connAgentID[wsConn]
+				connAgentIDMu.RUnlock()
+				if agentIDForStats != "" {
+					if v, ok := agentStats.Load(agentIDForStats); ok {
+						v.(*AgentStats).mu.Lock()
+						v.(*AgentStats).Transport = "webrtc"
+						v.(*AgentStats).mu.Unlock()
+					}
+				}
 			})
 			d.OnClose(func() {
 				llog("info", "WebRTC agent data channel closed for %s", connID)
@@ -4024,6 +4931,7 @@ func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket
 			webrtcAgentDataChannels.Delete(connID)
 			m.mu.Lock()
 			delete(m.clients, connID)
+			delete(m.wsToID, wsConn)
 			m.mu.Unlock()
 		}
 	})

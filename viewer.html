@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PunMonitor Assist - Viewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#fff;font-family:system-ui,-apple-system,sans-serif;height:100vh;display:flex;flex-direction:column}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:rgba(0,0,0,.3);border-bottom:1px solid rgba(255,255,255,.06)}
+.topbar h1{font-size:14px;font-weight:600}
+.status{font-size:12px;display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:#666}
+.dot.on{background:#4caf50;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.viewer{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#000;position:relative}
+.viewer img{max-width:100%;max-height:100%;object-fit:contain}
+.viewer canvas{max-width:100%;max-height:100%}
+.placeholder{text-align:center;color:#666}
+.placeholder h2{font-size:18px;margin-bottom:8px;color:#999}
+.placeholder p{font-size:12px}
+.controls{display:flex;gap:8px;padding:8px 16px;background:rgba(0,0,0,.3);border-top:1px solid rgba(255,255,255,.06);align-items:center}
+.controls button{padding:6px 14px;border:1px solid rgba(255,255,255,.15);border-radius:6px;background:rgba(255,255,255,.08);color:#fff;cursor:pointer;font-size:11px}
+.controls button:hover{background:rgba(255,255,255,.15)}
+.controls button.danger{border-color:#ef5350;color:#ef5350}
+.chat-panel{width:300px;border-left:1px solid rgba(255,255,255,.06);display:flex;flex-direction:column;background:rgba(0,0,0,.2)}
+.chat-header{padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.06);font-size:12px;font-weight:600}
+.chat-messages{flex:1;overflow-y:auto;padding:8px 12px;font-size:12px}
+.chat-input-row{display:flex;border-top:1px solid rgba(255,255,255,.06);padding:4px}
+.chat-input{flex:1;padding:6px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:#fff;font-size:12px;outline:none}
+.chat-send{padding:6px 10px;background:rgba(255,255,255,.1);border:none;color:#fff;cursor:pointer;border-radius:4px;font-size:11px;margin-left:4px}
+.info-bar{padding:4px 16px;background:rgba(0,0,0,.2);font-size:10px;color:#666;display:flex;gap:16px;border-top:1px solid rgba(255,255,255,.04)}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>🖥️ Remote Assist Viewer</h1>
+  <div class="status"><div class="dot" id="dot"></div><span id="status">Connecting...</span></div>
+</div>
+<div style="display:flex;flex:1;overflow:hidden">
+  <div class="viewer">
+    <div class="placeholder" id="placeholder">
+      <h2>Waiting for remote user...</h2>
+      <p>Share the link with the person you want to help</p>
+    </div>
+    <img id="screen" style="display:none" />
+  </div>
+  <div class="chat-panel">
+    <div class="chat-header">💬 Chat</div>
+    <div class="chat-messages" id="chat-msgs"></div>
+    <div class="chat-input-row">
+      <input class="chat-input" id="chat-in" placeholder="Type message..." onkeydown="if(event.key==='Enter')sendChat()">
+      <button class="chat-send" onclick="sendChat()">Send</button>
+    </div>
+  </div>
+</div>
+<div class="info-bar">
+  <span>Session: <strong id="sid"></strong></span>
+  <span>FPS: <strong id="fps">0</strong></span>
+  <span>Resolution: <strong id="res">—</strong></span>
+  <span>Frame: <strong id="frames">0</strong></span>
+</div>
+
+<script>
+var sessionId = window.location.pathname.split('/').pop();
+var ws, frameCount = 0, lastCount = 0;
+document.getElementById('sid').textContent = sessionId;
+
+setInterval(function(){
+  document.getElementById('fps').textContent = (frameCount - lastCount);
+  lastCount = frameCount;
+}, 1000);
+
+function connect() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/assist-ws/' + sessionId);
+  ws.onopen = function() {
+    document.getElementById('dot').className = 'dot on';
+    document.getElementById('status').textContent = 'Connected — waiting for remote screen';
+    ws.send(JSON.stringify({type:'assist_admin_view', sessionId: sessionId}));
+  };
+  ws.onmessage = function(e) {
+    try {
+      var msg = JSON.parse(e.data);
+      if (msg.type === 'assist_frame' && msg.data) {
+        document.getElementById('screen').src = 'data:image/jpeg;base64,' + msg.data;
+        document.getElementById('screen').style.display = 'block';
+        document.getElementById('placeholder').style.display = 'none';
+        frameCount++;
+        document.getElementById('frames').textContent = frameCount;
+        if (msg.width && msg.height) {
+          document.getElementById('res').textContent = msg.width + 'x' + msg.height;
+        }
+      }
+      if (msg.type === 'assist_chat') {
+        appendChat(msg.sender || 'Remote', msg.text);
+      }
+      if (msg.type === 'assist_viewer_joined') {
+        appendChat('System', 'Remote user is viewing');
+      }
+    } catch(err) {}
+  };
+  ws.onclose = function() {
+    document.getElementById('dot').className = 'dot';
+    document.getElementById('status').textContent = 'Disconnected — reconnecting...';
+    setTimeout(connect, 2000);
+  };
+}
+
+function sendChat() {
+  var input = document.getElementById('chat-in');
+  var text = input.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({type:'assist_chat', sessionId: sessionId, sender:'admin', text: text}));
+  appendChat('You', text);
+  input.value = '';
+}
+
+function appendChat(sender, text) {
+  var el = document.getElementById('chat-msgs');
+  el.innerHTML += '<div style="margin-bottom:4px"><strong style="color:#4caf50">' + sender + ':</strong> ' + text + '</div>';
+  el.scrollTop = 99999;
+}
+
+connect();
+</script>
+</body>
+</html>

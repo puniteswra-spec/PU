@@ -1,23 +1,43 @@
+# Binaries
 *.exe
+PunMonitor
+PunMonitor_macos_*
+*.exe.zip
+
+# Logs
 *.log
+
+# Backups
 *.bak
 *~
 *.backup*
-monitor-darwin-*
-$null
-punmonitor-credentials.json
-cloudflare.ps1
-manager.cmd
-uninstall.ps1
-settings.json
-PunMonitor
-PunMonitor.exe
-*.exe.zip
+
+# Runtime state
 *.pid
 *.heartbeat
 *.lock
-.DS_Store
 session_state.json
-C:/
+primary_server.json
+
+# Config (local only, not pushed)
+settings.json
+punmonitor-credentials.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+bin/
+C__:/
+$null
+
+# Platform builds
+monitor-darwin-*
+
+# Scripts (local use only)
 kill_and_run.sh
-punmonitor.pid
+cloudflare.ps1
+manager.cmd
+uninstall.ps1
+build.cmd

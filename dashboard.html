@@ -272,20 +272,33 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
   <div id="agent-selector-container" style="flex:1;display:flex;justify-content:center;align-items:center;padding:0 10px"></div>
   <div class="right">
     <button id="btn-report-csv" onclick="downloadReportCSV()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 8px;border-radius:4px;font-size:10px;cursor:pointer" title="Download activity report CSV">📊 Report</button>
-    <button id="btn-compile" onclick="compileMonthly()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 8px;border-radius:4px;font-size:10px;cursor:pointer" title="Compile monthly report">📅 Compile</button>
-    <button id="btn-push" onclick="pushToGitHub()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 8px;border-radius:4px;font-size:10px;cursor:pointer" title="Push report to GitHub">🚀 Push</button>
-    <span style="font-size:10px;color:rgba(255,255,255,.7);white-space:nowrap">Designed by <strong style="color:#fff">Puneet Upreti</strong></span>
-    <span id="connection-info" class="badge">disconnected</span>
-    <span id="transport-badge" class="badge" style="font-weight:400;background:rgba(255,255,255,.1)">via WS</span>
-    <span id="bw-used-top" class="badge" style="font-weight:400">0 MB</span>
-    <button id="btn-grid-view" class="view-toggle-btn active" onclick="setViewMode('grid')" title="Grid — all agents">▦ Grid</button>
-    <button id="btn-single-view" class="view-toggle-btn" onclick="setViewMode('single')" title="Focus — one agent full screen">⛶ Focus</button>
-    <button id="agents-toggle" onclick="toggleAgentsPanel()" title="Agents" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;display:flex;align-items:center;gap:4px">🖥 Agents</button>
-    <button id="quality-toggle" onclick="toggleQualityPanel()" title="Capture Quality" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;align-items:center;gap:4px">🎮 Quality</button>
-    <button id="metrics-toggle" onclick="toggleMetricsPanel()" class="auth-gated" title="Live Metrics" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;align-items:center;gap:4px">📊 Metrics</button>
-    <button id="btn-share" onclick="generateShareLink()" title="Share viewer link" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;display:flex;align-items:center;gap:4px">🔗 Share</button>
+    <button onclick="openAssistSession()" title="Create Remote Assist link — click to copy" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600">🖥 Remote Assistant</button>
+    <span id="version-badge" class="badge" style="font-weight:400;background:rgba(255,255,255,.1)">v—</span>
+    <button id="btn-grid-view" class="view-toggle-btn active" onclick="setViewMode('grid')" title="Grid — all agents">▦</button>
+    <button id="btn-single-view" class="view-toggle-btn" onclick="setViewMode('single')" title="Focus — one agent full screen">⛶</button>
+    <button id="btn-share" onclick="generateShareLink()" title="Share viewer link" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600">🔗 Share</button>
     <button id="gear-btn" onclick="toggleGear()" title="Settings">⚙</button>
   </div>
+</div>
+
+<!-- Left Sidebar (auto-hide on hover) -->
+<style>
+#sidebar-trigger{position:fixed;left:0;top:44px;width:12px;height:calc(100vh - 44px);z-index:101;cursor:pointer}
+#left-sidebar{position:fixed;left:-40px;top:44px;width:48px;height:calc(100vh - 44px);background:rgba(0,0,0,.4);border-right:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px;z-index:100;transition:left 0.2s ease;backdrop-filter:blur(10px)}
+#sidebar-trigger:hover ~ #left-sidebar{left:0}
+#left-sidebar:hover{left:0}
+#left-sidebar .sb-label{display:none;font-size:9px;color:var(--text3);white-space:nowrap;position:absolute;left:48px;background:rgba(0,0,0,.8);padding:2px 6px;border-radius:3px;pointer-events:none}
+#left-sidebar button:hover .sb-label{display:block}
+</style>
+<div id="sidebar-trigger"></div>
+<div id="left-sidebar">
+  <button class="auth-gated sidebar-btn" onclick="toggleAgentsPanel()" title="Agents" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">🖥<span class="sb-label">Agents</span></button>
+  <button class="auth-gated sidebar-btn" onclick="toggleQualityPanel()" title="Quality" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">🎮<span class="sb-label">Quality</span></button>
+  <button class="auth-gated sidebar-btn" onclick="toggleMetricsPanel()" title="Metrics" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">📊<span class="sb-label">Metrics</span></button>
+  <button class="auth-gated sidebar-btn" onclick="openTerminal(controlledAgentId||Object.keys(agentCells)[0])" title="Terminal" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">💻<span class="sb-label">Terminal</span></button>
+  <button class="auth-gated sidebar-btn" onclick="openFileManager(controlledAgentId||Object.keys(agentCells)[0])" title="Files" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">📁<span class="sb-label">Files</span></button>
+  <button class="auth-gated sidebar-btn" onclick="openAuditLog()" title="Audit Log" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">📋<span class="sb-label">Audit Log</span></button>
+  <button class="auth-gated sidebar-btn" onclick="openMigration()" title="Migrate Server" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">🔄<span class="sb-label">Migrate</span></button>
 </div>
 
 <!-- Quality Panel -->
@@ -681,8 +694,8 @@ function initWebRTC() {
     const cfg = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
     webrtcPC = new RTCPeerConnection(cfg);
     webrtcDC = webrtcPC.createDataChannel('frames');
-    webrtcDC.onopen = () => { webrtcActive = true; webrtcPendingICE = []; document.getElementById('transport-badge').textContent = 'via WebRTC'; };
-    webrtcDC.onclose = () => { webrtcActive = false; document.getElementById('transport-badge').textContent = 'via WS'; };
+    webrtcDC.onopen = () => { webrtcActive = true; webrtcPendingICE = []; };
+    webrtcDC.onclose = () => { webrtcActive = false; };
     webrtcDC.onmessage = (e) => {
       try {
         const d = JSON.parse(e.data);
@@ -728,16 +741,11 @@ function connect() {
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
     document.getElementById('status-dot').className = 'online';
-    document.getElementById('connection-info').textContent = 'connected – waiting for frames';
-    document.getElementById('connection-info').className = 'badge active';
     resetFrameTimer();
     ws.send(JSON.stringify({type:'hello', agent: false, transports:['ws']}));
   };
   ws.onclose = () => {
     document.getElementById('status-dot').className = '';
-    document.getElementById('connection-info').textContent = 'reconnecting...';
-    document.getElementById('connection-info').className = 'badge';
-    document.getElementById('transport-badge').textContent = 'via WS';
     webrtcActive = false;
     setTimeout(connect, 2000);
   };
@@ -791,6 +799,7 @@ function handleMessage(d) {
 // ── View modes ──
 function setViewMode(mode) {
   viewMode = mode;
+  try { localStorage.setItem('pm_viewMode', mode); } catch(_){}
   const main = document.getElementById('main');
   main.classList.toggle('grid-mode', mode === 'grid');
   main.classList.toggle('single-mode', mode === 'single');
@@ -811,6 +820,7 @@ function setViewMode(mode) {
 
 function setControlledAgent(id, sendSelect) {
   controlledAgentId = id;
+  try { if (id) localStorage.setItem('pm_controlledAgent', id); } catch(_){}
   if (!id) { updateControlBar(); updateCellHighlights(); return; }
   activeAgentId = id;
   if (sendSelect !== false && ws && ws.readyState === WebSocket.OPEN) {
@@ -876,9 +886,10 @@ function ensureAgentCell(agentId) {
         '<span class="cell-name" title="' + escapeHtml(agentId) + '">' + escapeHtml(agentId) + '</span>' +
         '<span class="cell-lanwan" title="LAN / WAN">—</span>' +
       '</span>' +
+      '<span class="cell-mode" style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(255,255,255,0.08);color:var(--text3);margin-right:4px" title="Mode">—</span>' +
       '<span class="cell-badge live">Live</span>' +
       '<span class="cell-actions" style="display:flex;gap:3px;margin-left:auto">' +
-        '<button class="btn-promote" onclick="event.stopPropagation();promoteAgent(\''+escapeHtml(agentId)+'\')" title="Promote to server" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px;transition:background 0.2s" onmouseover="this.style.background=\'rgba(255,215,0,0.3)\'" onmouseout="this.style.background=\'none\'">👑</button>' +
+        '<button class="btn-promote auth-gated" onclick="event.stopPropagation();promoteAgent(\''+escapeHtml(agentId)+'\')" title="Promote to server" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px;transition:background 0.2s;display:none" onmouseover="this.style.background=\'rgba(255,215,0,0.3)\'" onmouseout="this.style.background=\'none\'">👑</button>' +
         '<button class="btn-hide auth-gated" onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(agentId)+'\')" title="Hide agent" style="display:none;background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px">👁</button>' +
         '<button class="btn-remove auth-gated" onclick="event.stopPropagation();removeAgent(\''+escapeHtml(agentId)+'\')" title="Remove agent" style="display:none;background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px">✕</button>' +
       '</span>' +
@@ -889,9 +900,12 @@ function ensureAgentCell(agentId) {
     '</div>' +
     '<div class="cell-info">' +
       '<span class="info-item"><span class="info-icon">🖥</span><span class="info-val info-hostname" title="Hostname">—</span></span>' +
-      '<span class="info-item"><span class="info-icon">⚙</span><span class="info-val info-mode" title="Mode">—</span></span>' +
       '<span class="info-item"><span class="info-icon">⏰</span><span class="info-val info-boot" title="System Boot Time">—</span></span>' +
       '<span class="info-item"><span class="info-icon">💤</span><span class="info-val info-idle" title="Total Idle Time">—</span></span>' +
+      '<span class="info-item"><span class="info-icon">📡</span><span class="info-val info-transport" title="Transport">—</span></span>' +
+      '<span class="info-item"><span class="info-icon">📶</span><span class="info-val info-health" title="Health">—</span></span>' +
+      '<span class="info-item"><span class="info-icon">⚡</span><span class="info-val info-latency" title="Latency">—</span></span>' +
+      '<span class="info-item"><span class="info-icon">📊</span><span class="info-val info-bandwidth" title="Bandwidth">—</span></span>' +
     '</div>';
 
   const canvas = cell.querySelector('.cell-canvas');
@@ -900,9 +914,13 @@ function ensureAgentCell(agentId) {
   const nameEl = cell.querySelector('.cell-name');
   const lanWanEl = cell.querySelector('.cell-lanwan');
   const hostnameEl = cell.querySelector('.info-hostname');
-  const modeEl = cell.querySelector('.info-mode');
   const bootEl = cell.querySelector('.info-boot');
   const idleEl = cell.querySelector('.info-idle');
+  const transportEl = cell.querySelector('.info-transport');
+  const healthEl = cell.querySelector('.info-health');
+  const latencyEl = cell.querySelector('.info-latency');
+  const bandwidthEl = cell.querySelector('.info-bandwidth');
+  const cellModeEl = cell.querySelector('.cell-mode');
 
   cell.addEventListener('click', () => {
     setControlledAgent(agentId);
@@ -918,10 +936,11 @@ function ensureAgentCell(agentId) {
   grid.appendChild(cell);
 
   agentCells[agentId] = {
-    cell, canvas, emptyEl, badgeEl, nameEl, lanWanEl, hostnameEl, modeEl, bootEl, idleEl,
+    cell, canvas, emptyEl, badgeEl, nameEl, lanWanEl, hostnameEl, bootEl, idleEl, cellModeEl, transportEl, healthEl, latencyEl, bandwidthEl,
     lastB64: null, lastTs: 0, imgW: 0, imgH: 0
   };
   knownAgentIds.add(agentId);
+  if (authenticated) cell.querySelectorAll('.auth-gated').forEach(el => el.classList.add('visible'));
   if (!controlledAgentId) setControlledAgent(agentId, false);
   fetchAgentInfo(agentId);
   updateCellVisibility();
@@ -1082,7 +1101,6 @@ function resetFrameTimer() {
   if (frameTimer) clearTimeout(frameTimer);
   frameTimer = setTimeout(() => {
     document.getElementById('status-dot').className = 'warning';
-    document.getElementById('connection-info').textContent = 'connected – no frames for 10s';
   }, 10000);
 }
 function renderFrame(agentId, b64data) {
@@ -1109,9 +1127,6 @@ function updateMetrics(d) {
   if (d.current_quality !== undefined) document.getElementById('m-qual').textContent = d.current_quality;
   const secs = Math.floor((Date.now()-startTime)/1000);
   document.getElementById('m-uptime').textContent = secs+'s';
-  if (d.bandwidth_used_mb !== undefined && d.bandwidth_limit_mb !== undefined) {
-    document.getElementById('bw-used-top').textContent = Math.round(d.bandwidth_used_mb)+' / '+Math.round(d.bandwidth_limit_mb)+' MB';
-  }
   if (d.monthly_limit_mb !== undefined) {
     document.getElementById('bw-slider').value = d.monthly_limit_mb;
     document.getElementById('bw-label').textContent = Math.round(d.monthly_limit_mb);
@@ -1207,13 +1222,44 @@ function refreshAgents() {
        if (!agentCells[id]) ensureAgentCell(id);
        fetchAgentInfo(id);
      });
-     syncAgentListFromKnown();
-     renderAgentSelect(agentIds);
-     // Apply hidden class in one pass
-     for (const [agentId, cellObj] of Object.entries(agentCells)) {
-       cellObj.cell.classList.toggle('agent-hidden', hiddenAgents.has(agentId));
-     }
-   }).catch(()=>{});
+      syncAgentListFromKnown();
+      renderAgentSelect(agentIds);
+      // Apply hidden class in one pass
+      for (const [agentId, cellObj] of Object.entries(agentCells)) {
+        cellObj.cell.classList.toggle('agent-hidden', hiddenAgents.has(agentId));
+      }
+    }).catch(()=>{});
+    refreshAgentStats();
+}
+
+function refreshAgentStats() {
+  fetch('/api/agent-stats').then(r=>r.json()).then(stats => {
+    for (const [agentId, s] of Object.entries(stats)) {
+      const rec = agentCells[agentId];
+      if (!rec) continue;
+      if (rec.transportEl) {
+        const t = s.transport || '—';
+        const colors = { webrtc: '#4caf50', websocket: '#2196f3', github: '#ff9800' };
+        rec.transportEl.innerHTML = '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + (colors[t]||'#888') + ';margin-right:3px"></span>' + t;
+      }
+      if (rec.healthEl) {
+        const h = s.health || '—';
+        const hcolors = { excellent: '#4caf50', good: '#4caf50', fair: '#ff9800', poor: '#ef5350', slow: '#ff9800', stale: '#ef5350', waiting: '#888', unknown: '#888' };
+        rec.healthEl.innerHTML = '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + (hcolors[h]||'#888') + ';margin-right:3px"></span>' + h;
+      }
+      if (rec.latencyEl) {
+        rec.latencyEl.textContent = s.latency_ms > 0 ? Math.round(s.latency_ms) + 'ms' : '—';
+      }
+      if (rec.bandwidthEl) {
+        const kbps = s.bytes_per_sec || 0;
+        if (kbps > 1024) {
+          rec.bandwidthEl.textContent = (kbps/1024).toFixed(1) + ' MB/s';
+        } else {
+          rec.bandwidthEl.textContent = Math.round(kbps) + ' KB/s';
+        }
+      }
+    }
+  }).catch(()=>{});
 }
 
 function updateCellVisibility() {
@@ -1302,8 +1348,13 @@ function fetchAgentInfo(agentId) {
    fetch('/api/agent-system-info/' + agentId).then(r => r.json()).then(info => {
      const rec = agentCells[agentId];
      if (!rec) return;
-     if (info.hostname && rec.hostnameEl) rec.hostnameEl.textContent = info.hostname;
-     if (info.mode && rec.modeEl) rec.modeEl.textContent = info.mode.toUpperCase();
+      if (info.hostname && rec.hostnameEl) rec.hostnameEl.textContent = info.hostname;
+      if (info.mode && rec.cellModeEl) {
+        const m = info.mode.toUpperCase();
+        rec.cellModeEl.textContent = m;
+        rec.cellModeEl.style.background = m === 'SERVER' ? 'rgba(76,175,80,0.25)' : m === 'AGENT' ? 'rgba(33,150,243,0.2)' : 'rgba(255,255,255,0.08)';
+        rec.cellModeEl.style.color = m === 'SERVER' ? '#4caf50' : m === 'AGENT' ? '#2196f3' : 'var(--text3)';
+      }
      if (rec.lanWanEl) {
        const local = info.local_ip || '—';
        const wan = info.wan_ip || '—';
@@ -1800,10 +1851,19 @@ function copyShareLinkModal() {
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
+  // Check if setup is needed
+  fetch('/api/setup-status').then(r=>r.json()).then(d => {
+    if (d.needs_setup && location.pathname !== '/admin') {
+      showSetupWizard(d);
+    }
+  }).catch(()=>{});
+
   // Fetch version from server and update header
   fetch('/api/version').then(r=>r.json()).then(d => {
     const el = document.getElementById('header-version');
     if (el && d.version) el.textContent = d.version;
+    const vb = document.getElementById('version-badge');
+    if (vb && d.version) vb.textContent = 'v' + d.version;
   }).catch(() => {});
   if (sessionStorage.getItem('punmonitor_auth') === '1') {
     settingsLoggedIn = true;
@@ -1815,7 +1875,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   document.getElementById('screen-canvas').style.display = 'none';
   document.getElementById('main').classList.add('grid-mode');
-  setViewMode('grid');
+  // Restore view mode from localStorage
+  var savedView = localStorage.getItem('pm_viewMode');
+  if (savedView === 'single') {
+    setViewMode('single');
+  } else {
+    setViewMode('grid');
+  }
+  // Restore controlled agent from localStorage
+  var savedAgent = localStorage.getItem('pm_controlledAgent');
+  if (savedAgent) {
+    setTimeout(function() { setControlledAgent(savedAgent, false); }, 1000);
+  }
   if (location.pathname === '/admin') {
     document.getElementById('admin-page').classList.add('active');
     document.getElementById('topbar').style.display = 'none';
@@ -1832,7 +1903,408 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
   refreshAgents();
   setInterval(refreshAgents, 5000);
+  // Show sidebar buttons after auth
+  if (authenticated) {
+    document.querySelectorAll('.sidebar-btn').forEach(function(el) {
+      el.style.display = 'flex';
+    });
+  }
 });
+
+var assistSessions = {};
+
+function openAssistSession() {
+  fetch('/assist/new', {method:'POST'}).then(function(r){return r.json()}).then(function(d) {
+    var url = location.origin + d.url;
+    // Copy link
+    navigator.clipboard.writeText(url).then(function() {
+      var btn = document.querySelector('[onclick="openAssistSession()"]');
+      if (btn) { var orig = btn.textContent; btn.textContent = '✓ Link Copied!'; setTimeout(function(){ btn.textContent = orig; }, 2000); }
+    }).catch(function(){});
+    // Create assist cell in grid
+    createAssistCell(d.id, url);
+  }).catch(function(e) { alert('Failed: ' + e); });
+}
+
+function createAssistCell(sessionId, userUrl) {
+  var agentId = 'assist-' + sessionId;
+  if (agentCells[agentId]) return;
+  ensureAgentCell(agentId);
+  var rec = agentCells[agentId];
+  if (rec.nameEl) rec.nameEl.textContent = '🖥 ' + sessionId;
+  if (rec.hostnameEl) rec.hostnameEl.textContent = 'Remote Assist';
+  if (rec.badgeEl) { rec.badgeEl.textContent = 'Waiting...'; rec.badgeEl.className = 'cell-badge'; rec.badgeEl.style.background = 'rgba(255,193,7,.2)'; rec.badgeEl.style.color = '#ffc107'; }
+  if (rec.cellModeEl) { rec.cellModeEl.textContent = 'ASSIST'; rec.cellModeEl.style.background = 'rgba(76,175,80,.2)'; rec.cellModeEl.style.color = '#4caf50'; }
+
+  // Add share link and viewer link below cell
+  var infoEl = rec.cell.querySelector('.cell-info');
+  if (infoEl) {
+    var linkDiv = document.createElement('div');
+    linkDiv.style.cssText = 'padding:4px 8px;font-size:10px;display:flex;gap:4px;flex-wrap:wrap';
+    linkDiv.innerHTML = '<span style="color:var(--text3)">Share:</span><a href="' + userUrl + '" target="_blank" style="color:#4caf50;text-decoration:none;word-break:break-all">' + userUrl + '</a>';
+    infoEl.parentNode.insertBefore(linkDiv, infoEl.nextSibling);
+  }
+
+  // Connect via WebSocket to receive frames
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var wsUrl = proto + '//' + location.host + '/assist-ws/' + sessionId;
+  var assistWs = new WebSocket(wsUrl);
+  assistSessions[sessionId] = { ws: assistWs, canvas: rec.canvas, agentId: agentId };
+
+  assistWs.onopen = function() {
+    assistWs.send(JSON.stringify({type:'assist_admin_view', sessionId: sessionId}));
+    if (rec.badgeEl) { rec.badgeEl.textContent = 'Connected'; rec.badgeEl.style.background = 'rgba(76,175,80,.2)'; rec.badgeEl.style.color = '#4caf50'; }
+  };
+
+  assistWs.onmessage = function(e) {
+    try {
+      var msg = JSON.parse(e.data);
+      if (msg.type === 'assist_frame' && msg.data) {
+        var canvas = rec.canvas;
+        var ctx = canvas.getContext('2d');
+        var img = new Image();
+        img.onload = function() {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          ctx.drawImage(img, 0, 0);
+          rec.emptyEl.style.display = 'none';
+          canvas.style.display = 'block';
+        };
+        img.src = 'data:image/jpeg;base64,' + msg.data;
+        if (rec.badgeEl) rec.badgeEl.textContent = 'Live';
+      }
+      if (msg.type === 'assist_chat') {
+        // Show chat notification
+        if (rec.badgeEl) rec.badgeEl.textContent = '💬 Chat';
+      }
+    } catch(err) {}
+  };
+
+  assistWs.onclose = function() {
+    if (rec.badgeEl) { rec.badgeEl.textContent = 'Disconnected'; rec.badgeEl.style.background = 'rgba(255,0,0,.2)'; rec.badgeEl.style.color = '#ef5350'; }
+  };
+
+  // Make cell clickable for focus view
+  rec.cell.onclick = function() { setControlledAgent(agentId); setViewMode('single'); };
+}
+
+function sendAssistChat(sessionId, text) {
+  var s = assistSessions[sessionId];
+  if (s && s.ws && s.ws.readyState === WebSocket.OPEN) {
+    s.ws.send(JSON.stringify({type:'assist_chat', sessionId: sessionId, sender:'admin', text: text}));
+  }
+}
+
+// ── Terminal ──
+let termAgentId = null;
+function openTerminal(agentId) {
+  termAgentId = agentId;
+  const panel = document.getElementById('terminal-panel');
+  panel.style.display = 'flex';
+  document.getElementById('term-title').textContent = 'Terminal — ' + agentId;
+  document.getElementById('term-input').focus();
+}
+function closeTerminal() { document.getElementById('terminal-panel').style.display = 'none'; }
+function termExec() {
+  const input = document.getElementById('term-input');
+  const cmd = input.value.trim();
+  if (!cmd || !termAgentId) return;
+  const id = 'term-' + Date.now();
+  document.getElementById('term-output').innerHTML += '<div style="color:#4caf50">$ ' + escapeHtml(cmd) + '</div>';
+  input.value = '';
+  fetch('/api/terminal', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id, command: cmd, agentId: termAgentId})});
+  window._termCallbacks = window._termCallbacks || {};
+  window._termCallbacks[id] = function(output) {
+    document.getElementById('term-output').innerHTML += '<div>' + escapeHtml(output) + '</div>';
+    document.getElementById('term-output').scrollTop = 99999;
+  };
+}
+function handleCommandOutput(d) {
+  if (d.id && window._termCallbacks && window._termCallbacks[d.id]) {
+    window._termCallbacks[d.id](d.output);
+    delete window._termCallbacks[d.id];
+  }
+}
+
+// ── File Manager ──
+let fmAgentId = null, fmCurrentPath = '';
+function openFileManager(agentId) {
+  fmAgentId = agentId;
+  document.getElementById('fm-panel').style.display = 'flex';
+  document.getElementById('fm-title').textContent = 'Files — ' + agentId;
+  fmNavigate('/');
+}
+function closeFileManager() { document.getElementById('fm-panel').style.display = 'none'; }
+function fmNavigate(path) {
+  fmCurrentPath = path;
+  document.getElementById('fm-path').textContent = path;
+  const id = 'fm-' + Date.now();
+  fetch('/api/files/list', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id, path, agentId: fmAgentId})});
+  window._fmCallbacks = window._fmCallbacks || {};
+  window._fmCallbacks[id] = function(entries) { fmRender(entries, path); };
+}
+function fmRender(entries, basePath) {
+  const list = document.getElementById('fm-list');
+  list.innerHTML = '';
+  if (!entries || !entries.length) { list.innerHTML = '<div style="padding:8px;color:var(--text3)">Empty</div>'; return; }
+  entries.forEach(e => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;padding:4px 8px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px';
+    row.onmouseover = () => row.style.background = 'rgba(255,255,255,.05)';
+    row.onmouseout = () => row.style.background = '';
+    if (e.isDir) {
+      row.innerHTML = '<span style="width:20px;text-align:center">📁</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(e.name) + '</span>';
+      row.onclick = () => {
+        const sep = (basePath.endsWith('/') || basePath.endsWith('\\') || e.name === '..') ? '' : (basePath.includes('\\') ? '\\' : '/');
+        fmNavigate(basePath + sep + e.name);
+      };
+    } else {
+      const sizeStr = e.size > 1048576 ? (e.size/1048576).toFixed(1)+'MB' : e.size > 1024 ? (e.size/1024).toFixed(1)+'KB' : e.size+'B';
+      row.innerHTML = '<span style="width:20px;text-align:center">📄</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(e.name) + '</span><span style="color:var(--text3);margin-left:8px">' + sizeStr + '</span>';
+      row.onclick = () => {
+        const full = (basePath.endsWith('/') || basePath.endsWith('\\')) ? basePath + e.name : basePath + (basePath.includes('\\') ? '\\' : '/') + e.name;
+        fmDownload(full, e.name);
+      };
+    }
+    list.appendChild(row);
+  });
+}
+function fmDownload(path, name) {
+  const id = 'fmd-' + Date.now();
+  fetch('/api/files/download', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id, path, agentId: fmAgentId})});
+  window._fmCallbacks = window._fmCallbacks || {};
+  window._fmCallbacks[id] = function(d) {
+    if (d.error) { alert('Download error: ' + d.error); return; }
+    if (d.data) {
+      const bytes = atob(d.data);
+      const arr = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+      const blob = new Blob([arr]);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = d.name || name;
+      a.click();
+    }
+  };
+}
+function handleDirListing(d) {
+  if (d.id && window._fmCallbacks && window._fmCallbacks[d.id]) {
+    window._fmCallbacks[d.id](d.entries || []);
+    delete window._fmCallbacks[d.id];
+  }
+}
+function handleFileDownloadDash(d) {
+  if (d.id && window._fmCallbacks && window._fmCallbacks[d.id]) {
+    window._fmCallbacks[d.id](d);
+    delete window._fmCallbacks[d.id];
+  }
+}
+
+// ── Audit Log ──
+function openAuditLog() {
+  document.getElementById('audit-panel').style.display = 'flex';
+  refreshAuditLog();
+}
+function closeAuditLog() { document.getElementById('audit-panel').style.display = 'none'; }
+function refreshAuditLog() {
+  fetch('/api/audit').then(r=>r.json()).then(entries => {
+    const el = document.getElementById('audit-list');
+    if (!entries || !entries.length) { el.innerHTML = '<div style="padding:8px;color:var(--text3)">No audit entries</div>'; return; }
+    el.innerHTML = '';
+    entries.reverse().forEach(e => {
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.05);font-size:11px;display:flex;gap:8px';
+      const ts = new Date(e.ts).toLocaleTimeString();
+      const actionColors = {terminal_exec:'#4caf50', file_browse:'#2196f3', file_download:'#ff9800', server_migrate:'#9c27b0'};
+      row.innerHTML = '<span style="color:var(--text3);min-width:70px">' + ts + '</span><span style="color:' + (actionColors[e.action]||'#888') + ';min-width:100px">' + escapeHtml(e.action) + '</span><span style="min-width:100px;color:var(--text2)">' + escapeHtml(e.agentId||'—') + '</span><span style="flex:1;color:var(--text3)">' + escapeHtml(e.detail||'') + '</span>';
+      el.appendChild(row);
+    });
+  }).catch(()=>{});
+}
+
+// ── Server Migration ──
+function openMigration() {
+  document.getElementById('migrate-panel').style.display = 'flex';
+  document.getElementById('migrate-url').value = cfgData.server_url || '';
+}
+function closeMigration() { document.getElementById('migrate-panel').style.display = 'none'; }
+var cfgData = {};
+function loadConfigForMigration() {
+  fetch('/api/settings').then(r=>r.json()).then(d => { cfgData = d; }).catch(()=>{});
+}
+function doMigrate() {
+  const url = document.getElementById('migrate-url').value.trim();
+  if (!url) return alert('Enter server URL');
+  if (!confirm('Migrate ALL agents to ' + url + '?')) return;
+  fetch('/api/migrate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({server_url: url})})
+    .then(r=>r.json()).then(d => { alert(d.msg || 'Done'); closeMigration(); }).catch(e => alert('Error: ' + e));
+}
+loadConfigForMigration();
+
+// ── Enhanced handleMessage for terminal/file/audit ──
+const _origHandleMessage = typeof handleMessage === 'function' ? handleMessage : null;
+const origHandleMessage = handleMessage;
+handleMessage = function(d) {
+  if (d.type === 'command_output') { handleCommandOutput(d); return; }
+  if (d.type === 'dir_listing') { handleDirListing(d); return; }
+  if (d.type === 'file_download' && d.data) { handleFileDownloadDash(d); return; }
+  if (origHandleMessage) origHandleMessage(d);
+};
 </script>
-</body>
-</html>
+
+<!-- Terminal Panel -->
+<div id="terminal-panel" style="display:none;position:fixed;top:0;right:0;width:500px;height:100vh;background:var(--bg1);border-left:1px solid rgba(255,255,255,.1);z-index:1000;flex-direction:column">
+  <div style="padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:space-between">
+    <span id="term-title" style="font-size:12px;font-weight:600">Terminal</span>
+    <button onclick="closeTerminal()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px">✕</button>
+  </div>
+  <div id="term-output" style="flex:1;overflow-y:auto;padding:8px 12px;font-family:monospace;font-size:11px;color:#4caf50;background:#0a0a0a;white-space:pre-wrap"></div>
+  <div style="padding:8px;border-top:1px solid rgba(255,255,255,.1);display:flex;gap:4px">
+    <span style="color:#4caf50;font-family:monospace">$</span>
+    <input id="term-input" type="text" style="flex:1;background:transparent;border:none;color:#fff;font-family:monospace;font-size:12px;outline:none" placeholder="Enter command..." onkeydown="if(event.key==='Enter')termExec()">
+  </div>
+</div>
+
+<!-- File Manager Panel -->
+<div id="fm-panel" style="display:none;position:fixed;top:0;right:0;width:450px;height:100vh;background:var(--bg1);border-left:1px solid rgba(255,255,255,.1);z-index:1000;flex-direction:column">
+  <div style="padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:space-between">
+    <span id="fm-title" style="font-size:12px;font-weight:600">File Manager</span>
+    <button onclick="closeFileManager()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px">✕</button>
+  </div>
+  <div style="padding:6px 12px;border-bottom:1px solid rgba(255,255,255,.1);display:flex;align-items:center;gap:6px">
+    <button onclick="fmNavigate('/')" style="background:rgba(255,255,255,.1);border:none;color:#fff;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px">🏠 Root</button>
+    <span id="fm-path" style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">/</span>
+  </div>
+  <div id="fm-list" style="flex:1;overflow-y:auto"></div>
+</div>
+
+<!-- Audit Log Panel -->
+<div id="audit-panel" style="display:none;position:fixed;top:0;right:0;width:550px;height:100vh;background:var(--bg1);border-left:1px solid rgba(255,255,255,.1);z-index:1000;flex-direction:column">
+  <div style="padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:space-between">
+    <span style="font-size:12px;font-weight:600">Audit Log</span>
+    <div style="display:flex;gap:6px">
+      <button onclick="refreshAuditLog()" style="background:rgba(255,255,255,.1);border:none;color:#fff;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px">🔄 Refresh</button>
+      <button onclick="closeAuditLog()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px">✕</button>
+    </div>
+  </div>
+  <div id="audit-list" style="flex:1;overflow-y:auto"></div>
+</div>
+
+<!-- Migration Panel -->
+<div id="migrate-panel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:400px;background:var(--bg1);border:1px solid rgba(255,255,255,.15);border-radius:12px;padding:20px;z-index:1001">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <span style="font-size:14px;font-weight:600">Migrate Server</span>
+    <button onclick="closeMigration()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px">✕</button>
+  </div>
+  <p style="font-size:11px;color:var(--text3);margin:0 0 10px">Change the server URL. All agents will reconnect to the new server automatically.</p>
+  <input id="migrate-url" type="text" style="width:100%;padding:8px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:12px;margin-bottom:10px;box-sizing:border-box" placeholder="https://new-server.com:8080">
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button onclick="closeMigration()" style="padding:6px 14px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;cursor:pointer;font-size:11px">Cancel</button>
+    <button onclick="doMigrate()" style="padding:6px 14px;background:#1976d2;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:11px">Migrate All</button>
+  </div>
+</div>
+
+<!-- Setup Wizard -->
+<div id="setup-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:none;align-items:center;justify-content:center">
+  <div style="width:480px;background:var(--bg1);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:30px;max-height:90vh;overflow-y:auto">
+    <h2 style="margin:0 0 4px;font-size:18px">PunMonitor Setup</h2>
+    <p style="color:var(--text3);font-size:11px;margin:0 0 20px">Configure your server connection. You only need to do this once.</p>
+
+    <div style="margin-bottom:14px">
+      <label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">Server URL *</label>
+      <input id="sw-server" type="text" style="width:100%;padding:8px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:12px;box-sizing:border-box" placeholder="https://your-server.com:8080">
+      <p style="font-size:10px;color:var(--text3);margin:2px 0 0">The IP or domain where this machine's dashboard runs. Agents will connect here.</p>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-bottom:14px">
+      <div style="flex:1">
+        <label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">Login Username</label>
+        <input id="sw-user" type="text" style="width:100%;padding:8px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:12px;box-sizing:border-box" placeholder="admin">
+      </div>
+      <div style="flex:1">
+        <label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">Login Password</label>
+        <input id="sw-pass" type="password" style="width:100%;padding:8px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:12px;box-sizing:border-box" placeholder="password">
+      </div>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">Capture FPS</label>
+      <input id="sw-fps" type="number" value="1" min="0.5" max="5" step="0.5" style="width:100px;padding:8px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:12px">
+    </div>
+
+    <details style="margin-bottom:14px">
+      <summary style="font-size:11px;color:var(--text3);cursor:pointer">Cloudflare Tunnel (optional)</summary>
+      <div style="margin-top:8px">
+        <div style="margin-bottom:8px">
+          <label style="display:block;font-size:10px;color:var(--text3);margin-bottom:2px">Tunnel Hostname</label>
+          <input id="sw-tunnel-host" type="text" style="width:100%;padding:6px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:11px;box-sizing:border-box" placeholder="your-domain.com">
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px">
+          <input id="sw-cf-tag" type="text" style="flex:1;padding:6px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:11px" placeholder="Account Tag">
+          <input id="sw-cf-id" type="text" style="flex:1;padding:6px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:11px" placeholder="Tunnel ID">
+        </div>
+        <input id="sw-cf-secret" type="password" style="width:100%;padding:6px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:11px;box-sizing:border-box" placeholder="Tunnel Secret">
+      </div>
+    </details>
+
+    <div id="sw-msg" style="font-size:11px;color:#ef5350;margin-bottom:10px;display:none"></div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="skipSetup()" style="padding:8px 16px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;cursor:pointer;font-size:11px">Skip (Standalone)</button>
+      <button onclick="doSetup()" style="padding:8px 20px;background:#1976d2;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:12px;font-weight:600">Save & Apply</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function showSetupWizard(info) {
+  document.getElementById('setup-overlay').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+  if (info && info.hostname) {
+    document.getElementById('sw-server').placeholder = 'http://' + info.hostname + ':8080';
+  }
+}
+function skipSetup() {
+  document.getElementById('setup-overlay').style.display = 'none';
+  document.getElementById('app').style.display = '';
+  connect();
+}
+function doSetup() {
+  var serverUrl = document.getElementById('sw-server').value.trim();
+  var user = document.getElementById('sw-user').value.trim();
+  var pass = document.getElementById('sw-pass').value;
+  var fps = parseFloat(document.getElementById('sw-fps').value) || 1;
+  if (!serverUrl) {
+    document.getElementById('sw-msg').style.display = 'block';
+    document.getElementById('sw-msg').textContent = 'Server URL is required';
+    return;
+  }
+  var body = {
+    server_url: serverUrl,
+    auth_user: user,
+    auth_pass: pass,
+    max_fps: fps,
+    tunnel_hostname: document.getElementById('sw-tunnel-host').value.trim(),
+    cloudflare_tunnel_id: document.getElementById('sw-cf-id').value.trim(),
+    cloudflare_tunnel_secret: document.getElementById('sw-cf-secret').value,
+    cloudflare_account_tag: document.getElementById('sw-cf-tag').value.trim()
+  };
+  document.getElementById('sw-msg').style.display = 'none';
+  fetch('/api/setup', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
+    .then(r=>r.json()).then(d => {
+      if (d.status === 'ok') {
+        document.getElementById('sw-msg').style.display = 'block';
+        document.getElementById('sw-msg').style.color = '#4caf50';
+        document.getElementById('sw-msg').textContent = 'Setup complete! Restart the application to apply.';
+        setTimeout(function() { document.getElementById('setup-overlay').style.display = 'none'; document.getElementById('app').style.display = ''; connect(); }, 3000);
+      } else {
+        document.getElementById('sw-msg').style.display = 'block';
+        document.getElementById('sw-msg').textContent = d.msg || 'Setup failed';
+      }
+    }).catch(e => {
+      document.getElementById('sw-msg').style.display = 'block';
+      document.getElementById('sw-msg').textContent = 'Error: ' + e;
+    });
+}
+</script>
+
