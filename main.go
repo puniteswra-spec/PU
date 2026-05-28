@@ -652,6 +652,13 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 
 
 func startGitHubLeaderElection() {
+    // If we have Cloudflare tunnel, we are always the server — skip election entirely
+    if cfg.CloudflareTunnelID != "" {
+        llog("info", "Cloudflare tunnel %s configured — running as server", cfg.CloudflareTunnelID)
+        cfg.IsServerMode = true
+        runServerComponents()
+        return
+    }
     if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
         if cfg.ServerURL != "" && !cfg.IsServerMode {
             // No GitHub auth but we know where the server is — connect as agent
@@ -871,13 +878,16 @@ func renewLeadership() (bool, error) {
         return false, nil
     }
     if primary.Host != cfg.AgentID {
-        llog("warn", "Leader renewed by another host %s – verifying if alive", primary.Host)
-        // Grace period: check if new leader is actually serving before stepping down
-        checkURL := cfg.ServerURL
-        if checkURL == "" {
-            checkURL = "https://relay.recruitedge.us"
+        llog("warn", "Leader renewed by another host %s – checking if it's actually different", primary.Host)
+        // Don't step down if the "other" leader is actually us behind a tunnel
+        // Check by comparing the leader's reported hostname against our own
+        if primary.Host == myHostname || primary.Host == getHostname() {
+            llog("info", "Leader %s is actually us (hostname match) – renewing leadership", primary.Host)
+            return writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
         }
-        checkURL += "/api/health"
+        // Different host claimed leadership — check if it's actually serving
+        // Only check a DIRECT connection to that host, not via tunnel (which might loop back to us)
+        checkURL := "http://" + primary.Host + ":8080/api/health"
         found := false
         for i := 0; i < 5; i++ {
             checkReq, _ := http.NewRequest("GET", checkURL, nil)
@@ -891,7 +901,7 @@ func renewLeadership() (bool, error) {
             time.Sleep(2 * time.Second)
         }
         if found {
-            llog("info", "New leader %s is serving – stepping down gracefully", primary.Host)
+            llog("info", "New leader %s is actually serving – stepping down gracefully", primary.Host)
             cfg.IsServerMode = false
             agentModeMu.Lock()
             agentMode = true
@@ -1928,7 +1938,7 @@ func startCloudflareTunnel(cfg *Config) {
 credentials-file: %s
 ingress:
   - hostname: %s
-    service: http://localhost:%d
+    service: http://127.0.0.1:%d
   - service: http_status:404
 `, cfg.CloudflareTunnelID, credsFile, ingHost, cfg.ConfigPort)
 		configFile := filepath.Join(credsDir, "config.yml")
@@ -3132,6 +3142,24 @@ func runAgentClient() {
 	serverURL := cfg.ServerURL
 	if serverURL == "" {
 		serverURL = "https://relay.recruitedge.us"
+	}
+	
+	// CRITICAL: If we have Cloudflare tunnel credentials, we ARE the server.
+	// Don't connect to ourselves as agent — that creates a broken loop.
+	if cfg.CloudflareTunnelID != "" {
+		llog("info", "Machine has Cloudflare tunnel %s — running as server (not connecting as agent)", cfg.CloudflareTunnelID)
+		cfg.IsServerMode = true
+		runServerComponents()
+		return
+	}
+	
+	// Also detect self-connection: if server_url resolves to our own WAN IP, we're the server
+	myWAN := getWANIP()
+	if strings.Contains(serverURL, myWAN) {
+		llog("info", "server_url points to our own WAN IP %s — running as server", myWAN)
+		cfg.IsServerMode = true
+		runServerComponents()
+		return
 	}
 	
 	// Auto-promote to server after 3 minutes of failed connections (36 attempts * 5s)
