@@ -2224,10 +2224,70 @@ func main() {
 		}
 	}()
 
+	// Periodic network discovery — scan for new machines every 10 minutes
+	// When machines join the same network, they auto-discover and connect
+	go func() {
+		time.Sleep(2 * time.Minute) // Wait for initial setup
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			scanAndConnectPeers()
+		}
+	}()
+
 	startGitHubLeaderElection()
 }
 
-// --- Watchdog ---
+// scanAndConnectPeers periodically checks if new machines have appeared on the network
+// This allows machines to auto-discover each other when they join the same network
+func scanAndConnectPeers() {
+	// Only scan if we're not already connected as server
+	if cfg.IsServerMode {
+		return
+	}
+	
+	localIP := getLocalIP()
+	if localIP == "unknown" {
+		return
+	}
+	
+	// Extract subnet
+	parts := strings.Split(localIP, ".")
+	if len(parts) != 4 {
+		return
+	}
+	subnet := strings.Join(parts[:3], ".")
+	
+	// Quick scan: check common PunMonitor ports on nearby IPs
+	for i := 1; i <= 254; i++ {
+		ip := fmt.Sprintf("%s.%d", subnet, i)
+		if ip == localIP {
+			continue
+		}
+		
+		// Check if PunMonitor is running on this IP (port 8080)
+		if checkPort(ip, 8080, 1*time.Second) {
+			// Try to connect to this machine as server
+			testURL := fmt.Sprintf("http://%s:8080", ip)
+			client := &http.Client{Timeout: 3 * time.Second}
+			resp, err := client.Get(testURL + "/api/health")
+			if err == nil && resp.StatusCode == 200 {
+				resp.Body.Close()
+				llog("info", "Discovered PunMonitor server at %s — connecting", ip)
+				// Update server URL and reconnect
+				cfg.ServerURL = testURL
+				cfg.IsServerMode = false
+				agentModeMu.Lock()
+				agentMode = true
+				agentModeMu.Unlock()
+				return // Will reconnect via election loop
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}
+	}
+}
 
 var wdLogFile *os.File
 
