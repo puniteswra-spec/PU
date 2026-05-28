@@ -2119,6 +2119,12 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "--deploy" {
+		// Network deployment mode: scan network, copy binary, start on all machines
+		runDeployment()
+		return
+	}
+
 	// Self-relocate to permanent location if running from a temporary path (e.g. Downloads)
 	ensureBinaryRelocated()
 
