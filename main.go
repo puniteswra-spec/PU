@@ -23,6 +23,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -1175,22 +1176,22 @@ func startHTTPServer() {
 		hostname := getHostname()
 		writer := csv.NewWriter(w)
 		writer.Write([]string{
-			"Agent", "Hostname", "Local IP", "WAN IP",
-			"OS", "Version", "Uptime", "Start Time (PunMonitor)",
-			"Boot Time (System)", "Wake Up Time (PunMonitor Start)", "Last Active", "Last Idle Start", "Last Shutdown", "Idle Time",
-			"Tunnel ID",
-			"FPS", "Monthly Limit MB",
-			"Report Generated",
+			"Agent ID", "Hostname", "Local IP", "WAN IP",
+			"OS", "Architecture", "Binary Version", "Mode",
+			"Uptime", "Start Time", "Boot Time (System)", "Wake Up Time",
+			"Last Active", "Last Idle Start", "Last Shutdown", "Total Idle Time",
+			"Cloudflare Tunnel ID", "FPS", "Monthly Limit MB", "Bytes Sent",
+			"Report Date", "Report Time",
 		})
 		// Server's own row
 		{
 			uptimeSecs := int64(time.Since(startTime).Seconds())
 			uptimeStr := fmt.Sprintf("%dh %dm %ds", uptimeSecs/3600, (uptimeSecs%3600)/60, uptimeSecs%60)
-			bootTime := "never"
-			lastShutdown := "never"
-			lastActive := "never"
-			lastIdleStart := "never"
-			totalIdle := "never"
+			bootTime := "—"
+			lastShutdown := "—"
+			lastActive := "—"
+			lastIdleStart := "—"
+			totalIdle := "—"
 			if globalActivity != nil {
 				s := globalActivity.Summary()
 				bootTime = s["boot_time"]
@@ -1199,22 +1200,25 @@ func startHTTPServer() {
 				lastIdleStart = s["last_idle_start"]
 				totalIdle = s["total_idle"]
 			}
-			wakeUpTime := "never"
+			wakeUpTime := "—"
 			if !startTime.IsZero() {
 				wakeUpTime = startTime.Format("2006-01-02 15:04:05")
 			}
 			writer.Write([]string{
-				hostname, hostname, getLocalIP(), getWANIP(),
-				runtime.GOOS + " " + runtime.GOARCH, binaryVersion, uptimeStr, startTime.Format("2006-01-02 15:04:05"),
+				cfg.AgentID, hostname, getLocalIP(), getWANIP(),
+				runtime.GOOS, runtime.GOARCH, binaryVersion, "server",
+				uptimeStr, startTime.Format("2006-01-02 15:04:05"),
 				bootTime, wakeUpTime, lastActive, lastIdleStart, lastShutdown, totalIdle,
 				cfg.CloudflareTunnelID,
 				fmt.Sprintf("%.1f", cfg.MaxFPS), fmt.Sprintf("%d", cfg.MonthlyLimitMB),
-				time.Now().Format("2006-01-02 15:04:05"),
+				"—",
+				time.Now().Format("2006-01-02"), time.Now().Format("15:04:05"),
 			})
 		}
 		// Per-agent rows from agentSystemInfo
 		agentSystemInfo.Range(func(key, value interface{}) bool {
-			aid := key.(string)
+			aid, ok := key.(string)
+			if !ok { return true }
 			info, _ := value.(map[string]interface{})
 			if info == nil { return true }
 			getStr := func(field string) string {
@@ -1226,8 +1230,10 @@ func startHTTPServer() {
 				getStr("hostname"),
 				getStr("local_ip"),
 				getStr("wan_ip"),
-				getStr("os") + " " + getStr("arch"),
+				getStr("os"),
+				getStr("arch"),
 				getStr("version"),
+				"agent",
 				getStr("uptime"),
 				getStr("start_time"),
 				getStr("boot_time"),
@@ -1236,10 +1242,55 @@ func startHTTPServer() {
 				"—", // last idle start
 				"—", // last shutdown
 				getStr("idle_time"),
-				cfg.CloudflareTunnelID,
+				"—",
 				fmt.Sprintf("%.1f", cfg.MaxFPS),
 				fmt.Sprintf("%d", cfg.MonthlyLimitMB),
-				time.Now().Format("2006-01-02 15:04:05"),
+				"—",
+				time.Now().Format("2006-01-02"), time.Now().Format("15:04:05"),
+			})
+			return true
+		})
+		// Also include known agents that are currently disconnected
+		knownAgents.Range(func(key, value interface{}) bool {
+			aid, ok := key.(string)
+			if !ok { return true }
+			// Skip if already in agentSystemInfo (connected)
+			if _, exists := agentSystemInfo.Load(aid); exists { return true }
+			info, _ := value.(map[string]interface{})
+			if info == nil { return true }
+			getStr := func(field string) string {
+				if v, ok := info[field]; ok {
+					if s, ok := v.(string); ok { return s }
+				}
+				return "—"
+			}
+			lastSeen := "—"
+			if ls, ok := info["last_seen"].(float64); ok {
+				lastSeen = time.UnixMilli(int64(ls)).Format("2006-01-02 15:04:05")
+			}
+			_ = lastSeen
+			writer.Write([]string{
+				aid,
+				getStr("hostname"),
+				getStr("local_ip"),
+				getStr("wan_ip"),
+				getStr("os"),
+				"—",
+				getStr("version"),
+				"offline",
+				"—",
+				"—",
+				"—",
+				"—",
+				"—",
+				"—",
+				"—",
+				"—",
+				"—",
+				"—",
+				"—",
+				"—",
+				time.Now().Format("2006-01-02"), time.Now().Format("15:04:05"),
 			})
 			return true
 		})
@@ -1827,6 +1878,25 @@ func startCloudflareTunnel(cfg *Config) {
 	if err := EnsureCloudflaredInstalled(); err != nil {
 		llog("error", "cloudflared not available: %v", err)
 		return
+	}
+
+	// Check if cloudflared is already running — reuse existing tunnel
+	if tunnelCmd != nil && tunnelCmd.Process != nil {
+		if err := tunnelCmd.Process.Signal(syscall.Signal(0)); err == nil {
+			llog("info", "cloudflared already running (PID %d) — reusing", tunnelCmd.Process.Pid)
+			return
+		}
+		llog("info", "Previous cloudflared process dead, starting new tunnel")
+		tunnelCmd = nil
+	}
+
+	// Also check for any existing cloudflared process with our tunnel ID
+	if cfg.CloudflareTunnelID != "" {
+		out, err := exec.Command("pgrep", "-f", "cloudflared.*"+cfg.CloudflareTunnelID).Output()
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+			llog("info", "Existing cloudflared process found with tunnel %s — reusing", cfg.CloudflareTunnelID)
+			return
+		}
 	}
 
 	// Try named tunnel first if we have an ID

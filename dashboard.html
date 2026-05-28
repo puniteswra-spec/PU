@@ -265,7 +265,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 <div id="topbar">
   <div class="brand">
     <span>◈ Remote Monitor</span>
-    <small>v9.0.0</small>
+    <small id="header-version"></small>
     <span id="status-dot"></span>
     <span class="badge" id="mode-badge">AGENT</span>
   </div>
@@ -731,7 +731,7 @@ function connect() {
     document.getElementById('connection-info').textContent = 'connected – waiting for frames';
     document.getElementById('connection-info').className = 'badge active';
     resetFrameTimer();
-    ws.send(JSON.stringify({type:'hello', version:'9.2.0', transports:['ws']}));
+    ws.send(JSON.stringify({type:'hello', agent: false, transports:['ws']}));
   };
   ws.onclose = () => {
     document.getElementById('status-dot').className = '';
@@ -1793,6 +1793,11 @@ function copyShareLinkModal() {
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
+  // Fetch version from server and update header
+  fetch('/api/version').then(r=>r.json()).then(d => {
+    const el = document.getElementById('header-version');
+    if (el && d.version) el.textContent = d.version;
+  }).catch(() => {});
   if (sessionStorage.getItem('punmonitor_auth') === '1') {
     settingsLoggedIn = true;
     authenticated = true;
