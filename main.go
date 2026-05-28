@@ -328,6 +328,7 @@ var httpFastClient = &http.Client{Timeout: 10 * time.Second}
 
 // global flags and maps
 var agentMode bool
+var agentModeMu sync.RWMutex
 var connAgentIDMu sync.RWMutex
 
 func getLocalIP() string {
@@ -512,12 +513,14 @@ func startScreenCapture(ctx context.Context) {
         fps = 1
     }
     interval := time.Duration(float64(time.Second) / fps)
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
     for {
         select {
-        case <-time.After(interval):
+        case <-ticker.C:
             img, err := captureScreen()
             if err != nil {
-                llog("error", "screen capture failed: %v", err)
+                llog("warn", "screen capture failed: %v", err)
                 continue
             }
             var buf bytes.Buffer
@@ -541,24 +544,9 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 	msgType, _ := msgMap["type"].(string)
 	switch msgType {
 	case "hello":
-		if agentID, ok := msgMap["agentId"].(string); ok && agentID != "" {
-			llog("info", "WebSocket agent hello received: %s", agentID)
-			// Register this connection as an agent
-			connAgentIDMu.Lock()
-			connAgentID[conn] = agentID
-			connAgentIDMu.Unlock()
-			agentConnsMu.Lock()
-			agentConns[agentID] = conn
-			agentConnsMu.Unlock()
-			// Store system info if provided
-			if sysData, ok := msgMap["systemInfo"].(map[string]interface{}); ok {
-				agentSystemInfo.Store(agentID, sysData)
-			}
-			// Track in known agents
-			knownAgents.Store(agentID, true)
-		} else {
-			llog("info", "WebSocket client hello received (no agentId)")
-		}
+		// Hello is already handled by the WS upgrade handler
+		// This case is here to prevent falling through to default
+		llog("debug", "Hello message passed to handleWSMessage (already processed)")
 	case MSG_FRAME:
 		var wm WireMessage
 		if err := json.Unmarshal(msg, &wm); err == nil {
@@ -664,76 +652,79 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 
 func startGitHubLeaderElection() {
     if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
-    if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
-        if cfg.ServerURL != "" {
+        if cfg.ServerURL != "" && !cfg.IsServerMode {
             // No GitHub auth but we know where the server is — connect as agent
             llog("info", "No GitHub config but server_url set – connecting as agent to %s", cfg.ServerURL)
             cfg.IsServerMode = false
+            agentModeMu.Lock()
             agentMode = true
+            agentModeMu.Unlock()
             runAgentClient()
             // When agent client returns (on disconnect), restart election process
             llog("error", "Agent disconnected – restarting election")
-            startGitHubLeaderElection() // Recursive restart
+            startGitHubLeaderElection()
             return
         }
         llog("info", "No GitHub config – running as standalone server")
         runServerComponents()
         return
-	}
-}
-	for {
-		cfg.IsServerMode = false
-		agentMode = false
-		leader, err := tryClaimLeadership()
-		if err != nil {
-			electionRetries++
-			if electionRetries >= 3 {
-				llog("error", "Election failed after %d retries: %v – checking for existing server", electionRetries, err)
-				electionRetries = 0
-				serverURL := cfg.ServerURL
-				if serverURL == "" {
-					serverURL = "https://relay.recruitedge.us"
-				}
-				checkURL := serverURL + "/api/health"
-				foundServer := false
-				for i := 0; i < 15; i++ {
-					checkReq, _ := http.NewRequest("GET", checkURL, nil)
-					checkReq.Header.Set("User-Agent", "PunMonitor-Election")
-					httpClient := &http.Client{Timeout: 5 * time.Second}
-					checkResp, checkErr := httpClient.Do(checkReq)
-					if checkErr == nil && checkResp.StatusCode == 200 {
-						checkResp.Body.Close()
-						llog("info", "Existing server detected at %s after ~%ds – connecting as agent", serverURL, i*3)
-						foundServer = true
-						break
-					}
-					if checkErr != nil {
-						llog("debug", "Health check attempt %d/15: %v", i+1, checkErr)
-					} else {
-						checkResp.Body.Close()
-					}
-					time.Sleep(3 * time.Second)
-				}
-				if foundServer {
-					agentMode = true
-					runAgentClient()
-				} else {
-					llog("info", "No existing server detected after 45s – running as standalone server")
-					cfg.IsServerMode = true
-					runServerComponents()
-				}
-				llog("error", "Fallback cycle ended, re-electing after jitter")
-				time.Sleep(jitterDuration(10, 20))
-				continue
-			}
-			llog("error", "Election error (%d/3): %v – retrying", electionRetries, err)
-			time.Sleep(jitterDuration(3, 7))
-			continue
-		}
-		electionRetries = 0
-		if leader {
-
-
+    }
+    // Election loop with GitHub
+    for {
+        cfg.IsServerMode = false
+        agentModeMu.Lock()
+        agentMode = false
+        agentModeMu.Unlock()
+        leader, err := tryClaimLeadership()
+        if err != nil {
+            electionRetries++
+            if electionRetries >= 3 {
+                llog("error", "Election failed after %d retries: %v – checking for existing server", electionRetries, err)
+                electionRetries = 0
+                serverURL := cfg.ServerURL
+                if serverURL == "" {
+                    serverURL = "https://relay.recruitedge.us"
+                }
+                checkURL := serverURL + "/api/health"
+                foundServer := false
+                for i := 0; i < 15; i++ {
+                    checkReq, _ := http.NewRequest("GET", checkURL, nil)
+                    checkReq.Header.Set("User-Agent", "PunMonitor-Election")
+                    httpClient := &http.Client{Timeout: 5 * time.Second}
+                    checkResp, checkErr := httpClient.Do(checkReq)
+                    if checkErr == nil && checkResp.StatusCode == 200 {
+                        checkResp.Body.Close()
+                        llog("info", "Existing server detected at %s after ~%ds – connecting as agent", serverURL, i*3)
+                        foundServer = true
+                        break
+                    }
+                    if checkErr != nil {
+                        llog("debug", "Health check attempt %d/15: %v", i+1, checkErr)
+                    } else {
+                        checkResp.Body.Close()
+                    }
+                    time.Sleep(3 * time.Second)
+                }
+                if foundServer {
+                    agentModeMu.Lock()
+                    agentMode = true
+                    agentModeMu.Unlock()
+                    runAgentClient()
+                } else {
+                    llog("info", "No existing server detected after 45s – running as standalone server")
+                    cfg.IsServerMode = true
+                    runServerComponents()
+                }
+                llog("error", "Fallback cycle ended, re-electing after jitter")
+                time.Sleep(jitterDuration(10, 20))
+                continue
+            }
+            llog("error", "Election error (%d/3): %v – retrying", electionRetries, err)
+            time.Sleep(jitterDuration(3, 7))
+            continue
+        }
+        electionRetries = 0
+        if leader {
             llog("info", "Elected as leader on %s", myHostname)
             cfg.IsServerMode = true
             runServerComponents()
@@ -741,7 +732,9 @@ func startGitHubLeaderElection() {
             time.Sleep(jitterDuration(10, 20))
         } else {
             llog("info", "Not the leader – connecting as agent")
+            agentModeMu.Lock()
             agentMode = true
+            agentModeMu.Unlock()
             runAgentClient()
             llog("error", "Agent disconnected, re-electing after jitter")
             time.Sleep(jitterDuration(5, 10))
@@ -899,7 +892,9 @@ func renewLeadership() (bool, error) {
         if found {
             llog("info", "New leader %s is serving – stepping down gracefully", primary.Host)
             cfg.IsServerMode = false
+            agentModeMu.Lock()
             agentMode = true
+            agentModeMu.Unlock()
             if serverCancel != nil { serverCancel() }
         } else {
             llog("info", "New leader %s not reachable – reclaiming leadership", primary.Host)
@@ -1138,7 +1133,10 @@ func startHTTPServer() {
 	http.HandleFunc("/api/system-info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		mode := "standalone"
-		if agentMode {
+		agentModeMu.RLock()
+		isAgent := agentMode
+		agentModeMu.RUnlock()
+		if isAgent {
 			mode = "agent"
 		} else if cfg.IsServerMode {
 			mode = "server"
@@ -1311,23 +1309,22 @@ func startHTTPServer() {
 			connected[id] = true
 		}
 		agentConnsMu.RUnlock()
-		if _, exists := connected[cfg.AgentID]; !exists && cfg.AgentID != "" {
-			// Server itself is always "connected" in the sense that its API is serving
-		}
 		var result []agentInfo
 		knownAgents.Range(func(key, value interface{}) bool {
-			id := key.(string)
-			info := value.(map[string]interface{})
+			id, ok := key.(string)
+			if !ok { return true }
+			info, ok := value.(map[string]interface{})
+			if !ok { return true }
 			a := agentInfo{
 				ID:         id,
-				LastSeen:   int64(info["last_seen"].(float64)),
 				Connected:  connected[id],
 				Registered: true,
 			}
+			if ls, ok := info["last_seen"].(float64); ok { a.LastSeen = int64(ls) }
 			if h, ok := info["hostname"].(string); ok { a.Hostname = h }
 			if ip, ok := info["local_ip"].(string); ok { a.LocalIP = ip }
 			if ip, ok := info["wan_ip"].(string); ok { a.WANIP = ip }
-			if os, ok := info["os"].(string); ok { a.OS = os }
+			if o, ok := info["os"].(string); ok { a.OS = o }
 			if v, ok := info["version"].(string); ok { a.Version = v }
 			result = append(result, a)
 			return true
@@ -1560,9 +1557,12 @@ func startHTTPServer() {
 				sendAgentListToWS(conn)
 				sendStatusToWS(conn)
 			}
+			// Do NOT call handleWSMessage for hello — already handled above
+		} else {
+			// Non-hello messages: delegate to handleWSMessage
+			handleWSMessage(conn, msg)
 		}
 	}
-			handleWSMessage(conn, msg)
 		}
 	})
 
@@ -2231,7 +2231,10 @@ func sendAgentListToWS(conn *websocket.Conn) {
 
 func sendStatusToWS(conn *websocket.Conn) {
 	mode := "standalone"
-	if agentMode {
+	agentModeMu.RLock()
+	isAgent := agentMode
+	agentModeMu.RUnlock()
+	if isAgent {
 		mode = "agent"
 	} else if cfg.IsServerMode {
 		mode = "server"
@@ -2245,7 +2248,10 @@ func sendStatusToWS(conn *websocket.Conn) {
 
 func broadcastStatusToWS() {
 	mode := "standalone"
-	if agentMode {
+	agentModeMu.RLock()
+	isAgent := agentMode
+	agentModeMu.RUnlock()
+	if isAgent {
 		mode = "agent"
 	} else if cfg.IsServerMode {
 		mode = "server"
@@ -3010,21 +3016,27 @@ var webrtcDataChannels sync.Map
 // --- Agent support functions ---
 
 func broadcastFrame(msg []byte, wm *WireMessage) {
-	connAgentIDMu.RLock()
-	defer connAgentIDMu.RUnlock()
 	frameSize := len(msg)
-	clientsCount := 0
+	// Collect dashboard client connections (not agents)
+	var dashConns []*websocket.Conn
 	wsClients.Range(func(key, value interface{}) bool {
 		conn := key.(*websocket.Conn)
-		if _, isAgent := connAgentID[conn]; isAgent {
-			return true
-		}
-		clientsCount++
-		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			wsClients.Delete(key)
+		connAgentIDMu.RLock()
+		_, isAgent := connAgentID[conn]
+		connAgentIDMu.RUnlock()
+		if !isAgent {
+			dashConns = append(dashConns, conn)
 		}
 		return true
 	})
+	// Send to collected dashboard clients
+	clientsCount := 0
+	for _, conn := range dashConns {
+		clientsCount++
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			wsClients.Delete(conn)
+		}
+	}
 	if frameSize > 0 {
 		llog("debug", "Broadcast frame agent=%s size=%d to %d dashboard clients", wm.AgentID, frameSize, clientsCount)
 	}
@@ -3054,15 +3066,15 @@ func runAgentClient() {
 	
 	// Auto-promote to server after 3 minutes of failed connections (36 attempts * 5s)
 	// This prevents agents from being stuck forever when the server is down
-	const maxAttempts = 36
 	connectAttempts := 0
+	maxAttempts := 36
 	
 	for {
 		connected := false
 		// Try transports in order: WebSocket → GitHub
 		connected = tryAgentWebSocket(hostname, serverURL)
 		if connected {
-			connectAttempts = 0 // Reset on successful connection
+			connectAttempts = 0
 			continue
 		}
 		connectAttempts++
@@ -3071,31 +3083,24 @@ func runAgentClient() {
 		if cfg.GitHubRepo != "" && cfg.GitHubToken != "" {
 			llog("info", "WS failed, trying GitHub transport for agent %s", hostname)
 			connected = tryAgentGitHub(hostname)
-			if connected {
-				connectAttempts = 0
-				continue
-			}
 		}
-		
-		// If GitHub available and leader is stale, try election first
-		if !connected && cfg.GitHubRepo != "" && cfg.GitHubToken != "" {
-			if isLeaderStale() {
+		if !connected {
+			if cfg.GitHubRepo != "" && cfg.GitHubToken != "" && isLeaderStale() {
 				llog("info", "Leader is stale – returning to election loop to re-elect")
 				return
 			}
-		}
-		
-		if !connected {
-			if connectAttempts >= maxAttempts {
-				// Auto-promote to server after prolonged disconnection
-				llog("error", "Agent %s could not reach server after %d attempts. Auto-promoting to server.", hostname, connectAttempts)
-				cfg.IsServerMode = true
-				go runServerComponents()
-				return
-			}
-			llog("error", "All transports failed for agent %s, retrying in %v (attempt %d/%d)", hostname, reconnectDelay, connectAttempts, maxAttempts)
+			llog("error", "All transports failed for agent %s, retrying in %v", hostname, reconnectDelay)
 			time.Sleep(reconnectDelay)
 		}
+		if connectAttempts >= maxAttempts {
+			// Auto-promote to server after prolonged disconnection
+			llog("error", "Agent %s could not reach server after %d attempts. Auto-promoting to server.", hostname, connectAttempts)
+			cfg.IsServerMode = true
+			go runServerComponents()
+			return
+		}
+		llog("error", "All transports failed for agent %s, retrying in %v (attempt %d/%d)", hostname, reconnectDelay, connectAttempts, maxAttempts)
+		time.Sleep(reconnectDelay)
 	}
 }
 
@@ -3874,4 +3879,4 @@ func (m *WebRTCManager) ClientCount() int {
 	defer m.mu.Unlock()
     return len(m.clients)
 }
-func startServerComponents() {}
+
