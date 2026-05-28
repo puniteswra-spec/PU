@@ -696,6 +696,25 @@ func startGitHubLeaderElection() {
                     checkResp, checkErr := httpClient.Do(checkReq)
                     if checkErr == nil && checkResp.StatusCode == 200 {
                         checkResp.Body.Close()
+                        // CRITICAL: Verify the server is NOT us (tunnel loops back)
+                        // Check by fetching /api/version from the detected server
+                        verifyReq, _ := http.NewRequest("GET", serverURL+"/api/system-info", nil)
+                        verifyReq.Header.Set("User-Agent", "PunMonitor-Election")
+                        verifyResp, verifyErr := httpClient.Do(verifyReq)
+                        if verifyErr == nil && verifyResp.StatusCode == 200 {
+                            var sysInfo map[string]string
+                            if json.NewDecoder(verifyResp.Body).Decode(&sysInfo) == nil {
+                                verifyResp.Body.Close()
+                                if sysInfo["hostname"] == myHostname || sysInfo["hostname"] == getHostname() {
+                                    llog("info", "Detected server is ourselves (%s) – not connecting as agent", sysInfo["hostname"])
+                                    continue
+                                }
+                            } else {
+                                verifyResp.Body.Close()
+                            }
+                        } else if verifyResp != nil {
+                            verifyResp.Body.Close()
+                        }
                         llog("info", "Existing server detected at %s after ~%ds – connecting as agent", serverURL, i*3)
                         foundServer = true
                         break
@@ -748,14 +767,28 @@ func jitterDuration(minSec, maxSec int) time.Duration {
     return time.Duration(minSec+int(rand.Intn(maxSec-minSec+1))) * time.Second
 }
 
+func normalizeGitHubRepo(repo string) string {
+    // Strip URL prefix if present — API expects "owner/repo" format
+    repo = strings.TrimPrefix(repo, "https://github.com/")
+    repo = strings.TrimPrefix(repo, "http://github.com/")
+    repo = strings.TrimPrefix(repo, "github.com/")
+    repo = strings.TrimSuffix(repo, ".git")
+    return repo
+}
+
 func tryClaimLeadership() (bool, error) {
-    rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/primary_server.json", cfg.GitHubRepo)
-    req, _ := http.NewRequest("GET", rawURL, nil)
+    // Use GitHub API (not raw) to get the SHA for potential takeover
+    apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", normalizeGitHubRepo(cfg.GitHubRepo))
+    req, _ := http.NewRequest("GET", apiURL, nil)
+    req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+    req.Header.Set("Accept", "application/vnd.github.v3+json")
     resp, err := httpFastClient.Do(req)
     if err != nil {
         return false, fmt.Errorf("failed to read primary_server.json: %w", err)
     }
     defer resp.Body.Close()
+
+    llog("debug", "Election: GET %s returned %d (token=%s...)", apiURL, resp.StatusCode, cfg.GitHubToken[:min(len(cfg.GitHubToken), 8)])
 
     if resp.StatusCode == http.StatusNotFound {
         llog("info", "No primary_server.json found, attempting to claim leadership")
@@ -763,12 +796,20 @@ func tryClaimLeadership() (bool, error) {
     }
 
     if resp.StatusCode != http.StatusOK {
-        return false, fmt.Errorf("GitHub raw fetch returned %d", resp.StatusCode)
+        return false, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
     }
 
-    body, err := io.ReadAll(resp.Body)
+    var ghResp struct {
+        Content string `json:"content"`
+        SHA     string `json:"sha"`
+    }
+    if err := json.NewDecoder(resp.Body).Decode(&ghResp); err != nil {
+        return false, fmt.Errorf("failed to parse response: %w", err)
+    }
+
+    body, err := base64.StdEncoding.DecodeString(ghResp.Content)
     if err != nil {
-        return false, fmt.Errorf("failed to read body: %w", err)
+        return false, fmt.Errorf("failed to decode content: %w", err)
     }
 
     var primary struct {
@@ -787,7 +828,7 @@ func tryClaimLeadership() (bool, error) {
 
     if time.Since(time.UnixMilli(primary.Updated)) > interval {
         llog("info", "Leader %s is stale, attempting to take over", primary.Host)
-        return writePrimaryServerFile(cfg.AgentID, "")
+        return writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
     }
 
     llog("info", "Active leader: %s (updated %s ago)", primary.Host, time.Since(time.UnixMilli(primary.Updated)))
@@ -810,7 +851,7 @@ func writePrimaryServerFile(hostname, sha string) (bool, error) {
         payload["sha"] = sha
     }
     payloadData, _ := json.Marshal(payload)
-    apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", cfg.GitHubRepo)
+    apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", normalizeGitHubRepo(cfg.GitHubRepo))
     req, err := http.NewRequest("PUT", apiURL, bytes.NewReader(payloadData))
     if err != nil { return false, err }
     req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
@@ -831,7 +872,7 @@ return false, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 }
 
 func renewLeadership() (bool, error) {
-    apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", cfg.GitHubRepo)
+    apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", normalizeGitHubRepo(cfg.GitHubRepo))
     req, _ := http.NewRequest("GET", apiURL, nil)
     req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
     req.Header.Set("Accept", "application/vnd.github.v3+json")
@@ -977,13 +1018,12 @@ func runServerComponents() {
 		}
 	})
 	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
+		ticker := time.NewTicker(5 * time.Minute)
 		for {
 			select {
 			case <-ticker.C:
-				llog("info", "Checking for server updates and credential changes...")
-				checkForServerUpdates()
-				checkForCloudflareKeyChanges()
+				llog("info", "Syncing settings from GitHub...")
+				syncFromGitHub()
 			}
 		}
 	}()
@@ -1641,7 +1681,7 @@ func pushCredsToGitHub() {
 			"content": encoded,
 			"branch":  "main",
 		})
-		url := fmt.Sprintf("https://api.github.com/repos/%s/contents/punmonitor-credentials.json", cfg.GitHubRepo)
+		url := fmt.Sprintf("https://api.github.com/repos/%s/contents/punmonitor-credentials.json", normalizeGitHubRepo(cfg.GitHubRepo))
 		req, err := http.NewRequest("PUT", url, bytes.NewReader(payload))
 		if err != nil { llog("error", "Failed to create request for credentials: %v", err); return }
 		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
@@ -1659,7 +1699,7 @@ func pushCredsToGitHub() {
 			"content": encoded,
 			"branch":  "main",
 		})
-		url := fmt.Sprintf("https://api.github.com/repos/%s/contents/settings.json", cfg.GitHubRepo)
+		url := fmt.Sprintf("https://api.github.com/repos/%s/contents/settings.json", normalizeGitHubRepo(cfg.GitHubRepo))
 		req, err := http.NewRequest("PUT", url, bytes.NewReader(payload))
 		if err != nil { llog("error", "Failed to create request for settings: %v", err); return }
 		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
@@ -1721,7 +1761,7 @@ func syncFromGitHub() {
 	}
 
 	// 1. Fetch credentials (save if changed)
-	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/punmonitor-credentials.json", cfg.GitHubRepo)
+	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/punmonitor-credentials.json", normalizeGitHubRepo(cfg.GitHubRepo))
 	req, _ := http.NewRequest("GET", rawURL, nil)
 	resp, err := httpFastClient.Do(req)
 	credsChanged := false
@@ -1751,7 +1791,7 @@ func syncFromGitHub() {
 	}
 
 	// 2. Fetch settings.json (apply remote overrides)
-	settingsURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/settings.json", cfg.GitHubRepo)
+	settingsURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/settings.json", normalizeGitHubRepo(cfg.GitHubRepo))
 	req2, _ := http.NewRequest("GET", settingsURL, nil)
 	resp2, err2 := httpFastClient.Do(req2)
 	if err2 == nil && resp2.StatusCode == http.StatusOK {
@@ -1814,7 +1854,7 @@ func syncFromGitHub() {
 	//    The embedded dashboard (compiled into the binary) is the source of truth.
 	//    GitHub dashboard is only saved to disk — never overrides the in-memory version.
 	//    Hot-reload in startHTTPServer picks up disk file changes for live editing.
-	dashURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/dashboard.html", cfg.GitHubRepo)
+	dashURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/dashboard.html", normalizeGitHubRepo(cfg.GitHubRepo))
 	dashReq, _ := http.NewRequest("GET", dashURL, nil)
 	dashResp, dashErr := httpFastClient.Do(dashReq)
 	if dashErr == nil && dashResp.StatusCode == http.StatusOK {
@@ -2990,7 +3030,7 @@ func startTransportMonitor(ctx context.Context) {
 
 func initTransports() {
 	if cfg.GitHubRepo != "" {
-		gt := NewGitHubTransport(cfg.GitHubRepo, cfg.GitHubToken, 100)
+		gt := NewGitHubTransport(normalizeGitHubRepo(cfg.GitHubRepo), cfg.GitHubToken, 100)
 		ghTransport = gt.(*githubTransport)
 		transportPool.Add("github", gt)
 		healthChecker.Register("github")
@@ -3137,6 +3177,22 @@ func runAgentClient() {
 	if serverURL == "" {
 		serverURL = "https://relay.recruitedge.us"
 	}
+	
+	// Periodic sync from GitHub even as agent (for server URL changes, updates, etc.)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			syncFromGitHub()
+			// If server_url changed, restart connection
+			newURL := cfg.ServerURL
+			if newURL == "" { newURL = "https://relay.recruitedge.us" }
+			if newURL != serverURL {
+				llog("info", "Server URL changed from %s to %s – reconnecting", serverURL, newURL)
+				serverURL = newURL
+			}
+		}
+	}()
 	
 	// Auto-promote to server after 3 minutes of failed connections (36 attempts * 5s)
 	// This prevents agents from being stuck forever when the server is down
@@ -3353,7 +3409,7 @@ func writeAgentHeartbeat() {
 	data, _ := json.Marshal(content)
 	encoded := base64.StdEncoding.EncodeToString(data)
 	filename := fmt.Sprintf("agent_heartbeat_%s.json", hostname)
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s", cfg.GitHubRepo, filename)
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s", normalizeGitHubRepo(cfg.GitHubRepo), filename)
 	payload, _ := json.Marshal(map[string]interface{}{
 		"message": "heartbeat: " + hostname,
 		"content": encoded,
@@ -3377,7 +3433,7 @@ func checkAgentCommandsAndRun() {
 		return
 	}
 	hostname := cfg.AgentID
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/agent_command_%s.json", cfg.GitHubRepo, hostname)
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/agent_command_%s.json", normalizeGitHubRepo(cfg.GitHubRepo), hostname)
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return
@@ -3693,7 +3749,7 @@ func tryAgentGitHub(hostname string) bool {
 }
 
 func isLeaderStale() bool {
-	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/primary_server.json", cfg.GitHubRepo)
+	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/primary_server.json", normalizeGitHubRepo(cfg.GitHubRepo))
 	req, _ := http.NewRequest("GET", rawURL, nil)
 	resp, err := httpFastClient.Do(req)
 	if err != nil {
