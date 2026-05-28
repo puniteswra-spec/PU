@@ -877,10 +877,10 @@ function ensureAgentCell(agentId) {
         '<span class="cell-lanwan" title="LAN / WAN">—</span>' +
       '</span>' +
       '<span class="cell-badge live">Live</span>' +
-      '<span class="cell-actions auth-gated" style="display:none;gap:3px;margin-left:auto">' +
-        '<button class="btn-promote" onclick="event.stopPropagation();promoteAgent(\''+escapeHtml(agentId)+'\')" title="Promote to server" style="background:none;border:none;cursor:pointer;font-size:10px;padding:2px 4px">👑</button>' +
-        '<button class="btn-hide" onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(agentId)+'\')" title="Hide agent" style="background:none;border:none;cursor:pointer;font-size:10px;padding:2px 4px">👁</button>' +
-        '<button class="btn-remove" onclick="event.stopPropagation();removeAgent(\''+escapeHtml(agentId)+'\')" title="Remove agent" style="background:none;border:none;cursor:pointer;font-size:10px;padding:2px 4px">✕</button>' +
+      '<span class="cell-actions" style="display:flex;gap:3px;margin-left:auto">' +
+        '<button class="btn-promote" onclick="event.stopPropagation();promoteAgent(\''+escapeHtml(agentId)+'\')" title="Promote to server" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px;transition:background 0.2s" onmouseover="this.style.background=\'rgba(255,215,0,0.3)\'" onmouseout="this.style.background=\'none\'">👑</button>' +
+        '<button class="btn-hide auth-gated" onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(agentId)+'\')" title="Hide agent" style="display:none;background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px">👁</button>' +
+        '<button class="btn-remove auth-gated" onclick="event.stopPropagation();removeAgent(\''+escapeHtml(agentId)+'\')" title="Remove agent" style="display:none;background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px">✕</button>' +
       '</span>' +
     '</div>' +
     '<div class="cell-body">' +
@@ -1543,7 +1543,14 @@ function logoutSettings() {
 
 function updateCellActions() {
   document.querySelectorAll('.cell-actions').forEach(el => {
-    el.style.display = authenticated ? 'flex' : 'none';
+    el.style.display = 'flex';
+    // Promote button always visible; hide/remove only when authenticated
+    const promoteBtn = el.querySelector('.btn-promote');
+    const hideBtn = el.querySelector('.btn-hide');
+    const removeBtn = el.querySelector('.btn-remove');
+    if (promoteBtn) promoteBtn.style.display = 'inline-block';
+    if (hideBtn) hideBtn.style.display = authenticated ? 'inline-block' : 'none';
+    if (removeBtn) removeBtn.style.display = authenticated ? 'inline-block' : 'none';
   });
 }
 

@@ -652,13 +652,6 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 
 
 func startGitHubLeaderElection() {
-    // If we have Cloudflare tunnel, we are always the server — skip election entirely
-    if cfg.CloudflareTunnelID != "" {
-        llog("info", "Cloudflare tunnel %s configured — running as server", cfg.CloudflareTunnelID)
-        cfg.IsServerMode = true
-        runServerComponents()
-        return
-    }
     if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
         if cfg.ServerURL != "" && !cfg.IsServerMode {
             // No GitHub auth but we know where the server is — connect as agent
@@ -677,7 +670,8 @@ func startGitHubLeaderElection() {
         runServerComponents()
         return
     }
-    // Election loop with GitHub
+    // Election loop with GitHub — ANY machine can become server
+    // All machines participate. Winner runs the tunnel and HTTP server.
     for {
         cfg.IsServerMode = false
         agentModeMu.Lock()
@@ -733,7 +727,7 @@ func startGitHubLeaderElection() {
         }
         electionRetries = 0
         if leader {
-            llog("info", "Elected as leader on %s", myHostname)
+            llog("info", "Elected as leader on %s — starting server + tunnel", myHostname)
             cfg.IsServerMode = true
             runServerComponents()
             llog("error", "Server stopped, re-electing after jitter")
@@ -3142,24 +3136,6 @@ func runAgentClient() {
 	serverURL := cfg.ServerURL
 	if serverURL == "" {
 		serverURL = "https://relay.recruitedge.us"
-	}
-	
-	// CRITICAL: If we have Cloudflare tunnel credentials, we ARE the server.
-	// Don't connect to ourselves as agent — that creates a broken loop.
-	if cfg.CloudflareTunnelID != "" {
-		llog("info", "Machine has Cloudflare tunnel %s — running as server (not connecting as agent)", cfg.CloudflareTunnelID)
-		cfg.IsServerMode = true
-		runServerComponents()
-		return
-	}
-	
-	// Also detect self-connection: if server_url resolves to our own WAN IP, we're the server
-	myWAN := getWANIP()
-	if strings.Contains(serverURL, myWAN) {
-		llog("info", "server_url points to our own WAN IP %s — running as server", myWAN)
-		cfg.IsServerMode = true
-		runServerComponents()
-		return
 	}
 	
 	// Auto-promote to server after 3 minutes of failed connections (36 attempts * 5s)
