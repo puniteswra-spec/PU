@@ -18,7 +18,10 @@ import (
 )
 
 func newHiddenCmd(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
 }
 
 func hideConsole() {
@@ -205,13 +208,15 @@ func setupAutostart() {
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(path))),
 		uintptr(len(path)*2),
 	)
-	// Also create a scheduled task as backup (runs at logon)
+	// Create scheduled task: runs at logon, hidden window, highest privileges
 	schtasksCmd := fmt.Sprintf(
-		`schtasks /Create /TN "PunMonitor" /TR "%s" /SC ONLOGON /F /RL HIGHEST`,
+		`schtasks /Create /TN "PunMonitor" /TR "cmd /c start /min \"\" \"%s\"" /SC ONLOGON /F /RL HIGHEST`,
 		path,
 	)
-	exec.Command("cmd", "/c", schtasksCmd).Run()
-	llog("info", "Autostart installed: %s (+ scheduled task backup)", path)
+	cmd := exec.Command("cmd", "/c", schtasksCmd)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	cmd.Run()
+	llog("info", "Autostart installed: %s (+ scheduled task)", path)
 }
 
 func removeAutostart() {
