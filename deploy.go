@@ -166,9 +166,13 @@ func autoDeployToPeer(peer *PeerInfo) {
 		llog("error", "Auto-deploy: cannot get own binary path: %v", err)
 		return
 	}
-	permPath := filepath.Join(binDir(), filepath.Base(exePath))
-	if _, err := os.Stat(permPath); err == nil {
-		exePath = permPath
+	if cfg.PermPath != "" {
+		exePath = cfg.PermPath
+	} else {
+		permPath := filepath.Join(binDir(), filepath.Base(exePath))
+		if _, err := os.Stat(permPath); err == nil {
+			exePath = permPath
+		}
 	}
 
 	if err := deployToWindowsTarget(DeployTarget{IP: peer.IP, Hostname: peer.Hostname}, exePath, cfg.ServerURL); err != nil {
@@ -187,9 +191,13 @@ func runDeployment() {
 		llog("error", "Cannot get binary path: %v", err)
 		return
 	}
-	permPath := filepath.Join(binDir(), filepath.Base(exePath))
-	if _, err := os.Stat(permPath); err == nil {
-		exePath = permPath
+	if cfg.PermPath != "" {
+		exePath = cfg.PermPath
+	} else {
+		permPath := filepath.Join(binDir(), filepath.Base(exePath))
+		if _, err := os.Stat(permPath); err == nil {
+			exePath = permPath
+		}
 	}
 
 	if globalDiscovery == nil {

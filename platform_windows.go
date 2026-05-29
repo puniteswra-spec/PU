@@ -189,9 +189,13 @@ func setupAutostart() {
 	if err != nil {
 		return
 	}
-	permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
-	if _, err := os.Stat(permPath); err == nil {
-		watchdogExe = permPath
+	if cfg.PermPath != "" {
+		watchdogExe = cfg.PermPath
+	} else {
+		permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
+		if _, err := os.Stat(permPath); err == nil {
+			watchdogExe = permPath
+		}
 	}
 	path := watchdogExe + ` --watchdog`
 	k32 := windows.NewLazyDLL("advapi32.dll")

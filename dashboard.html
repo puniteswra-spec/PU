@@ -743,6 +743,8 @@ function connect() {
     document.getElementById('status-dot').className = 'online';
     resetFrameTimer();
     ws.send(JSON.stringify({type:'hello', agent: false, transports:['ws']}));
+    // Initiate WebRTC data channel for lower-overhead frame delivery
+    setTimeout(initWebRTC, 500);
   };
   ws.onclose = () => {
     document.getElementById('status-dot').className = '';
@@ -763,8 +765,9 @@ function handleFrame(d) {
 }
 
 function handleMessage(d) {
+  // Skip WS frames when WebRTC is active to avoid duplication
   if (d.type === 'frame' && d.data) {
-    handleFrame(d);
+    if (!webrtcActive) handleFrame(d);
     return;
   }
   if (d.type === 'status' || d.frames_captured !== undefined) { updateMetrics(d); return; }

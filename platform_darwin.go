@@ -262,9 +262,13 @@ func setupAutostart() {
 	if err != nil {
 		return
 	}
-	permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
-	if _, err := os.Stat(permPath); err == nil {
-		watchdogExe = permPath
+	if cfg.PermPath != "" {
+		watchdogExe = cfg.PermPath
+	} else {
+		permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
+		if _, err := os.Stat(permPath); err == nil {
+			watchdogExe = permPath
+		}
 	}
 	exe := watchdogExe
 	launchDir := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")

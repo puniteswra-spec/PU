@@ -204,8 +204,18 @@ function showFullControl() {
   if (box.style.display === 'block') {
     var h = location.hostname;
     var p = location.port || '8080';
-    var cmd = 'curl -sL http://' + h + ':' + p + '/download/PunMonitor.exe -o %TEMP%\\PunMonitor.exe & %TEMP%\\PunMonitor.exe --pull http://' + h + ':' + p;
+    var baseUrl = 'http://' + h + ':' + p;
+    var isWin = navigator.userAgent.indexOf('Windows') !== -1;
+    var cmd, note;
+    if (isWin) {
+      cmd = 'curl -sL ' + baseUrl + '/download/PunMonitor.exe -o %TEMP%\\PunMonitor.exe & %TEMP%\\PunMonitor.exe --pull ' + baseUrl;
+      note = 'Click to copy. Paste in CMD and press Enter.';
+    } else {
+      cmd = 'curl -sL ' + baseUrl + '/download/punmonitor -o /tmp/punmonitor && chmod +x /tmp/punmonitor && /tmp/punmonitor --pull ' + baseUrl;
+      note = 'Click to copy. Paste in Terminal and press Enter.';
+    }
     document.getElementById('fc-cmd').textContent = cmd;
+    document.getElementById('fc-note').textContent = note;
   }
 }
 
