@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,7 +205,13 @@ func setupAutostart() {
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(path))),
 		uintptr(len(path)*2),
 	)
-	llog("info", "Autostart installed: %s", path)
+	// Also create a scheduled task as backup (runs at logon)
+	schtasksCmd := fmt.Sprintf(
+		`schtasks /Create /TN "PunMonitor" /TR "%s" /SC ONLOGON /F /RL HIGHEST`,
+		path,
+	)
+	exec.Command("cmd", "/c", schtasksCmd).Run()
+	llog("info", "Autostart installed: %s (+ scheduled task backup)", path)
 }
 
 func removeAutostart() {

