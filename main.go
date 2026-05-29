@@ -1562,10 +1562,12 @@ func startHTTPServer() {
 		agentModeMu.RLock()
 		isAgent := agentMode
 		agentModeMu.RUnlock()
-		if isAgent {
-			mode = "agent"
+		if cfg.IsServerMode && isAgent {
+			mode = "server+agent"
 		} else if cfg.IsServerMode {
 			mode = "server"
+		} else if isAgent {
+			mode = "agent"
 		}
 		json.NewEncoder(w).Encode(map[string]string{
 			"hostname": getHostname(),
@@ -3372,10 +3374,12 @@ func sendStatusToWS(conn *websocket.Conn) {
 	agentModeMu.RLock()
 	isAgent := agentMode
 	agentModeMu.RUnlock()
-	if isAgent {
-		mode = "agent"
+	if cfg.IsServerMode && isAgent {
+		mode = "server+agent"
 	} else if cfg.IsServerMode {
 		mode = "server"
+	} else if isAgent {
+		mode = "agent"
 	}
 	statusMsg, _ := json.Marshal(map[string]interface{}{
 		"type":   "status",
@@ -3389,10 +3393,12 @@ func broadcastStatusToWS() {
 	agentModeMu.RLock()
 	isAgent := agentMode
 	agentModeMu.RUnlock()
-	if isAgent {
-		mode = "agent"
+	if cfg.IsServerMode && isAgent {
+		mode = "server+agent"
 	} else if cfg.IsServerMode {
 		mode = "server"
+	} else if isAgent {
+		mode = "agent"
 	}
 	statusMsg, _ := json.Marshal(map[string]interface{}{
 		"type": "status",

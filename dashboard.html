@@ -1166,17 +1166,17 @@ function updateMetrics(d) {
   }
   if (d.type === 'status') {
     if (d.mode) {
-      serverMode = d.mode === 'server' || d.mode === 'standalone';
+      serverMode = d.mode === 'server' || d.mode === 'standalone' || d.mode === 'server+agent';
+      document.getElementById('mode-badge').textContent = d.mode === 'server+agent' ? 'SERVER+AGENT' : (serverMode ? 'SERVER' : 'AGENT');
     }
-    document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
   }
 }
 
 // ── Agents ──
 function refreshAgents() {
    fetch('/api/system-info').then(r=>r.json()).then(info => {
-     serverMode = info.mode === 'server' || info.mode === 'standalone';
-     document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
+     serverMode = info.mode === 'server' || info.mode === 'standalone' || info.mode === 'server+agent';
+     document.getElementById('mode-badge').textContent = info.mode === 'server+agent' ? 'SERVER+AGENT' : (serverMode ? 'SERVER' : 'AGENT');
    }).catch(()=>{});
    // Single call to /api/agents/full – gets IDs + hidden status in one shot
    fetch('/api/agents/full').then(r=>r.json()).then(list => {
