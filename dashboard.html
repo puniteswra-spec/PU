@@ -47,7 +47,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Segoe 
 
 /* ── Dropdown Panels ── */
 .dropdown-panel{
-  position:absolute;top:46px;right:60px;
+  position:absolute;top:46px;right:10px;
   background:var(--surface);border:1px solid var(--border);border-radius:0 0 var(--radius) var(--radius);
   box-shadow:0 8px 24px rgba(0,0,0,.12);padding:12px 16px;
   display:none;z-index:99;min-width:300px;max-height:80vh;overflow-y:auto;
@@ -271,34 +271,35 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
   </div>
   <div id="agent-selector-container" style="flex:1;display:flex;justify-content:center;align-items:center;padding:0 10px"></div>
   <div class="right">
-    <button id="btn-report-csv" onclick="downloadReportCSV()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 8px;border-radius:4px;font-size:10px;cursor:pointer" title="Download activity report CSV">📊 Report</button>
-    <button onclick="openAssistSession()" title="Create Remote Assist link — click to copy" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600">🖥 Remote Assistant</button>
-    <span id="version-badge" class="badge" style="font-weight:400;background:rgba(255,255,255,.1)">v—</span>
-    <button id="btn-grid-view" class="view-toggle-btn active" onclick="setViewMode('grid')" title="Grid — all agents">▦</button>
-    <button id="btn-single-view" class="view-toggle-btn" onclick="setViewMode('single')" title="Focus — one agent full screen">⛶</button>
-    <button id="btn-share" onclick="generateShareLink()" title="Share viewer link" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600">🔗 Share</button>
-    <button id="gear-btn" onclick="toggleGear()" title="Settings">⚙</button>
+    <button id="btn-report-csv" onclick="downloadReportCSV()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;font-size:11px;cursor:pointer;font-weight:500" title="Download activity report CSV">📊 Report</button>
+    <button onclick="openAssistSession()" title="Click to create & copy assist link" style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);color:#fff;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600">🖥️ Remote Assistant</button>
+    <button onclick="toggleAgentsPanel()" title="Connected agents" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">🖥️ Agents</button>
+    <span id="version-badge" class="badge" style="font-weight:400;background:rgba(255,255,255,.1);font-size:10px">v—</span>
+    <button id="btn-grid-view" class="view-toggle-btn active" onclick="setViewMode('grid')" title="Grid view" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">▦ Grid</button>
+    <button id="btn-single-view" class="view-toggle-btn" onclick="setViewMode('single')" title="Focus view" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">⛶ Focus</button>
+    <button id="btn-share" onclick="generateShareLink()" title="Share viewer link" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">🔗 Share</button>
+    <button id="gear-btn" onclick="toggleGear()" title="Settings" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">⚙️ Settings</button>
   </div>
 </div>
 
 <!-- Left Sidebar (auto-hide on hover) -->
 <style>
-#sidebar-trigger{position:fixed;left:0;top:44px;width:12px;height:calc(100vh - 44px);z-index:101;cursor:pointer}
-#left-sidebar{position:fixed;left:-40px;top:44px;width:48px;height:calc(100vh - 44px);background:rgba(0,0,0,.4);border-right:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px;z-index:100;transition:left 0.2s ease;backdrop-filter:blur(10px)}
-#sidebar-trigger:hover ~ #left-sidebar{left:0}
-#left-sidebar:hover{left:0}
-#left-sidebar .sb-label{display:none;font-size:9px;color:var(--text3);white-space:nowrap;position:absolute;left:48px;background:rgba(0,0,0,.8);padding:2px 6px;border-radius:3px;pointer-events:none}
+#sidebar-hotzone{position:fixed;left:0;top:44px;width:8px;height:calc(100vh - 44px);z-index:102;cursor:pointer}
+#left-sidebar{position:fixed;left:-38px;top:44px;width:42px;height:calc(100vh - 44px);background:rgba(0,0,0,.5);border-right:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;align-items:center;padding:6px 0;gap:2px;z-index:101;transition:left 0.2s ease;backdrop-filter:blur(10px)}
+#sidebar-hotzone:hover ~ #left-sidebar,#left-sidebar:hover{left:0}
+#left-sidebar button{position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:15px;padding:6px;width:32px;height:32px;border-radius:6px;display:flex;align-items:center;justify-content:center;transition:background 0.15s}
+#left-sidebar button:hover{background:rgba(255,255,255,.1)}
+#left-sidebar .sb-label{display:none;font-size:9px;color:var(--text3);white-space:nowrap;position:absolute;left:40px;background:rgba(0,0,0,.9);padding:3px 6px;border-radius:3px;pointer-events:none;z-index:200}
 #left-sidebar button:hover .sb-label{display:block}
 </style>
-<div id="sidebar-trigger"></div>
+<div id="sidebar-hotzone"></div>
 <div id="left-sidebar">
-  <button class="auth-gated sidebar-btn" onclick="toggleAgentsPanel()" title="Agents" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">🖥<span class="sb-label">Agents</span></button>
-  <button class="auth-gated sidebar-btn" onclick="toggleQualityPanel()" title="Quality" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">🎮<span class="sb-label">Quality</span></button>
-  <button class="auth-gated sidebar-btn" onclick="toggleMetricsPanel()" title="Metrics" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">📊<span class="sb-label">Metrics</span></button>
-  <button class="auth-gated sidebar-btn" onclick="openTerminal(controlledAgentId||Object.keys(agentCells)[0])" title="Terminal" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">💻<span class="sb-label">Terminal</span></button>
-  <button class="auth-gated sidebar-btn" onclick="openFileManager(controlledAgentId||Object.keys(agentCells)[0])" title="Files" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">📁<span class="sb-label">Files</span></button>
-  <button class="auth-gated sidebar-btn" onclick="openAuditLog()" title="Audit Log" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">📋<span class="sb-label">Audit Log</span></button>
-  <button class="auth-gated sidebar-btn" onclick="openMigration()" title="Migrate Server" style="position:relative;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:8px;width:36px;height:36px;border-radius:6px;align-items:center;justify-content:center" onmouseover="this.style.background='rgba(255,255,255,.08)'" onmouseout="this.style.background=''">🔄<span class="sb-label">Migrate</span></button>
+  <button onclick="toggleQualityPanel()" title="Capture Quality"><span>🎮</span><span class="sb-label">Quality</span></button>
+  <button onclick="toggleMetricsPanel()" title="Live Metrics"><span>📊</span><span class="sb-label">Metrics</span></button>
+  <button class="auth-gated sidebar-btn" onclick="openTerminal(controlledAgentId||Object.keys(agentCells)[0])" title="Terminal"><span>💻</span><span class="sb-label">Terminal</span></button>
+  <button class="auth-gated sidebar-btn" onclick="openFileManager(controlledAgentId||Object.keys(agentCells)[0])" title="Files"><span>📁</span><span class="sb-label">Files</span></button>
+  <button class="auth-gated sidebar-btn" onclick="openAuditLog()" title="Audit Log"><span>📋</span><span class="sb-label">Audit</span></button>
+  <button class="auth-gated sidebar-btn" onclick="openMigration()" title="Migrate"><span>🔄</span><span class="sb-label">Migrate</span></button>
 </div>
 
 <!-- Quality Panel -->
@@ -337,6 +338,17 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <div class="mp-card"><div class="mp-val" id="m-drop">0</div><div class="mp-lbl">Dropped</div></div>
     <div class="mp-card"><div class="mp-val" id="m-qual">30</div><div class="mp-lbl">Quality</div></div>
     <div class="mp-card"><div class="mp-val" id="m-uptime">0s</div><div class="mp-lbl">Uptime</div></div>
+  </div>
+  <div style="border-top:1px solid rgba(255,255,255,.06);padding:8px 0;margin-top:6px">
+    <div style="font-size:10px;color:var(--text3);margin-bottom:6px;font-weight:600">SERVER LOAD</div>
+    <div class="mp-grid">
+      <div class="mp-card"><div class="mp-val" id="sl-cpu">0%</div><div class="mp-lbl">CPU</div></div>
+      <div class="mp-card"><div class="mp-val" id="sl-mem">0%</div><div class="mp-lbl">Memory</div></div>
+      <div class="mp-card"><div class="mp-val" id="sl-ws">0</div><div class="mp-lbl">WS Clients</div></div>
+      <div class="mp-card"><div class="mp-val" id="sl-agents">0</div><div class="mp-lbl">Agents</div></div>
+      <div class="mp-card"><div class="mp-val" id="sl-net-in">0</div><div class="mp-lbl">KB/s In</div></div>
+      <div class="mp-card"><div class="mp-val" id="sl-net-out">0</div><div class="mp-lbl">KB/s Out</div></div>
+    </div>
   </div>
 </div>
 
@@ -682,9 +694,9 @@ function closeOtherPanels(keep) {
   if (keep !== 'agents') { agentsPanelOpen = false; document.getElementById('agents-panel').classList.remove('open'); }
 }
 document.addEventListener('click', (e) => {
-  if (qualityPanelOpen && !e.target.closest('#quality-panel') && !e.target.closest('#quality-toggle')) { qualityPanelOpen = false; document.getElementById('quality-panel').classList.remove('open'); }
-  if (metricsPanelOpen && !e.target.closest('#metrics-panel') && !e.target.closest('#metrics-toggle')) { metricsPanelOpen = false; document.getElementById('metrics-panel').classList.remove('open'); }
-  if (agentsPanelOpen && !e.target.closest('#agents-panel') && !e.target.closest('#agents-toggle')) { agentsPanelOpen = false; document.getElementById('agents-panel').classList.remove('open'); }
+  if (qualityPanelOpen && !e.target.closest('#quality-panel') && !e.target.closest('[onclick*="toggleQualityPanel"]')) { qualityPanelOpen = false; document.getElementById('quality-panel').classList.remove('open'); }
+  if (metricsPanelOpen && !e.target.closest('#metrics-panel') && !e.target.closest('[onclick*="toggleMetricsPanel"]')) { metricsPanelOpen = false; document.getElementById('metrics-panel').classList.remove('open'); }
+  if (agentsPanelOpen && !e.target.closest('#agents-panel') && !e.target.closest('[onclick*="toggleAgentsPanel"]')) { agentsPanelOpen = false; document.getElementById('agents-panel').classList.remove('open'); }
 });
 
 // ── WebRTC ──
@@ -750,8 +762,29 @@ function connect() {
     setTimeout(connect, 2000);
   };
   ws.onmessage = (e) => {
-    try { handleMessage(JSON.parse(e.data)); } catch(err) {}
+    if (typeof e.data === 'string') {
+      // Text message (control, status, etc.)
+      try { handleMessage(JSON.parse(e.data)); } catch(err) {}
+    } else if (e.data instanceof ArrayBuffer) {
+      // Binary message: [4 bytes agentId length][agentId bytes][JPEG bytes]
+      handleBinaryFrame(e.data);
+    }
   };
+}
+
+function handleBinaryFrame(buffer) {
+  const view = new DataView(buffer);
+  const agentIdLen = view.getUint32(0);
+  const agentIdBytes = new Uint8Array(buffer, 4, agentIdLen);
+  const agentId = new TextDecoder().decode(agentIdBytes);
+  const jpegData = new Uint8Array(buffer, 4 + agentIdLen);
+  // Convert to base64 for image display
+  let binary = '';
+  for (let i = 0; i < jpegData.length; i++) {
+    binary += String.fromCharCode(jpegData[i]);
+  }
+  const b64 = btoa(binary);
+  handleFrame({type:'frame', agentId: agentId, data: b64});
 }
 
 function handleFrame(d) {
@@ -889,9 +922,9 @@ function ensureAgentCell(agentId) {
       '<span class="cell-mode" style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(255,255,255,0.08);color:var(--text3);margin-right:4px" title="Mode">—</span>' +
       '<span class="cell-badge live">Live</span>' +
       '<span class="cell-actions" style="display:flex;gap:3px;margin-left:auto">' +
-        '<button class="btn-promote auth-gated" onclick="event.stopPropagation();promoteAgent(\''+escapeHtml(agentId)+'\')" title="Promote to server" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px;transition:background 0.2s;display:none" onmouseover="this.style.background=\'rgba(255,215,0,0.3)\'" onmouseout="this.style.background=\'none\'">👑</button>' +
-        '<button class="btn-hide auth-gated" onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(agentId)+'\')" title="Hide agent" style="display:none;background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px">👁</button>' +
-        '<button class="btn-remove auth-gated" onclick="event.stopPropagation();removeAgent(\''+escapeHtml(agentId)+'\')" title="Remove agent" style="display:none;background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px">✕</button>' +
+        '<button class="btn-promote auth-gated" onclick="event.stopPropagation();promoteAgent(\''+escapeHtml(agentId)+'\')" title="Promote to server" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px;transition:background 0.2s" onmouseover="this.style.background=\'rgba(255,215,0,0.3)\'" onmouseout="this.style.background=\'none\'">👑</button>' +
+        '<button class="btn-hide auth-gated" onclick="event.stopPropagation();toggleHideAgent(\''+escapeHtml(agentId)+'\')" title="Hide agent" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px">👁</button>' +
+        '<button class="btn-remove auth-gated" onclick="event.stopPropagation();removeAgent(\''+escapeHtml(agentId)+'\')" title="Remove agent" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px">✕</button>' +
       '</span>' +
     '</div>' +
     '<div class="cell-body">' +
@@ -1167,10 +1200,12 @@ function refreshAgents() {
        renderAgentSelect([]);
        return;
      }
-     // Mark stale cells as disconnected instead of removing them (avoids grid reflow)
-     const activeSet = new Set(agentIds);
-     for (const id of Object.keys(agentCells)) {
-       if (!activeSet.has(id)) {
+      // Mark stale cells as disconnected instead of removing them (avoids grid reflow)
+      const activeSet = new Set(agentIds);
+      for (const id of Object.keys(agentCells)) {
+        // Skip assist sessions — they manage their own lifecycle
+        if (id.startsWith('assist-')) continue;
+        if (!activeSet.has(id)) {
           // Keep the cell but show disconnected state (last frame dimmed, overlay on top)
           const rec = agentCells[id];
           rec.cell.style.opacity = '0.35';
@@ -1259,6 +1294,17 @@ function refreshAgentStats() {
         }
       }
     }
+  }).catch(()=>{});
+}
+
+function refreshServerLoad() {
+  fetch('/api/server-load').then(r=>r.json()).then(d => {
+    if (d.cpu_percent !== undefined) document.getElementById('sl-cpu').textContent = d.cpu_percent + '%';
+    if (d.mem_percent !== undefined) document.getElementById('sl-mem').textContent = d.mem_percent + '%';
+    if (d.ws_connections !== undefined) document.getElementById('sl-ws').textContent = d.ws_connections;
+    if (d.agent_count !== undefined) document.getElementById('sl-agents').textContent = d.agent_count;
+    if (d.net_recv_rate !== undefined) document.getElementById('sl-net-in').textContent = Math.round(d.net_recv_rate);
+    if (d.net_sent_rate !== undefined) document.getElementById('sl-net-out').textContent = Math.round(d.net_sent_rate);
   }).catch(()=>{});
 }
 
@@ -1595,13 +1641,12 @@ function logoutSettings() {
 function updateCellActions() {
   document.querySelectorAll('.cell-actions').forEach(el => {
     el.style.display = 'flex';
-    // Promote button always visible; hide/remove only when authenticated
     const promoteBtn = el.querySelector('.btn-promote');
     const hideBtn = el.querySelector('.btn-hide');
     const removeBtn = el.querySelector('.btn-remove');
-    if (promoteBtn) promoteBtn.style.display = 'inline-block';
-    if (hideBtn) hideBtn.style.display = authenticated ? 'inline-block' : 'none';
-    if (removeBtn) removeBtn.style.display = authenticated ? 'inline-block' : 'none';
+    if (promoteBtn) { promoteBtn.style.display = ''; promoteBtn.classList.add('visible'); }
+    if (hideBtn) { hideBtn.style.display = ''; if (authenticated) hideBtn.classList.add('visible'); else hideBtn.classList.remove('visible'); }
+    if (removeBtn) { removeBtn.style.display = ''; if (authenticated) removeBtn.classList.add('visible'); else removeBtn.classList.remove('visible'); }
   });
 }
 
@@ -1903,6 +1948,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
   refreshAgents();
   setInterval(refreshAgents, 5000);
+  setInterval(refreshServerLoad, 5000);
   // Show sidebar buttons after auth
   if (authenticated) {
     document.querySelectorAll('.sidebar-btn').forEach(function(el) {

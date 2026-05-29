@@ -6,6 +6,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -193,6 +195,11 @@ type Config struct {
     UpdateURL           string
     TurnServerURL       string
     TurnServerCredential string
+    CaptureSchedule     string // "HH:MM-HH:MM" or "24/7"
+    CaptureDays         string // "Mon-Fri" or "daily"
+    DisplayIndex        int    // which monitor to capture (-1 = primary)
+    AutoQuality         bool   // auto-adjust JPEG quality based on bandwidth
+    JPEGQuality         int    // manual quality override (30-95)
 }
 
 type SettingsFile struct {
@@ -218,6 +225,11 @@ type SettingsFile struct {
     DeployUser             string           `json:"deploy_user,omitempty"`
     DeployPass             string           `json:"deploy_pass,omitempty"`
     DeployDomain           string           `json:"deploy_domain,omitempty"`
+    CaptureSchedule        string           `json:"capture_schedule,omitempty"`
+    CaptureDays            string           `json:"capture_days,omitempty"`
+    DisplayIndex           int              `json:"display_index,omitempty"`
+    AutoQuality            bool             `json:"auto_quality,omitempty"`
+    JPEGQuality            int              `json:"jpeg_quality,omitempty"`
 }
 
 type CaptureTier int
@@ -635,16 +647,28 @@ func startScreenCapture(ctx context.Context) {
     interval := time.Duration(float64(time.Second) / fps)
     ticker := time.NewTicker(interval)
     defer ticker.Stop()
+    quality := 85
+    if cfg.JPEGQuality > 0 && cfg.JPEGQuality <= 95 {
+        quality = cfg.JPEGQuality
+    }
     for {
         select {
         case <-ticker.C:
-            img, err := captureScreen()
+            // Check schedule
+            if !isCaptureAllowed() {
+                continue
+            }
+            img, err := captureScreenByIndex(cfg.DisplayIndex)
             if err != nil {
                 llog("warn", "screen capture failed: %v", err)
                 continue
             }
+            // Auto-adjust quality based on bandwidth
+            if cfg.AutoQuality {
+                quality = autoAdjustQuality(quality)
+            }
             var buf bytes.Buffer
-            if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+            if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
                 continue
             }
             wm := WireMessage{Type: MSG_FRAME, Data: buf.Bytes(), AgentID: cfg.AgentID}
@@ -654,6 +678,71 @@ func startScreenCapture(ctx context.Context) {
             return
         }
     }
+}
+
+func isCaptureAllowed() bool {
+	schedule := cfg.CaptureSchedule
+	if schedule == "" || schedule == "24/7" {
+		return true
+	}
+	days := cfg.CaptureDays
+	if days == "" || days == "daily" {
+		// Check time only
+	} else {
+		// Check day of week
+		now := time.Now().Weekday()
+		dayName := now.String()[:3]
+		if !strings.Contains(days, dayName) {
+			return false
+		}
+	}
+	// Parse time range "HH:MM-HH:MM"
+	parts := strings.Split(schedule, "-")
+	if len(parts) != 2 {
+		return true
+	}
+	startParts := strings.Split(parts[0], ":")
+	endParts := strings.Split(parts[1], ":")
+	if len(startParts) != 2 || len(endParts) != 2 {
+		return true
+	}
+	now := time.Now()
+	startH, _ := strconv.Atoi(startParts[0])
+	startM, _ := strconv.Atoi(startParts[1])
+	endH, _ := strconv.Atoi(endParts[0])
+	endM, _ := strconv.Atoi(endParts[1])
+	startMin := startH*60 + startM
+	endMin := endH*60 + endM
+	nowMin := now.Hour()*60 + now.Minute()
+	if startMin < endMin {
+		return nowMin >= startMin && nowMin <= endMin
+	}
+	// Overnight schedule (e.g., 22:00-06:00)
+	return nowMin >= startMin || nowMin <= endMin
+}
+
+func autoAdjustQuality(current int) int {
+	// Get current bandwidth usage
+	if v, ok := agentStats.Load(cfg.AgentID); ok {
+		stats := v.(*AgentStats)
+		stats.mu.Lock()
+		kbps := stats.BytesPerSec / 1024
+		stats.mu.Unlock()
+		if kbps > 500 {
+			// High bandwidth — reduce quality
+			current -= 5
+			if current < 30 {
+				current = 30
+			}
+		} else if kbps < 100 {
+			// Low bandwidth — increase quality
+			current += 3
+			if current > 95 {
+				current = 95
+			}
+		}
+	}
+	return current
 }
 
 func handleWSMessage(conn *websocket.Conn, msg []byte) {
@@ -1276,6 +1365,7 @@ func runServerComponents() {
 		}(),
 	})
 	go startTransportMonitor(context.Background())
+	go startServerLoadMonitor()
 	go safeRun("leader-renewal", func() {
 		ticker := time.NewTicker(getElectionInterval() / 2)
 		defer ticker.Stop()
@@ -1772,16 +1862,40 @@ func startHTTPServer() {
 		}
 		cfg.IsServerMode = true
 		llog("info", "Promoted to server mode via HTTP")
+		RecordAudit("promote_to_server", cfg.AgentID, "admin", "")
 		if serverCancel != nil { serverCancel() }
 		serverCtx, serverCancel = context.WithCancel(context.Background())
 		go startScreenCapture(serverCtx)
+		globalDiscovery.UpdateSelf("server", true)
+
+		// Notify all connected agents
+		notifyMsg, _ := json.Marshal(map[string]interface{}{
+			"type": "server_changed",
+			"server_url": fmt.Sprintf("http://%s:%d", getLocalIP(), cfg.ConfigPort),
+			"message": "This machine has been promoted to server. All agents should reconnect.",
+		})
+		connAgentIDMu.RLock()
+		wsClients.Range(func(key, value interface{}) bool {
+			conn := key.(*websocket.Conn)
+			if _, isAgent := connAgentID[conn]; isAgent {
+				conn.WriteMessage(websocket.TextMessage, notifyMsg)
+			}
+			return true
+		})
+		connAgentIDMu.RUnlock()
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "mode": "server"})
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "mode": "server", "msg": "Promoted to server. All agents notified."})
 	})
 
 	http.HandleFunc("/api/transport-status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(getTransportStatus())
+	})
+
+	http.HandleFunc("/api/server-load", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(globalServerLoad.Snapshot())
 	})
 
 	http.HandleFunc("/api/agent-stats", func(w http.ResponseWriter, r *http.Request) {
@@ -2707,6 +2821,34 @@ func captureScreen() (image.Image, error) {
 	return img, nil
 }
 
+func captureScreenByIndex(index int) (image.Image, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in captureScreenByIndex recovered: %v", r)
+		}
+	}()
+	if index < 0 {
+		return captureScreen()
+	}
+	bounds := screenshot.GetDisplayBounds(index)
+	if bounds.Empty() {
+		return captureScreen()
+	}
+	img, err := screenshot.CaptureRect(bounds)
+	if err != nil {
+		return captureScreen()
+	}
+	return img, nil
+}
+
+func getDisplayCount() int {
+	count := screenshot.NumActiveDisplays()
+	if count <= 0 {
+		count = 1
+	}
+	return count
+}
+
 func startCloudflareTunnel(cfg *Config) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2876,7 +3018,7 @@ func startQuickTunnel(cfg *Config) {
 
 var defaultGitHubRepo string
 var defaultGitHubToken string
-var binaryVersion = "9.2.0"
+var binaryVersion = "10.0.0"
 
 func main() {
     hideConsole()
@@ -3388,20 +3530,30 @@ func selfUpdate(downloadURL string) {
 
 	// Step 5: Spawn batch/shell that replaces binary + restarts
 	if runtime.GOOS == "windows" {
+		// Determine the final target name (always PunMonitor.exe)
+		finalExe := filepath.Join(filepath.Dir(exe), "PunMonitor.exe")
 		script := filepath.Join(os.TempDir(), "pun_clean_install.bat")
 		batContent := "@echo off\r\n" +
-			"echo [PunMonitor] Waiting for old process to exit...\r\n" +
-			"timeout /t 3 /nobreak >nul\r\n" +
-			"echo [PunMonitor] Replacing binary...\r\n" +
-			"copy /Y \"" + newExe + "\" \"" + exe + "\" >nul 2>&1\r\n" +
-			"del \"" + newExe + "\" >nul 2>&1\r\n" +
-			"echo [PunMonitor] Cleaning temp files...\r\n" +
+			"echo [PunMonitor] Step 1: Killing ALL PunMonitor processes...\r\n" +
+			"taskkill /F /IM PunMonitor.exe /T >nul 2>&1\r\n" +
+			"taskkill /F /IM PunMonitor_windows.exe /T >nul 2>&1\r\n" +
+			"taskkill /F /IM PunMonitor_check.exe /T >nul 2>&1\r\n" +
+			"echo [PunMonitor] Step 2: Waiting for processes to exit...\r\n" +
+			"timeout /t 5 /nobreak >nul\r\n" +
+			"echo [PunMonitor] Step 3: Removing old binaries...\r\n" +
+			"del /F /Q \"" + finalExe + "\" >nul 2>&1\r\n" +
+			"del /F /Q \"" + exe + "\" >nul 2>&1\r\n" +
+			"timeout /t 1 /nobreak >nul\r\n" +
+			"echo [PunMonitor] Step 4: Installing new binary as PunMonitor.exe...\r\n" +
+			"copy /Y \"" + newExe + "\" \"" + finalExe + "\" >nul 2>&1\r\n" +
+			"del /F /Q \"" + newExe + "\" >nul 2>&1\r\n" +
+			"echo [PunMonitor] Step 5: Cleaning temp files...\r\n" +
 			"del /q \"%TEMP%\\PunMonitor*.exe\" >nul 2>&1\r\n" +
 			"del /q \"%TEMP%\\pun_*.bat\" >nul 2>&1\r\n" +
-			"echo [PunMonitor] Reinstalling autostart...\r\n" +
-			"\"" + exe + "\" --install >nul 2>&1\r\n" +
-			"echo [PunMonitor] Starting fresh instance...\r\n" +
-			"start \"\" \"" + exe + "\" --watchdog\r\n" +
+			"echo [PunMonitor] Step 6: Reinstalling autostart...\r\n" +
+			"\"" + finalExe + "\" --install >nul 2>&1\r\n" +
+			"echo [PunMonitor] Step 7: Starting fresh instance...\r\n" +
+			"start \"\" \"" + finalExe + "\" --watchdog\r\n" +
 			"echo [PunMonitor] Update complete!\r\n"
 		os.WriteFile(script, []byte(batContent), 0644)
 		cmd := exec.Command("cmd", "/c", "start", "/b", "/min", script)
@@ -4043,16 +4195,34 @@ func broadcastFrame(msg []byte, wm *WireMessage) {
 		}
 		return true
 	})
-	// Send to collected dashboard clients
+
+	// Send binary frame to dashboard clients (33% less bandwidth than base64-in-JSON)
 	clientsCount := 0
-	for _, conn := range dashConns {
-		clientsCount++
-		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			wsClients.Delete(conn)
+	if wm != nil && wm.AgentID != "" && len(wm.Data) > 0 {
+		agentIDBytes := []byte(wm.AgentID)
+		binaryFrame := make([]byte, 4+len(agentIDBytes)+len(wm.Data))
+		binary.BigEndian.PutUint32(binaryFrame[:4], uint32(len(agentIDBytes)))
+		copy(binaryFrame[4:4+len(agentIDBytes)], agentIDBytes)
+		copy(binaryFrame[4+len(agentIDBytes):], wm.Data)
+
+		for _, conn := range dashConns {
+			clientsCount++
+			if err := conn.WriteMessage(websocket.BinaryMessage, binaryFrame); err != nil {
+				wsClients.Delete(conn)
+			}
+		}
+	} else {
+		// Non-frame messages: send as text
+		for _, conn := range dashConns {
+			clientsCount++
+			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				wsClients.Delete(conn)
+			}
 		}
 	}
+
 	if frameSize > 0 {
-		llog("debug", "Broadcast frame agent=%s size=%d to %d dashboard clients", wm.AgentID, frameSize, clientsCount)
+		llog("debug", "Broadcast frame agent=%s size=%d to %d clients (binary)", wm.AgentID, frameSize, clientsCount)
 	}
 }
 
@@ -4230,14 +4400,24 @@ func sendAgentFramesWS(conn *websocket.Conn, hostname string) {
 	}
 	ticker := time.NewTicker(time.Duration(float64(time.Second) / fps))
 	defer ticker.Stop()
+	quality := 85
+	if cfg.JPEGQuality > 0 && cfg.JPEGQuality <= 95 {
+		quality = cfg.JPEGQuality
+	}
 	for range ticker.C {
-		img, err := captureScreen()
+		if !isCaptureAllowed() {
+			continue
+		}
+		img, err := captureScreenByIndex(cfg.DisplayIndex)
 		if err != nil {
 			llog("warn", "Frame capture failed for %s: %v", hostname, err)
 			continue
 		}
+		if cfg.AutoQuality {
+			quality = autoAdjustQuality(quality)
+		}
 		var buf bytes.Buffer
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
 			continue
 		}
 		wm := WireMessage{
@@ -4326,6 +4506,13 @@ func agentReadLoop(conn *websocket.Conn, hostname string) {
 		case "migrate":
 			if newURL, ok := msgMap["server_url"].(string); ok && newURL != "" {
 				llog("info", "Agent %s received migration to %s", hostname, newURL)
+				cfg.ServerURL = newURL
+				saveSettings()
+				conn.Close()
+			}
+		case "server_changed":
+			if newURL, ok := msgMap["server_url"].(string); ok && newURL != "" {
+				llog("info", "Agent %s: server changed to %s — silently reconnecting", hostname, newURL)
 				cfg.ServerURL = newURL
 				saveSettings()
 				conn.Close()
