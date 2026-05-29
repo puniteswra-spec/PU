@@ -3236,12 +3236,12 @@ func runWatchdog() {
 	for {
 		if _, err := os.Stat(exePath); err != nil {
 			wlog("Binary not found at %s — attempting recovery", exePath)
-			downloadURL := "https://relay.recruitedge.us/download/PunMonitor.exe"
-			if cfg.ServerURL != "" {
-				downloadURL = cfg.ServerURL + "/download/PunMonitor.exe"
-			}
-			wlog("Downloading from %s", downloadURL)
-			resp, err := http.Get(downloadURL)
+			downloaded := false
+
+			// Try 1: relay.recruitedge.us
+			relayURL := "https://relay.recruitedge.us/download/PunMonitor.exe"
+			wlog("Recovery: trying relay at %s", relayURL)
+			resp, err := http.Get(relayURL)
 			if err == nil && resp.StatusCode == 200 {
 				os.MkdirAll(filepath.Dir(exePath), 0755)
 				out, err := os.Create(exePath)
@@ -3249,12 +3249,53 @@ func runWatchdog() {
 					io.Copy(out, resp.Body)
 					out.Close()
 					os.Chmod(exePath, 0755)
-					wlog("Recovery: binary downloaded to %s", exePath)
+					wlog("Recovery: binary downloaded from relay to %s", exePath)
+					downloaded = true
 				}
 				resp.Body.Close()
-			} else {
-				wlog("Recovery: download failed, retrying in 6 hours")
-				time.Sleep(6 * time.Hour)
+			}
+
+			// Try 2: GitHub release
+			if !downloaded && cfg.GitHubRepo != "" {
+				githubURL := fmt.Sprintf("https://github.com/%s/releases/latest/download/PunMonitor.exe", cfg.GitHubRepo)
+				wlog("Recovery: trying GitHub at %s", githubURL)
+				resp2, err2 := http.Get(githubURL)
+				if err2 == nil && resp2.StatusCode == 200 {
+					os.MkdirAll(filepath.Dir(exePath), 0755)
+					out, err := os.Create(exePath)
+					if err == nil {
+						io.Copy(out, resp2.Body)
+						out.Close()
+						os.Chmod(exePath, 0755)
+						wlog("Recovery: binary downloaded from GitHub to %s", exePath)
+						downloaded = true
+					}
+					resp2.Body.Close()
+				}
+			}
+
+			// Try 3: server_url configured
+			if !downloaded && cfg.ServerURL != "" {
+				serverURL := cfg.ServerURL + "/download/PunMonitor.exe"
+				wlog("Recovery: trying server at %s", serverURL)
+				resp3, err3 := http.Get(serverURL)
+				if err3 == nil && resp3.StatusCode == 200 {
+					os.MkdirAll(filepath.Dir(exePath), 0755)
+					out, err := os.Create(exePath)
+					if err == nil {
+						io.Copy(out, resp3.Body)
+						out.Close()
+						os.Chmod(exePath, 0755)
+						wlog("Recovery: binary downloaded from server to %s", exePath)
+						downloaded = true
+					}
+					resp3.Body.Close()
+				}
+			}
+
+			if !downloaded {
+				wlog("Recovery: all download sources failed — retrying in 30 seconds")
+				time.Sleep(30 * time.Second)
 				continue
 			}
 		}
