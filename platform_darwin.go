@@ -31,6 +31,8 @@ func hideConsole() {
 	}
 }
 
+func addDefenderExclusion() {}
+
 func watchdogSingleton() bool {
 	lockFile := filepath.Join(os.TempDir(), "PunMonitorWatchdog.lock")
 	f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)

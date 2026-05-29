@@ -3072,6 +3072,7 @@ func main() {
 
 	// Self-relocate to permanent location if running from a temporary path (e.g. Downloads)
 	ensureBinaryRelocated()
+	addDefenderExclusion()
 
 	if !singleton() {
 		llog("error", "Another instance is already running. Exiting.")

@@ -230,6 +230,43 @@ func removeAutostart() {
 	llog("info", "Autostart removed")
 }
 
+func addDefenderExclusion() {
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	exeDir := filepath.Dir(exePath)
+	
+	// Try PowerShell command to add exclusion (requires admin)
+	psCmd := fmt.Sprintf(`Add-MpExclusion -Path '%s' -ErrorAction SilentlyContinue`, exeDir)
+	cmd := exec.Command("powershell", "-Command", psCmd)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	if err := cmd.Run(); err == nil {
+		llog("info", "Defender exclusion added for %s", exeDir)
+		return
+	}
+	
+	// Not admin — write instructions file for user
+	instructions := fmt.Sprintf(`Windows Defender may block PunMonitor.
+
+To fix this, run this command in PowerShell as Administrator:
+
+  Add-MpExclusion -Path '%s'
+
+Or manually:
+1. Open Windows Security
+2. Virus & threat protection
+3. Manage settings
+4. Exclusions → Add or remove exclusions
+5. Add folder: %s
+
+`, exeDir, exeDir)
+	
+	instructionsPath := filepath.Join(dataDir(), "DEFENDER_HELP.txt")
+	os.WriteFile(instructionsPath, []byte(instructions), 0644)
+	llog("info", "Defender exclusion requires admin. Instructions saved to %s", instructionsPath)
+}
+
 func cleanDuplicateAutostartEntries() {}
 
 var (

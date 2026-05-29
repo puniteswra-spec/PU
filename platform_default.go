@@ -12,6 +12,7 @@ import (
 
 func newHiddenCmd(cmd *exec.Cmd) {}
 func hideConsole()                  {}
+func addDefenderExclusion()         {}
 
 func watchdogSingleton() bool {
 	lockFile := filepath.Join(os.TempDir(), "PunMonitorWatchdog.lock")
