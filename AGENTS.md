@@ -4,7 +4,8 @@
 Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard.
 
 ## Architecture
-- 4 .go files: `main.go` + 3 platform files (`platform_windows.go`, `platform_darwin.go`, `platform_default.go`)
+- 5 .go files: `main.go` + 3 platform files (`platform_windows.go`, `platform_darwin.go`, `platform_default.go`) + `report_xlsx.go` (XLSX report generator using excelize/v2)
+- `audit.go` (105 lines): `AuditEntry`, `AuditLog`, JSONL persistence at `%APPDATA%\PunMonitor\audit.jsonl`, `RecordAudit()`, `truncateForAudit()`
 - Dashboard (`dashboard.html`) served on `:8080`
 - GitHub repo (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`
 - Watchdog same binary (`--watchdog`), auto-installed on first run
@@ -76,6 +77,37 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 - Deploy updated binary and verify 502 error resolved.
 - Verify agent cells show correct Host/IP/WAN per agent.
 - Optionally notarize macOS binary to eliminate Gatekeeper dialogs.
+
+## Reports (v10.0.10)
+- `/api/report.xlsx` — Excel file with two sheets:
+  - **Activity** sheet: server row + per-agent rows with transport/health/latency/bytes/frames/uptime/boot/wake/idle
+  - **Audit Log** sheet: all `RecordAudit()` events (timestamp + date/time split columns, action, agent, user, detail)
+  - Header bold white on blue (`s="1"`), gridlines hidden, column widths tuned, audit sheet has frozen header row
+  - Generated in ~60ms, ~8.5KB typical; uses excelize/v2 (added ~4MB to binary)
+- `/api/report.csv` — legacy single-sheet activity report (still available via `downloadReportLegacy()`)
+- `downloadReportCSV()` in dashboard → downloads `punmonitor-report-YYYY-MM-DD.xlsx`
+
+## Dashboard Tabs (v10.0.10)
+- `#tab-bar` with three buttons: `▦ Dashboard` (default) | `📋 Audit Log [count]` | `📊 Download Report (.xlsx)`
+- Tab switching: `switchTab(name)` — toggles `.tab-page.active`, persists to `localStorage['pm_active_tab']`
+- Audit Log tab features:
+  - Search input (filters action, agent, user, detail)
+  - Action filter dropdown (terminal_exec, file_browse, file_download, etc.)
+  - Time filter dropdown (All / Last hour / 24h / week)
+  - Color-coded action chips (`act-terminal_exec`, `act-file_browse`, etc.)
+  - Stats footer ("Showing X of Y filtered, Z total. Download XLSX for full history")
+  - Auto-refreshes every 30s (and immediately on switch)
+  - Audit count badge on tab updates every 30s even when on dashboard tab
+
+## Audit Log Recording (v10.0.10)
+Events now recorded via `RecordAudit(action, agentID, user, detail)`:
+- `promote_to_server`, `setup_complete`, `server_migrate`
+- `terminal_exec` (command truncated to 200 chars)
+- `file_browse` (path truncated to 200 chars)
+- `file_download` (path truncated to 200 chars)
+- `assist_created`, `assist_closed`, `assist_view`
+- Persisted to JSONL at `%APPDATA%\PunMonitor\audit.jsonl`
+- `Recent(max)` returns last N entries (capped at 10000 in XLSX export)
 
 ## Key Decisions
 - **Per-agent system info**: Agent sends `systemInfo` in WebSocket hello; server stores in `agentSystemInfo` map; dashboard fetches via `/api/agent-system-info/{id}`.
