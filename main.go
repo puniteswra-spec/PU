@@ -3380,9 +3380,9 @@ func runWatchdog() {
 		// Check if a main process is already running (via the global singleton mutex).
 		// If so, do not spawn another — just wait for the existing one to exit.
 		if monitorAlreadyRunning() {
-			wlog("Monitor already running, not starting another — waiting 15s")
+			wlog("Monitor already running, not starting another — waiting 5m")
 			consecutiveRestarts++
-			time.Sleep(15 * time.Second)
+			time.Sleep(5 * time.Minute)
 			continue
 		}
 

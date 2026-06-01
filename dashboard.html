@@ -158,8 +158,12 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 .cell-time{font-size:8px;color:var(--text3)}
 .view-toggle-btn{background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600}
 .view-toggle-btn.active{background:rgba(255,255,255,.35)}
+#main.single-mode #dashboard-page{display:none}
+#main.single-mode #audit-page{display:none}
 #main.single-mode #cctv-grid{display:none}
 #main.single-mode #screen-container{display:flex}
+#main.grid-mode #dashboard-page{display:block}
+#main.grid-mode #audit-page{display:none}
 #main.grid-mode #cctv-grid{display:grid}
 #main.grid-mode #screen-container{display:none}
 
@@ -246,8 +250,10 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 .tab-btn{transition:all .15s}
 .tab-btn:hover{background:rgba(255,255,255,0.05)!important}
 .tab-btn.active{color:var(--primary)!important;border-bottom-color:var(--primary)!important}
-.tab-page{display:none}
+.tab-page{display:none;padding-top:40px}
 .tab-page.active{display:block}
+.tab-page.auth-gated.visible.active{display:block!important}
+.tab-btn.auth-gated.visible{display:inline-flex!important}
 
 /* ── Audit page ── */
 #audit-table-body > div{display:grid;grid-template-columns:160px 200px 200px 100px 1fr;gap:0;padding:8px 14px;font-size:12px;border-bottom:1px solid var(--border);align-items:center;transition:background .1s}
@@ -325,11 +331,11 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 </div>
 
 <!-- Tab Bar -->
-<div id="tab-bar" style="display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 12px;gap:0;position:sticky;top:44px;z-index:50">
+<div id="tab-bar" style="display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 12px 0 50px;gap:0;position:fixed;top:44px;left:0;right:0;z-index:150;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
   <button id="tab-dashboard" class="tab-btn active" onclick="switchTab('dashboard')" style="background:none;border:none;color:var(--primary);padding:10px 18px;font-size:12px;font-weight:600;cursor:pointer;border-bottom:2px solid var(--primary)">▦ Dashboard</button>
-  <button id="tab-audit" class="tab-btn" onclick="switchTab('audit')" style="background:none;border:none;color:var(--text2);padding:10px 18px;font-size:12px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent">📋 Audit Log <span id="audit-count" style="background:rgba(45,140,240,.2);color:var(--primary);padding:1px 6px;border-radius:8px;font-size:10px;margin-left:4px">0</span></button>
+  <button id="tab-audit" class="tab-btn auth-gated" onclick="switchTab('audit')" style="background:none;border:none;color:var(--text2);padding:10px 18px;font-size:12px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent">📋 Audit Log <span id="audit-count" style="background:rgba(45,140,240,.2);color:var(--primary);padding:1px 6px;border-radius:8px;font-size:10px;margin-left:4px">0</span></button>
   <div style="flex:1"></div>
-  <button id="tab-report" class="tab-btn" onclick="downloadReportCSV()" title="Download XLSX report with Activity + Audit Log sheets" style="background:none;border:none;color:var(--text2);padding:10px 14px;font-size:11px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent">📊 Download Report (.xlsx)</button>
+  <button id="tab-report" class="tab-btn auth-gated" onclick="downloadReportCSV()" title="Download XLSX report with Activity + Audit Log sheets" style="background:none;border:none;color:var(--text2);padding:10px 14px;font-size:11px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent">📊 Download Report (.xlsx)</button>
 </div>
 
 <!-- Quality Panel -->
@@ -420,7 +426,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
         </div>
       </div>
     </div>
-    <div id="audit-page" class="tab-page" style="display:none;padding:18px;background:var(--bg1);min-height:calc(100vh - 100px)">
+    <div id="audit-page" class="tab-page auth-gated" style="display:none;padding:18px;background:var(--bg1);min-height:calc(100vh - 84px)">
       <div style="max-width:1400px;margin:0 auto">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
           <div style="font-size:16px;font-weight:600;color:var(--text1)">📋 Audit Log</div>
@@ -863,10 +869,11 @@ function handleBinaryFrame(buffer) {
   const agentIdBytes = new Uint8Array(buffer, 4, agentIdLen);
   const agentId = new TextDecoder().decode(agentIdBytes);
   const jpegData = new Uint8Array(buffer, 4 + agentIdLen);
-  // Convert to base64 for image display
+  // Convert to base64 for image display - chunked to avoid main-thread blocking
+  const CHUNK = 0x8000;
   let binary = '';
-  for (let i = 0; i < jpegData.length; i++) {
-    binary += String.fromCharCode(jpegData[i]);
+  for (let i = 0; i < jpegData.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, jpegData.subarray(i, i + CHUNK));
   }
   const b64 = btoa(binary);
   handleFrame({type:'frame', agentId: agentId, data: b64});
@@ -1089,7 +1096,15 @@ function syncAgentListFromKnown() {
 function focusAgent(id) {
   setControlledAgent(id);
   setViewMode('single');
-  if (agentCells[id] && agentCells[id].lastB64) renderToMainCanvas(id, agentCells[id].lastB64);
+  if (agentCells[id] && agentCells[id].lastB64) {
+    renderToMainCanvas(id, agentCells[id].lastB64);
+  } else {
+    const placeholder = document.getElementById('screen-placeholder');
+    if (placeholder) {
+      placeholder.style.display = 'flex';
+      placeholder.querySelector('div:nth-child(2)').textContent = 'Waiting for first frame from ' + id + '...';
+    }
+  }
   agentsPanelOpen = false;
   document.getElementById('agents-panel').classList.remove('open');
 }
@@ -1196,18 +1211,25 @@ let _mainRenderVersion = 0;
 function doRenderToMainCanvas(agentId, b64data) {
   const canvas = document.getElementById('screen-canvas');
   const placeholder = document.getElementById('screen-placeholder');
+  const container = document.getElementById('screen-container');
+  if (!container || container.clientWidth === 0 || container.clientHeight === 0) {
+    return;
+  }
   const version = ++_mainRenderVersion;
   const img = new Image();
   img.onload = () => {
     if (_mainRenderVersion !== version) return;
     placeholder.style.display = 'none';
     canvas.style.display = 'block';
-    const container = document.getElementById('screen-container');
     const dims = drawToCanvas(canvas, img, container.clientWidth - 28, container.clientHeight - 60);
     if (agentCells[agentId]) {
       agentCells[agentId].imgW = dims.w;
       agentCells[agentId].imgH = dims.h;
     }
+  };
+  img.onerror = () => {
+    if (_mainRenderVersion !== version) return;
+    placeholder.querySelector('div:nth-child(2)').textContent = 'Failed to decode frame';
   };
   img.src = 'data:image/jpeg;base64,' + b64data;
 }
@@ -2069,7 +2091,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // Restore active tab
   var savedTab = localStorage.getItem('pm_active_tab');
-  if (savedTab === 'audit') {
+  if (savedTab === 'audit' && authenticated) {
     switchTab('audit');
   }
   // Auto-refresh audit count badge every 30s
@@ -2339,9 +2361,15 @@ function closeAuditLog() {
   switchTab('dashboard');
 }
 function switchTab(name) {
-  document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
+  if (name === 'audit' && !authenticated) {
+    alert('Admin login required to view Audit Log');
+    return;
+  }
+  document.querySelectorAll('.tab-page').forEach(p => {
+    p.classList.remove('active');
+    p.style.display = 'none';
+  });
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-page').forEach(p => p.style.display = 'none');
   if (name === 'audit') {
     document.getElementById('audit-page').classList.add('active');
     document.getElementById('audit-page').style.display = 'block';
