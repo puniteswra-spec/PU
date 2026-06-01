@@ -206,6 +206,25 @@ var winTypeText = func(text string) {}
 
 const autostartKeyName = "PunMonitor"
 
+// isWindowsAdmin returns true if the current process is elevated (admin).
+// schtasks /RL HIGHEST requires admin; calling it without admin flashes a
+// console window AND fails with "Access is denied", so we skip it entirely
+// for non-admin users. The HKCU Run registry entry works without admin.
+func isWindowsAdmin() bool {
+	token, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return false
+	}
+	defer token.Close()
+	var elevationType uint32
+	var outLen uint32
+	err = windows.GetTokenInformation(token, windows.TokenElevationType, (*byte)(unsafe.Pointer(&elevationType)), uint32(unsafe.Sizeof(elevationType)), &outLen)
+	if err != nil {
+		return false
+	}
+	return elevationType == 2 // TokenElevationTypeFull
+}
+
 func setupAutostart() {
 	watchdogExe, err := os.Executable()
 	if err != nil {
@@ -226,8 +245,14 @@ func setupAutostart() {
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(path))),
 		uintptr(len(path)*2),
 	)
-	// Create scheduled task: runs at logon with hidden window, highest privileges.
-	// Invoke the exe directly (no cmd /c wrapper) to avoid any console flash.
+	// Skip schtasks when not admin: it requires /RL HIGHEST which fails with
+	// "Access is denied" AND flashes a cmd window. The HKCU Run registry
+	// entry already provides autostart for non-admin users.
+	admin := isWindowsAdmin()
+	if !admin {
+		llog("info", "Autostart installed: %s (registry only — schtasks skipped: not admin)", path)
+		return
+	}
 	schtasksExe, _ := exec.LookPath("schtasks")
 	if schtasksExe != "" {
 		schCmd := exec.Command(schtasksExe,

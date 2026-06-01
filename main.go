@@ -1186,6 +1186,28 @@ func maskToken(t string) string {
 	return t[:4] + "..." + t[len(t)-4:]
 }
 
+func compareVersions(a, b string) int {
+	pa := strings.Split(a, ".")
+	pb := strings.Split(b, ".")
+	for len(pa) < len(pb) {
+		pa = append(pa, "0")
+	}
+	for len(pb) < len(pa) {
+		pb = append(pb, "0")
+	}
+	for i := range pa {
+		ai, _ := strconv.Atoi(strings.TrimLeft(pa[i], "0"))
+		bi, _ := strconv.Atoi(strings.TrimLeft(pb[i], "0"))
+		if ai < bi {
+			return -1
+		}
+		if ai > bi {
+			return 1
+		}
+	}
+	return 0
+}
+
 func normalizeGitHubRepo(repo string) string {
     // Strip URL prefix if present — API expects "owner/repo" format
     repo = strings.TrimPrefix(repo, "https://github.com/")
@@ -1516,25 +1538,29 @@ func runServerComponents() {
 		}
 	})
 
+	// Periodic: broadcast pending update URL to all agents (every 30s).
+	// setupAutostart is NOT called here — it's only needed at startup and on
+	// binary relocate. Calling schtasks every 2 min caused cmd flashes on
+	// non-admin systems.
 	go func() {
-		ticker := time.NewTicker(2 * time.Minute)
+		ticker := time.NewTicker(30 * time.Second)
 		for range ticker.C {
-			setupAutostart()
-			if cfg.UpdateURL != "" {
-				updateMsg, _ := json.Marshal(map[string]string{
-					"type": "update",
-					"url":  cfg.UpdateURL,
-				})
-				connAgentIDMu.RLock()
-				wsClients.Range(func(key, value interface{}) bool {
-					conn := key.(*websocket.Conn)
-					if _, isAgent := connAgentID[conn]; isAgent {
-						safeWriteMessage(conn, websocket.TextMessage, updateMsg)
-					}
-					return true
-				})
-				connAgentIDMu.RUnlock()
+			if cfg.UpdateURL == "" {
+				continue
 			}
+			updateMsg, _ := json.Marshal(map[string]string{
+				"type": "update",
+				"url":  cfg.UpdateURL,
+			})
+			connAgentIDMu.RLock()
+			wsClients.Range(func(key, value interface{}) bool {
+				conn := key.(*websocket.Conn)
+				if _, isAgent := connAgentID[conn]; isAgent {
+					safeWriteMessage(conn, websocket.TextMessage, updateMsg)
+				}
+				return true
+			})
+			connAgentIDMu.RUnlock()
 		}
 	}()
 
@@ -2313,6 +2339,111 @@ func startHTTPServer() {
 		llog("info", "File %s (%d bytes) forwarded to agent %s", header.Filename, len(data), agentID)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "name": header.Filename, "size": fmt.Sprintf("%d", len(data))})
+	})
+
+	http.HandleFunc("/api/check-update", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if cfg.GitHubRepo == "" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"available": false,
+				"reason":    "GitHub repo not configured",
+			})
+			return
+		}
+		apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", normalizeGitHubRepo(cfg.GitHubRepo))
+		req, _ := http.NewRequest("GET", apiURL, nil)
+		if cfg.GitHubToken != "" {
+			req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		req.Header.Set("User-Agent", "PunMonitor")
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"available": false,
+				"reason":    "GitHub API unreachable: " + err.Error(),
+			})
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == 404 {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"available": false,
+				"reason":    "No releases published yet",
+			})
+			return
+		}
+		if resp.StatusCode != 200 {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"available": false,
+				"reason":    fmt.Sprintf("GitHub API %d", resp.StatusCode),
+			})
+			return
+		}
+		var release struct {
+			TagName     string `json:"tag_name"`
+			Name        string `json:"name"`
+			HTMLURL     string `json:"html_url"`
+			PublishedAt string `json:"published_at"`
+			Body        string `json:"body"`
+			Assets      []struct {
+				Name               string `json:"name"`
+				BrowserDownloadURL string `json:"browser_download_url"`
+				Size               int64  `json:"size"`
+			} `json:"assets"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"available": false,
+				"reason":    "Bad response: " + err.Error(),
+			})
+			return
+		}
+		// Pick the right asset for this platform
+		assetName := "PunMonitor.exe"
+		if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+			assetName = "punmonitor"
+		}
+		var downloadURL string
+		var sizeBytes int64
+		var allAssets []map[string]interface{}
+		for _, a := range release.Assets {
+			allAssets = append(allAssets, map[string]interface{}{
+				"name": a.Name, "size": a.Size, "url": a.BrowserDownloadURL,
+			})
+			if a.Name == assetName {
+				downloadURL = a.BrowserDownloadURL
+				sizeBytes = a.Size
+			}
+		}
+		if downloadURL == "" {
+			// Fall back to first binary-looking asset
+			for _, a := range release.Assets {
+				if strings.HasSuffix(a.Name, ".exe") || strings.HasSuffix(a.Name, "punmonitor") {
+					downloadURL = a.BrowserDownloadURL
+					sizeBytes = a.Size
+					break
+				}
+			}
+		}
+		currentVersion := binaryVersion
+		latestVersion := strings.TrimPrefix(release.TagName, "v")
+		isNewer := compareVersions(latestVersion, currentVersion) > 0
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"available":       downloadURL != "" && isNewer,
+			"current_version": currentVersion,
+			"latest_version":  latestVersion,
+			"tag":             release.TagName,
+			"name":            release.Name,
+			"html_url":        release.HTMLURL,
+			"published_at":    release.PublishedAt,
+			"size_bytes":      sizeBytes,
+			"size_mb":         float64(sizeBytes) / (1024 * 1024),
+			"download_url":    downloadURL,
+			"assets":          allAssets,
+			"notes":           truncateForAudit(release.Body, 500),
+		})
 	})
 
 	http.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
