@@ -567,6 +567,8 @@ func saveSettings() error {
         DeployUser:             deployCreds.Username,
         DeployPass:             deployCreds.Password,
         DeployDomain:           deployCreds.Domain,
+        CaptureSchedule:        cfg.CaptureSchedule,
+        CaptureDays:            cfg.CaptureDays,
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil { return err }
@@ -605,6 +607,8 @@ func loadSettings() {
 		SetDeployCredentials(s.DeployUser, s.DeployPass, s.DeployDomain)
 		llog("info", "Loaded deploy credentials for user %s", s.DeployUser)
 	}
+	cfg.CaptureSchedule = s.CaptureSchedule
+	cfg.CaptureDays = s.CaptureDays
 	llog("info", "Loaded saved settings from %s", settingsFilePath())
 }
 

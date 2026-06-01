@@ -2244,14 +2244,20 @@ function closeAuditLog() { document.getElementById('audit-panel').style.display 
 function refreshAuditLog() {
   fetch('/api/audit').then(r=>r.json()).then(entries => {
     const el = document.getElementById('audit-list');
-    if (!entries || !entries.length) { el.innerHTML = '<div style="padding:8px;color:var(--text3)">No audit entries</div>'; return; }
+    if (!entries || !entries.length) { el.innerHTML = '<div style="padding:8px;color:var(--text3);font-size:11px">No audit entries</div>'; return; }
     el.innerHTML = '';
     entries.reverse().forEach(e => {
       const row = document.createElement('div');
-      row.style.cssText = 'padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.05);font-size:11px;display:flex;gap:8px';
-      const ts = new Date(e.ts).toLocaleTimeString();
-      const actionColors = {terminal_exec:'#4caf50', file_browse:'#2196f3', file_download:'#ff9800', server_migrate:'#9c27b0'};
-      row.innerHTML = '<span style="color:var(--text3);min-width:70px">' + ts + '</span><span style="color:' + (actionColors[e.action]||'#888') + ';min-width:100px">' + escapeHtml(e.action) + '</span><span style="min-width:100px;color:var(--text2)">' + escapeHtml(e.agentId||'—') + '</span><span style="flex:1;color:var(--text3)">' + escapeHtml(e.detail||'') + '</span>';
+      row.style.cssText = 'display:grid;grid-template-columns:140px 120px 110px 80px 1fr;gap:0;padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.05);font-size:11px;align-items:center';
+      const d = new Date(e.ts);
+      const ts = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+      const actionColors = {terminal_exec:'#4caf50', file_browse:'#2196f3', file_download:'#ff9800', server_migrate:'#9c27b0', assist_created:'#03a9f4', assist_closed:'#f44336', file_upload:'#8bc34a'};
+      const c = actionColors[e.action] || '#888';
+      row.innerHTML = '<div style="color:var(--text3);font-family:monospace">' + ts + '</div>' +
+                      '<div style="color:' + c + ';font-weight:600">' + escapeHtml(e.action) + '</div>' +
+                      '<div style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(e.agentId||'') + '">' + escapeHtml(e.agentId||'—') + '</div>' +
+                      '<div style="color:var(--text3)">' + escapeHtml(e.user||'—') + '</div>' +
+                      '<div style="color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(e.detail||'') + '">' + escapeHtml(e.detail||'') + '</div>';
       el.appendChild(row);
     });
   }).catch(()=>{});
@@ -2314,13 +2320,20 @@ handleMessage = function(d) {
 </div>
 
 <!-- Audit Log Panel -->
-<div id="audit-panel" style="display:none;position:fixed;top:0;right:0;width:550px;height:100vh;background:var(--bg1);border-left:1px solid rgba(255,255,255,.1);z-index:1000;flex-direction:column">
+<div id="audit-panel" style="display:none;position:fixed;top:0;right:0;width:650px;height:100vh;background:var(--bg1);border-left:1px solid rgba(255,255,255,.1);z-index:1000;flex-direction:column">
   <div style="padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:space-between">
     <span style="font-size:12px;font-weight:600">Audit Log</span>
     <div style="display:flex;gap:6px">
       <button onclick="refreshAuditLog()" style="background:rgba(255,255,255,.1);border:none;color:#fff;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px">🔄 Refresh</button>
       <button onclick="closeAuditLog()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px">✕</button>
     </div>
+  </div>
+  <div style="display:grid;grid-template-columns:140px 120px 110px 80px 1fr;gap:0;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.3);font-size:10px;font-weight:600;color:var(--text2);text-transform:uppercase">
+    <div>Time</div>
+    <div>Action</div>
+    <div>Agent</div>
+    <div>User</div>
+    <div>Detail</div>
   </div>
   <div id="audit-list" style="flex:1;overflow-y:auto"></div>
 </div>
