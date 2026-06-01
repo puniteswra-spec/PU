@@ -296,6 +296,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <small id="header-version"></small>
     <span id="status-dot"></span>
     <span class="badge" id="mode-badge">AGENT</span>
+    <span class="badge" id="election-badge" style="background:rgba(255,255,255,.18);font-size:9px" title="Leader election status">⚙ …</span>
   </div>
   <div id="agent-selector-container" style="flex:1;display:flex;justify-content:center;align-items:center;padding:0 10px"></div>
   <div class="right">
@@ -1417,6 +1418,60 @@ function refreshServerLoad() {
   }).catch(()=>{});
 }
 
+function refreshElectionStatus() {
+  fetch('/api/election-status').then(r=>r.json()).then(d => {
+    const el = document.getElementById('election-badge');
+    if (!el) return;
+    let icon = '⚙';
+    let label = '';
+    let color = 'rgba(255,255,255,.18)';
+    if (d.method === 'github') {
+      if (d.self_is_leader) {
+        icon = '👑';
+        label = 'GITHUB LEADER';
+        color = 'rgba(76,175,80,.5)';
+      } else if (d.last_result === 'active' && d.leader_id) {
+        icon = '🛰';
+        label = 'GITHUB · ' + (d.leader_id.length > 14 ? d.leader_id.slice(0, 12) + '…' : d.leader_id);
+        color = 'rgba(33,150,243,.4)';
+      } else if (d.last_result === 'claimed' || d.last_result === 'renewed') {
+        icon = '✅';
+        label = 'GITHUB ' + d.last_result.toUpperCase();
+        color = 'rgba(76,175,80,.5)';
+      } else if (d.last_error) {
+        icon = '⚠';
+        label = 'GITHUB ERR';
+        color = 'rgba(244,67,54,.5)';
+      } else {
+        icon = '🛰';
+        label = 'GITHUB';
+        color = 'rgba(33,150,243,.4)';
+      }
+    } else if (d.method === 'relay') {
+      icon = '🔁';
+      label = 'RELAY AGENT';
+      color = 'rgba(255,152,0,.4)';
+    } else if (d.method === 'lan') {
+      icon = '📡';
+      label = 'LAN';
+      color = 'rgba(156,204,101,.4)';
+    } else if (!d.configured) {
+      icon = '⚙';
+      label = 'NO GITHUB';
+      color = 'rgba(158,158,158,.4)';
+    } else {
+      icon = '⚙';
+      label = d.last_result ? d.last_result.toUpperCase() : 'ELECTION';
+      color = 'rgba(255,255,255,.18)';
+    }
+    el.textContent = icon + ' ' + label;
+    el.style.background = color;
+    el.title = d.configured
+      ? ('GitHub configured: ' + (d.repo || '(none)') + ' | Method: ' + d.method + ' | Leader: ' + (d.leader_id || '(none)') + ' | Result: ' + (d.last_result || '(none)') + (d.last_error ? ' | Error: ' + d.last_error : ''))
+      : 'GitHub NOT configured — using relay/LAN fallback';
+  }).catch(()=>{});
+}
+
 function updateCellVisibility() {
   const hasFilter = selectedAgents.size > 0;
   for (const [id, rec] of Object.entries(agentCells)) {
@@ -2106,6 +2161,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }).catch(()=>{});
     }
   }, 30000);
+  refreshElectionStatus();
+  setInterval(refreshElectionStatus, 15000);
   if (location.pathname === '/admin') {
     document.getElementById('admin-page').classList.add('active');
     document.getElementById('topbar').style.display = 'none';

@@ -228,13 +228,23 @@ func setupAutostart() {
 	)
 	// Create scheduled task: runs at logon with hidden window, highest privileges.
 	// Invoke the exe directly (no cmd /c wrapper) to avoid any console flash.
-	schtasksCmd := fmt.Sprintf(
-		`schtasks /Create /TN "PunMonitor" /TR "\"%s\" --watchdog" /SC ONLOGON /F /RL HIGHEST`,
-		watchdogExe,
-	)
-	cmd := exec.Command("cmd", "/c", schtasksCmd)
-	newHiddenCmd(cmd)
-	cmd.Run()
+	schtasksExe, _ := exec.LookPath("schtasks")
+	if schtasksExe != "" {
+		schCmd := exec.Command(schtasksExe,
+			"/Create",
+			"/TN", "PunMonitor",
+			"/TR", fmt.Sprintf(`"%s" --watchdog`, watchdogExe),
+			"/SC", "ONLOGON",
+			"/F",
+			"/RL", "HIGHEST",
+		)
+		newHiddenCmd(schCmd)
+		if out, err := schCmd.CombinedOutput(); err != nil {
+			llog("warn", "schtasks create failed: %v (output: %s)", err, string(out))
+		} else {
+			llog("info", "Scheduled task 'PunMonitor' created/updated")
+		}
+	}
 	llog("info", "Autostart installed: %s (+ scheduled task)", path)
 }
 

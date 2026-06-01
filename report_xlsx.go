@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -281,6 +282,22 @@ func handleReportXLSX(w http.ResponseWriter, r *http.Request) {
 		llog("warn", "xlsx: SetPanes audit: %v", err)
 	}
 
+	if _, err := f.NewSheet("Election"); err != nil {
+		llog("warn", "xlsx: NewSheet election: %v", err)
+	}
+	if err := writeElectionSheet(f, "Election"); err != nil {
+		llog("warn", "xlsx: writeElectionSheet: %v", err)
+	}
+	if err := f.SetSheetView("Election", 0, &excelize.ViewOptions{ShowGridLines: boolPtr(false)}); err != nil {
+		llog("warn", "xlsx: SetSheetView election: %v", err)
+	}
+	if err := f.SetColWidth("Election", "A", "A", 30); err != nil {
+		llog("warn", "xlsx: SetColWidth election A: %v", err)
+	}
+	if err := f.SetColWidth("Election", "B", "B", 60); err != nil {
+		llog("warn", "xlsx: SetColWidth election B: %v", err)
+	}
+
 	if err := f.SetSheetView(defaultSheet, 0, &excelize.ViewOptions{ShowGridLines: boolPtr(false)}); err != nil {
 		llog("warn", "xlsx: SetSheetView activity2: %v", err)
 	}
@@ -301,5 +318,151 @@ func handleReportXLSX(w http.ResponseWriter, r *http.Request) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func writeElectionSheet(f *excelize.File, sheetName string) error {
+	globalElectionStatusMu.RLock()
+	s := globalElectionStatus
+	globalElectionStatusMu.RUnlock()
+	s.Configured = cfg.GitHubRepo != "" && cfg.GitHubToken != ""
+	s.Repo = cfg.GitHubRepo
+	s.SelfIsLeader = s.LeaderID != "" && s.LeaderID == cfg.AgentID
+	if !s.LeaderUpdated.IsZero() {
+		s.LeaderStale = time.Since(s.LeaderUpdated) > electionInterval
+	}
+
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true, Color: "FFFFFF", Size: 11},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"1F4E78"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "BFBFBF", Style: 1},
+			{Type: "right", Color: "BFBFBF", Style: 1},
+			{Type: "top", Color: "BFBFBF", Style: 1},
+			{Type: "bottom", Color: "BFBFBF", Style: 1},
+		},
+	})
+	labelStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true, Size: 10, Color: "333333"},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"F2F2F2"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
+	})
+	valueStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Size: 10},
+		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left", WrapText: true},
+	})
+	sectionStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true, Color: "FFFFFF", Size: 10},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"4F81BD"}, Pattern: 1},
+	})
+
+	method := s.Method
+	if method == "" {
+		method = "none"
+	}
+	if !s.Configured {
+		method = "no-github"
+	}
+	repoDisplay := s.Repo
+	if repoDisplay == "" {
+		repoDisplay = "(not configured)"
+	}
+	selfIsLeader := "No"
+	if s.SelfIsLeader {
+		selfIsLeader = "YES — this instance is the primary server"
+	}
+	leaderDisplay := s.LeaderID
+	if leaderDisplay == "" {
+		leaderDisplay = "(no leader recorded)"
+	}
+	updatedDisplay := "(never)"
+	if !s.LeaderUpdated.IsZero() {
+		updatedDisplay = s.LeaderUpdated.Format(time.RFC3339) + " (" + time.Since(s.LeaderUpdated).Truncate(time.Second).String() + " ago)"
+	}
+	lastCheckDisplay := "(never)"
+	if !s.LastCheck.IsZero() {
+		lastCheckDisplay = s.LastCheck.Format(time.RFC3339) + " (" + time.Since(s.LastCheck).Truncate(time.Second).String() + " ago)"
+	}
+	leaderStaleDisplay := "No"
+	if s.LeaderStale {
+		leaderStaleDisplay = "YES — leader hasn't renewed in " + electionInterval.String()
+	}
+	role := "AGENT (connects to leader)"
+	if cfg.IsServerMode {
+		role = "SERVER (primary)"
+	}
+	if s.SelfIsLeader {
+		role = "SERVER+LEADER (this instance is the GitHub primary)"
+	}
+	section := func(row int, title string) error {
+		return f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), title)
+	}
+	_ = section
+	f.SetCellValue(sheetName, "A1", "PunMonitor Leader Election Status")
+	f.SetCellValue(sheetName, "B1", "Generated "+time.Now().Format(time.RFC3339))
+	f.SetCellStyle(sheetName, "A1", "B1", sectionStyle)
+
+	rows := [][2]string{
+		{"ELECTION METHOD", method},
+		{"GitHub configured", boolStr(s.Configured)},
+		{"GitHub repo", repoDisplay},
+		{"Fallback relay", firstNonEmpty(s.FallbackServer, "https://relay.recruitedge.us")},
+		{"", ""},
+		{"THIS INSTANCE", ""},
+		{"AgentID", cfg.AgentID},
+		{"Hostname", getHostname()},
+		{"Local IP", getLocalIP()},
+		{"Mode badge", modeBadge()},
+		{"Role on network", role},
+		{"Self is leader", selfIsLeader},
+		{"", ""},
+		{"CURRENT LEADER", ""},
+		{"Leader AgentID", leaderDisplay},
+		{"Leader last update", updatedDisplay},
+		{"Leader is stale", leaderStaleDisplay},
+		{"Election interval", electionInterval.String()},
+		{"", ""},
+		{"LAST CHECK", ""},
+		{"Checked at", lastCheckDisplay},
+		{"Result", firstNonEmpty(s.LastResult, "(no check yet)")},
+		{"Check count", fmt.Sprintf("%d", s.CheckCount)},
+		{"Last error", firstNonEmpty(s.LastError, "(none)")},
+	}
+	for i, r := range rows {
+		row := 3 + i
+		f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), r[0])
+		f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), r[1])
+		if r[0] != "" && (r[0] == strings.ToUpper(r[0]) || strings.Contains(r[0], "STATUS") || strings.HasSuffix(r[0], "LEADER") || strings.Contains(r[0], "INSTANCE") || strings.Contains(r[0], "CHECK")) {
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("B%d", row), sectionStyle)
+		} else if r[0] == "" {
+			_ = 0
+		} else {
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("A%d", row), labelStyle)
+			f.SetCellStyle(sheetName, fmt.Sprintf("B%d", row), fmt.Sprintf("B%d", row), valueStyle)
+		}
+	}
+	_ = headerStyle
+	return nil
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "Yes"
+	}
+	return "No"
+}
+
+func firstNonEmpty(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a
+}
+
+func modeBadge() string {
+	if cfg.IsServerMode {
+		return "SERVER"
+	}
+	return "AGENT"
+}
 
 var _ = sync.Mutex{}

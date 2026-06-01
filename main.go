@@ -185,6 +185,28 @@ var (
     electionRetries   int
 )
 
+// ElectionStatus is the live snapshot of leader election state — written by
+// startGitHubLeaderElection / tryClaimLeadership, read by /api/election-status
+// and the XLSX report so admins can see who is leader and how the election
+// resolved (GitHub vs LAN vs relay).
+type ElectionStatus struct {
+    Method         string    `json:"method"`          // "github" | "lan" | "relay" | "none"
+    Configured     bool      `json:"configured"`      // GitHubRepo + GitHubToken both set
+    Repo           string    `json:"repo"`            // GitHub repo (masked)
+    LeaderID       string    `json:"leader_id"`       // AgentID of current primary server
+    LeaderUpdated  time.Time `json:"leader_updated"`  // Last update time of primary_server.json
+    LeaderStale    bool      `json:"leader_stale"`    // True if leader hasn't renewed in electionInterval
+    SelfIsLeader   bool      `json:"self_is_leader"`  // True if this instance is the primary
+    LastCheck      time.Time `json:"last_check"`
+    LastResult     string    `json:"last_result"`     // "claimed" | "renewed" | "active" | "stale-takeover" | "error" | "no-github"
+    LastError      string    `json:"last_error"`
+    CheckCount     int       `json:"check_count"`
+    FallbackServer string    `json:"fallback_server"` // Relay URL used when no GitHub
+}
+
+var globalElectionStatus ElectionStatus
+var globalElectionStatusMu sync.RWMutex
+
 func (wm *WireMessage) Marshal() []byte {
 	data, _ := json.Marshal(wm)
 	return data
@@ -1007,8 +1029,10 @@ func startGitHubLeaderElection() {
 			// 2. Try relay.recruitedge.us
 			relayURL := "https://relay.recruitedge.us"
 			llog("info", "Trying relay at %s (attempt %d)", relayURL, attempts+1)
+			setElectionStatus("relay", "checking", "", "", time.Time{})
 			if checkServerHealth(relayURL) {
 				llog("info", "Relay reachable — connecting as agent")
+				setElectionStatus("relay", "connected", "", relayURL, time.Now())
 				cfg.ServerURL = relayURL
 				cfg.IsServerMode = false
 				agentModeMu.Lock()
@@ -1059,6 +1083,7 @@ func startGitHubLeaderElection() {
 	}
 
 	// Election loop with GitHub — ANY machine can become server
+	llog("info", "Starting GitHub leader election (repo=%s, token=%s)", cfg.GitHubRepo, maskToken(cfg.GitHubToken))
 	for {
 		cfg.IsServerMode = false
 		agentModeMu.Lock()
@@ -1154,6 +1179,13 @@ func jitterDuration(minSec, maxSec int) time.Duration {
     return time.Duration(minSec+int(rand.Intn(maxSec-minSec+1))) * time.Second
 }
 
+func maskToken(t string) string {
+	if len(t) <= 8 {
+		return "***"
+	}
+	return t[:4] + "..." + t[len(t)-4:]
+}
+
 func normalizeGitHubRepo(repo string) string {
     // Strip URL prefix if present — API expects "owner/repo" format
     repo = strings.TrimPrefix(repo, "https://github.com/")
@@ -1161,6 +1193,29 @@ func normalizeGitHubRepo(repo string) string {
     repo = strings.TrimPrefix(repo, "github.com/")
     repo = strings.TrimSuffix(repo, ".git")
     return repo
+}
+
+func setElectionStatus(method, result, errStr, leaderID string, leaderUpdated time.Time) {
+    globalElectionStatusMu.Lock()
+    defer globalElectionStatusMu.Unlock()
+    globalElectionStatus.Method = method
+    globalElectionStatus.Configured = cfg.GitHubRepo != "" && cfg.GitHubToken != ""
+    globalElectionStatus.Repo = cfg.GitHubRepo
+    globalElectionStatus.LeaderID = leaderID
+    globalElectionStatus.LeaderUpdated = leaderUpdated
+    globalElectionStatus.SelfIsLeader = leaderID != "" && leaderID == cfg.AgentID
+    if !leaderUpdated.IsZero() {
+        globalElectionStatus.LeaderStale = time.Since(leaderUpdated) > electionInterval
+    } else {
+        globalElectionStatus.LeaderStale = false
+    }
+    globalElectionStatus.LastCheck = time.Now()
+    globalElectionStatus.LastResult = result
+    globalElectionStatus.LastError = errStr
+    globalElectionStatus.CheckCount++
+    if method == "relay" {
+        globalElectionStatus.FallbackServer = "https://relay.recruitedge.us"
+    }
 }
 
 func tryClaimLeadership() (bool, error) {
@@ -1171,6 +1226,7 @@ func tryClaimLeadership() (bool, error) {
     req.Header.Set("Accept", "application/vnd.github.v3+json")
     resp, err := httpFastClient.Do(req)
     if err != nil {
+        setElectionStatus("github", "error", err.Error(), "", time.Time{})
         return false, fmt.Errorf("failed to read primary_server.json: %w", err)
     }
     defer resp.Body.Close()
@@ -1179,10 +1235,17 @@ func tryClaimLeadership() (bool, error) {
 
     if resp.StatusCode == http.StatusNotFound {
         llog("info", "No primary_server.json found, attempting to claim leadership")
-        return writePrimaryServerFile(cfg.AgentID, "")
+        ok, werr := writePrimaryServerFile(cfg.AgentID, "")
+        if werr != nil {
+            setElectionStatus("github", "error", werr.Error(), "", time.Time{})
+        } else {
+            setElectionStatus("github", "claimed", "", cfg.AgentID, time.Now())
+        }
+        return ok, werr
     }
 
     if resp.StatusCode != http.StatusOK {
+        setElectionStatus("github", "error", fmt.Sprintf("GitHub API %d", resp.StatusCode), "", time.Time{})
         return false, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
     }
 
@@ -1191,11 +1254,13 @@ func tryClaimLeadership() (bool, error) {
         SHA     string `json:"sha"`
     }
     if err := json.NewDecoder(resp.Body).Decode(&ghResp); err != nil {
+        setElectionStatus("github", "error", err.Error(), "", time.Time{})
         return false, fmt.Errorf("failed to parse response: %w", err)
     }
 
     body, err := base64.StdEncoding.DecodeString(ghResp.Content)
     if err != nil {
+        setElectionStatus("github", "error", err.Error(), "", time.Time{})
         return false, fmt.Errorf("failed to decode content: %w", err)
     }
 
@@ -1204,21 +1269,36 @@ func tryClaimLeadership() (bool, error) {
         Updated int64  `json:"updated"`
     }
     if err := json.Unmarshal(body, &primary); err != nil {
+        setElectionStatus("github", "error", err.Error(), "", time.Time{})
         return false, fmt.Errorf("failed to parse primary file: %w", err)
     }
 
+    leaderTime := time.UnixMilli(primary.Updated)
     interval := getElectionInterval()
     if primary.Host == cfg.AgentID {
         llog("info", "Already the leader, renewing leadership")
-        return writePrimaryServerFile(cfg.AgentID, "")
+        ok, werr := writePrimaryServerFile(cfg.AgentID, "")
+        if werr != nil {
+            setElectionStatus("github", "error", werr.Error(), primary.Host, leaderTime)
+        } else {
+            setElectionStatus("github", "renewed", "", primary.Host, time.Now())
+        }
+        return ok, werr
     }
 
-    if time.Since(time.UnixMilli(primary.Updated)) > interval {
+    if time.Since(leaderTime) > interval {
         llog("info", "Leader %s is stale, attempting to take over", primary.Host)
-        return writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
+        ok, werr := writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
+        if werr != nil {
+            setElectionStatus("github", "error", werr.Error(), primary.Host, leaderTime)
+        } else {
+            setElectionStatus("github", "stale-takeover", "", cfg.AgentID, time.Now())
+        }
+        return ok, werr
     }
 
-    llog("info", "Active leader: %s (updated %s ago)", primary.Host, time.Since(time.UnixMilli(primary.Updated)))
+    llog("info", "Active leader: %s (updated %s ago)", primary.Host, time.Since(leaderTime))
+    setElectionStatus("github", "active", "", primary.Host, leaderTime)
     return false, nil
 }
 
@@ -1951,6 +2031,20 @@ func startHTTPServer() {
 	http.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"version": binaryVersion})
+	})
+
+	http.HandleFunc("/api/election-status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		globalElectionStatusMu.RLock()
+		status := globalElectionStatus
+		globalElectionStatusMu.RUnlock()
+		status.Configured = cfg.GitHubRepo != "" && cfg.GitHubToken != ""
+		status.Repo = cfg.GitHubRepo
+		status.SelfIsLeader = status.LeaderID != "" && status.LeaderID == cfg.AgentID
+		if !status.LeaderUpdated.IsZero() {
+			status.LeaderStale = time.Since(status.LeaderUpdated) > electionInterval
+		}
+		json.NewEncoder(w).Encode(status)
 	})
 
 	http.HandleFunc("/api/setup-status", func(w http.ResponseWriter, r *http.Request) {
@@ -3378,11 +3472,18 @@ func runWatchdog() {
 		}
 
 		// Check if a main process is already running (via the global singleton mutex).
-		// If so, do not spawn another — just wait for the existing one to exit.
+		// If so, do NOT spawn another — actively monitor it. We poll the singleton
+		// mutex every 5s so we catch a kill within 5 seconds. This handles the case
+		// where the main was started externally (e.g., user double-clicked) rather
+		// than by THIS watchdog instance, so we have no `cmd` to Wait() on.
 		if monitorAlreadyRunning() {
-			wlog("Monitor already running, not starting another — waiting 5m")
+			wlog("Monitor already running (externally started) — watching for exit every 5s")
 			consecutiveRestarts++
-			time.Sleep(5 * time.Minute)
+			for monitorAlreadyRunning() {
+				time.Sleep(5 * time.Second)
+			}
+			wlog("Monitor singleton released — main process exited, will respawn")
+			consecutiveRestarts = 0
 			continue
 		}
 
@@ -4424,7 +4525,7 @@ func runAgentClient() {
 		serverURL = "https://relay.recruitedge.us"
 	}
 	connectAttempts := 0
-	maxAttempts := 36
+	maxAttempts := 6
 
 	// Periodic: check server health, sync settings
 	go func() {
@@ -5097,20 +5198,27 @@ func isLeaderStale() bool {
 }
 
 func monitorWatchdogProcess() {
-	// Every 15s, check if watchdog heartbeat is fresh; if stale for >30s, restart
+	// Check immediately on startup, then every 10s. If watchdog heartbeat is
+	// missing or stale for >30s, restart it. The immediate check matters:
+	// without it, a freshly-started main has 15s of vulnerability before
+	// it starts the watchdog.
 	wdHeartbeatPath := filepath.Join(dataDir(), "watchdog.heartbeat")
-	for {
-		time.Sleep(15 * time.Second)
+	check := func() {
 		info, err := os.Stat(wdHeartbeatPath)
 		if err != nil {
 			llog("warn", "No watchdog heartbeat file, starting watchdog")
 			startWatchdogProcess()
-			continue
+			return
 		}
 		if time.Since(info.ModTime()) > 30*time.Second {
 			llog("warn", "Watchdog heartbeat stale (>30s), restarting")
 			startWatchdogProcess()
 		}
+	}
+	check()
+	for {
+		time.Sleep(10 * time.Second)
+		check()
 	}
 }
 
