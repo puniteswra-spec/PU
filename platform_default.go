@@ -54,6 +54,8 @@ func winTypeText(text string)        {}
 func setupAutostart() {}
 func removeAutostart() {}
 
+func monitorAlreadyRunning() bool { return false }
+
 func cleanDuplicateAutostartEntries() {}
 
 func ensureSingleInstance(replaceExisting bool) bool { return true }

@@ -92,6 +92,21 @@ func singleton() bool {
 	return false
 }
 
+// monitorAlreadyRunning checks if a main PunMonitor process is already running.
+// Used by the watchdog to avoid restart loops.
+func monitorAlreadyRunning() bool {
+	lockFile := filepath.Join(os.TempDir(), "PunMonitor.lock")
+	data, err := os.ReadFile(lockFile)
+	if err != nil {
+		return false
+	}
+	s := strings.TrimSpace(string(data))
+	if pid, err := strconv.Atoi(s); err == nil && pid > 0 {
+		return isProcessRunning(pid)
+	}
+	return false
+}
+
 func isProcessRunning(pid int) bool {
 	// On Unix, send signal 0 to check existence
 	err := syscall.Kill(pid, 0)

@@ -151,6 +151,22 @@ const MSG_FRAME = "frame"
 
 var wsClients sync.Map
 
+// connWriteMu prevents concurrent writes to the same WebSocket connection.
+// gorilla/websocket panics on concurrent WriteMessage to the same conn.
+var connWriteMu sync.Map // map[*websocket.Conn]*sync.Mutex
+
+func getWriteMu(conn *websocket.Conn) *sync.Mutex {
+	v, _ := connWriteMu.LoadOrStore(conn, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
+func safeWriteMessage(conn *websocket.Conn, msgType int, data []byte) error {
+	mu := getWriteMu(conn)
+	mu.Lock()
+	defer mu.Unlock()
+	return conn.WriteMessage(msgType, data)
+}
+
 // agentSystemInfo stores system info for each connected agent
 var agentSystemInfo sync.Map
 
@@ -444,6 +460,11 @@ var connAgentIDMu sync.RWMutex
 var globalLAN *LANLeaderElection
 var lanElectionDone = make(chan struct{})
 
+var (
+	consecutiveRestarts int
+	monitorStartTime    time.Time
+)
+
 // Assist sessions (browser-based remote screen sharing)
 type AssistSession struct {
 	ID        string
@@ -644,6 +665,7 @@ func startScreenCapture(ctx context.Context) {
 			llog("error", "PANIC in screen capture: %v", r)
 		}
 	}()
+	llog("info", "startScreenCapture: starting (fps=%v display=%d quality=%d)", cfg.MaxFPS, cfg.DisplayIndex, cfg.JPEGQuality)
 	fps := cfg.MaxFPS
     if fps <= 0 {
         fps = 1
@@ -662,11 +684,12 @@ func startScreenCapture(ctx context.Context) {
             if !isCaptureAllowed() {
                 continue
             }
-            img, err := captureScreenByIndex(cfg.DisplayIndex)
-            if err != nil {
-                llog("warn", "screen capture failed: %v", err)
-                continue
-            }
+			img, err := captureScreenByIndex(cfg.DisplayIndex)
+			if err != nil {
+				llog("warn", "screen capture failed: %v", err)
+				continue
+			}
+			llog("info", "frame captured: %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
             // Auto-adjust quality based on bandwidth
             if cfg.AutoQuality {
                 quality = autoAdjustQuality(quality)
@@ -796,7 +819,7 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 			"type": "share_link",
 			"url":  shareURL,
 		})
-		conn.WriteMessage(websocket.TextMessage, reply)
+		safeWriteMessage(conn, websocket.TextMessage, reply)
 	case "promote_to_server":
 		if target, ok := msgMap["target"].(string); ok && target != "" {
 			agentConnsMu.RLock()
@@ -804,7 +827,7 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 			agentConnsMu.RUnlock()
 			if exists {
 				forward, _ := json.Marshal(msgMap)
-				agentConn.WriteMessage(websocket.TextMessage, forward)
+				safeWriteMessage(agentConn, websocket.TextMessage, forward)
 				llog("info", "Forwarded promote_to_server to agent %s", target)
 			} else {
 				llog("warn", "Agent %s not found for promote", target)
@@ -816,7 +839,7 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 			serverCtx, serverCancel = context.WithCancel(context.Background())
 			go startScreenCapture(serverCtx)
 			reply, _ := json.Marshal(map[string]string{"type": "promoted", "status": "ok"})
-			conn.WriteMessage(websocket.TextMessage, reply)
+			safeWriteMessage(conn, websocket.TextMessage, reply)
 		}
 	case "webrtc_offer":
 		sdp, _ := msgMap["sdp"].(string)
@@ -875,7 +898,7 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 			"type": "pong",
 			"ts":   int64(ts),
 		})
-		conn.WriteMessage(websocket.TextMessage, pongMsg)
+		safeWriteMessage(conn, websocket.TextMessage, pongMsg)
 	case "pong":
 		ts, _ := msgMap["ts"].(float64)
 		agentConnsMu.RLock()
@@ -1426,7 +1449,7 @@ func runServerComponents() {
 				wsClients.Range(func(key, value interface{}) bool {
 					conn := key.(*websocket.Conn)
 					if _, isAgent := connAgentID[conn]; isAgent {
-						conn.WriteMessage(websocket.TextMessage, updateMsg)
+						safeWriteMessage(conn, websocket.TextMessage, updateMsg)
 					}
 					return true
 				})
@@ -1888,7 +1911,7 @@ func startHTTPServer() {
 		wsClients.Range(func(key, value interface{}) bool {
 			conn := key.(*websocket.Conn)
 			if _, isAgent := connAgentID[conn]; isAgent {
-				conn.WriteMessage(websocket.TextMessage, notifyMsg)
+				safeWriteMessage(conn, websocket.TextMessage, notifyMsg)
 			}
 			return true
 		})
@@ -2151,7 +2174,7 @@ func startHTTPServer() {
 		wsClients.Range(func(key, value interface{}) bool {
 			conn := key.(*websocket.Conn)
 			if _, isAgent := connAgentID[conn]; isAgent {
-				conn.WriteMessage(websocket.TextMessage, migrateMsg)
+				safeWriteMessage(conn, websocket.TextMessage, migrateMsg)
 			}
 			return true
 		})
@@ -2215,7 +2238,7 @@ func startHTTPServer() {
 		wsClients.Range(func(key, value interface{}) bool {
 			conn := key.(*websocket.Conn)
 			if _, isAgent := connAgentID[conn]; isAgent {
-				conn.WriteMessage(websocket.TextMessage, agentUpdateMsg)
+				safeWriteMessage(conn, websocket.TextMessage, agentUpdateMsg)
 			}
 			return true
 		})
@@ -2360,7 +2383,7 @@ func startHTTPServer() {
 			llog("info", "Assist: admin viewing session %s", id)
 			if session.UserConn != nil {
 				joinMsg, _ := json.Marshal(map[string]string{"type": "assist_viewer_joined"})
-				session.UserConn.WriteMessage(websocket.TextMessage, joinMsg)
+				safeWriteMessage(session.UserConn, websocket.TextMessage, joinMsg)
 			}
 			RecordAudit("assist_view", id, "admin", "")
 		} else {
@@ -2375,7 +2398,7 @@ func startHTTPServer() {
 			if err != nil {
 				if isAdmin && session.UserConn != nil {
 					leftMsg, _ := json.Marshal(map[string]string{"type": "assist_viewer_left"})
-					session.UserConn.WriteMessage(websocket.TextMessage, leftMsg)
+					safeWriteMessage(session.UserConn, websocket.TextMessage, leftMsg)
 				}
 				if !isAdmin {
 					assistSessionsMu.Lock()
@@ -2392,26 +2415,26 @@ func startHTTPServer() {
 			case "assist_frame":
 				// Forward frame from user to admin
 				if session.AdminConn != nil {
-					session.AdminConn.WriteMessage(websocket.TextMessage, msg)
+					safeWriteMessage(session.AdminConn, websocket.TextMessage, msg)
 				}
 			case "assist_chat":
 				// Forward chat both ways
 				if isAdmin && session.UserConn != nil {
-					session.UserConn.WriteMessage(websocket.TextMessage, msg)
+					safeWriteMessage(session.UserConn, websocket.TextMessage, msg)
 				} else if !isAdmin && session.AdminConn != nil {
-					session.AdminConn.WriteMessage(websocket.TextMessage, msg)
+					safeWriteMessage(session.AdminConn, websocket.TextMessage, msg)
 				}
 			case "assist_mouse", "assist_key":
 				// Forward control commands from admin to user
 				if session.UserConn != nil {
-					session.UserConn.WriteMessage(websocket.TextMessage, msg)
+					safeWriteMessage(session.UserConn, websocket.TextMessage, msg)
 				}
 			case "assist_file":
 				// Forward file data both ways
 				if isAdmin && session.UserConn != nil {
-					session.UserConn.WriteMessage(websocket.TextMessage, msg)
+					safeWriteMessage(session.UserConn, websocket.TextMessage, msg)
 				} else if !isAdmin && session.AdminConn != nil {
-					session.AdminConn.WriteMessage(websocket.TextMessage, msg)
+					safeWriteMessage(session.AdminConn, websocket.TextMessage, msg)
 				}
 			}
 		}
@@ -2493,7 +2516,7 @@ func startHTTPServer() {
 								"type": "update",
 								"url":  cfg.UpdateURL,
 							})
-							conn.WriteMessage(websocket.TextMessage, updateMsg)
+							safeWriteMessage(conn, websocket.TextMessage, updateMsg)
 						}
 					}
 				}
@@ -2708,7 +2731,7 @@ func syncFromGitHub() {
 				wsClients.Range(func(key, value interface{}) bool {
 					conn := key.(*websocket.Conn)
 					if _, isAgent := connAgentID[conn]; isAgent {
-						conn.WriteMessage(websocket.TextMessage, updateMsg)
+						safeWriteMessage(conn, websocket.TextMessage, updateMsg)
 					}
 					return true
 				})
@@ -2813,8 +2836,7 @@ func runPull(serverURL string) {
 	fmt.Print("Starting PunMonitor... ")
 
 	if runtime.GOOS == "windows" {
-		startCmd := fmt.Sprintf(`start "" "%s" --watchdog`, permPath)
-		cmd := exec.Command("cmd", "/c", startCmd)
+		cmd := exec.Command(permPath, "--watchdog")
 		newHiddenCmd(cmd)
 		cmd.Start()
 	} else {
@@ -2868,14 +2890,21 @@ func captureScreenByIndex(index int) (image.Image, error) {
 			llog("error", "PANIC in captureScreenByIndex recovered: %v", r)
 		}
 	}()
+	llog("info", "captureScreenByIndex: index=%d", index)
 	if index < 0 {
-		return captureScreen()
+		img, err := captureScreen()
+		llog("info", "captureScreen (default) returned: err=%v bounds=%v", err, img.Bounds())
+		return img, err
 	}
 	bounds := screenshot.GetDisplayBounds(index)
+	llog("info", "captureScreenByIndex: GetDisplayBounds(%d) = %v", index, bounds)
 	if bounds.Empty() {
-		return captureScreen()
+		img, err := captureScreen()
+		llog("info", "captureScreen (empty bounds) returned: err=%v bounds=%v", err, img.Bounds())
+		return img, err
 	}
 	img, err := screenshot.CaptureRect(bounds)
+	llog("info", "CaptureRect returned: err=%v bounds=%v", err, img.Bounds())
 	if err != nil {
 		return captureScreen()
 	}
@@ -3342,7 +3371,28 @@ func runWatchdog() {
 			}
 		}
 
+		// Check if a main process is already running (via the global singleton mutex).
+		// If so, do not spawn another — just wait for the existing one to exit.
+		if monitorAlreadyRunning() {
+			wlog("Monitor already running, not starting another — waiting 15s")
+			consecutiveRestarts++
+			time.Sleep(15 * time.Second)
+			continue
+		}
+
 		wlog("Starting monitor from %s", exePath)
+		// Backoff: if we've restarted several times in a short window, wait longer
+		// to avoid a tight loop (e.g. when another monitor instance is already running).
+		consecutiveRestarts++
+		if consecutiveRestarts > 3 {
+			backoff := time.Duration(consecutiveRestarts) * 10 * time.Second
+			if backoff > 2*time.Minute {
+				backoff = 2 * time.Minute
+			}
+			wlog("Watchdog: %d consecutive restarts, backing off %s", consecutiveRestarts, backoff)
+			time.Sleep(backoff)
+		}
+
 		cmd := exec.Command(exePath)
 		cmd.Stdout = nil
 		cmd.Stderr = nil
@@ -3354,13 +3404,23 @@ func runWatchdog() {
 			continue
 		}
 		wlog("Monitor PID: %d", cmd.Process.Pid)
+		consecutiveRestarts = 0
+		monitorStartTime = time.Now()
 
 		if err := cmd.Wait(); err != nil {
 			wlog("Monitor exited with error: %v", err)
 		} else {
 			wlog("Monitor exited cleanly")
 		}
-		time.Sleep(3 * time.Second)
+		// If monitor died very quickly (<5s), it likely failed its own singleton check
+		// (another instance is running). Sleep longer to avoid hammering.
+		if time.Since(monitorStartTime) < 5*time.Second {
+			consecutiveRestarts++
+			wlog("Watchdog: monitor died quickly, likely another instance is running — sleeping 30s")
+			time.Sleep(30 * time.Second)
+		} else {
+			time.Sleep(3 * time.Second)
+		}
 	}
 }
 
@@ -3405,7 +3465,7 @@ func sendAgentListToWS(conn *websocket.Conn) {
 		list = append(list, cfg.AgentID)
 	}
 	data, _ := json.Marshal(list)
-	conn.WriteMessage(websocket.TextMessage, data)
+	safeWriteMessage(conn, websocket.TextMessage, data)
 }
 
 func sendStatusToWS(conn *websocket.Conn) {
@@ -3424,7 +3484,7 @@ func sendStatusToWS(conn *websocket.Conn) {
 		"type":   "status",
 		"mode":   mode,
 	})
-	conn.WriteMessage(websocket.TextMessage, statusMsg)
+	safeWriteMessage(conn, websocket.TextMessage, statusMsg)
 }
 
 func broadcastStatusToWS() {
@@ -3449,7 +3509,7 @@ func broadcastStatusToWS() {
 		_, isAgent := connAgentID[conn]
 		connAgentIDMu.RUnlock()
 		if !isAgent {
-			conn.WriteMessage(websocket.TextMessage, statusMsg)
+			safeWriteMessage(conn, websocket.TextMessage, statusMsg)
 		}
 		return true
 	})
@@ -3664,7 +3724,7 @@ func selfUpdate(downloadURL string) {
 			"powershell -WindowStyle Hidden -Command \"Start-Process -FilePath '" + finalExe + "' -ArgumentList '--watchdog' -WindowStyle Hidden\" >nul 2>&1\r\n" +
 			"echo [PunMonitor] Update complete!\r\n"
 		os.WriteFile(script, []byte(batContent), 0644)
-		cmd := exec.Command("cmd", "/c", "start", "/b", "/min", script)
+		cmd := exec.Command("cmd", "/c", script)
 		newHiddenCmd(cmd)
 		cmd.Start()
 	} else {
@@ -3995,7 +4055,7 @@ func (t *wsTransport) Send(wm *WireMessage) error {
 	if t.conn == nil {
 		return fmt.Errorf("websocket connection is nil")
 	}
-	return t.conn.WriteMessage(websocket.TextMessage, wm.Marshal())
+	return safeWriteMessage(t.conn, websocket.TextMessage, wm.Marshal())
 }
 
 func (t *wsTransport) Recv() (*WireMessage, error) {
@@ -4315,16 +4375,18 @@ func broadcastFrame(msg []byte, wm *WireMessage) {
 
 		for _, conn := range dashConns {
 			clientsCount++
-			if err := conn.WriteMessage(websocket.BinaryMessage, binaryFrame); err != nil {
+			if err := safeWriteMessage(conn, websocket.BinaryMessage, binaryFrame); err != nil {
 				wsClients.Delete(conn)
+				connWriteMu.Delete(conn)
 			}
 		}
 	} else {
 		// Non-frame messages: send as text
 		for _, conn := range dashConns {
 			clientsCount++
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			if err := safeWriteMessage(conn, websocket.TextMessage, msg); err != nil {
 				wsClients.Delete(conn)
+				connWriteMu.Delete(conn)
 			}
 		}
 	}
@@ -4342,7 +4404,7 @@ func forwardToAgent(agentID string, msg []byte) {
 		llog("warn", "agent %s not connected", agentID)
 		return
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+	if err := safeWriteMessage(conn, websocket.TextMessage, msg); err != nil {
 		llog("error", "forward to agent %s failed: %v", agentID, err)
 	}
 }
@@ -4478,7 +4540,7 @@ func tryAgentWebSocket(hostname, serverURL string) bool {
 		},
 		"systemInfo": sysInfo,
 	})
-	if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
+	if err := safeWriteMessage(conn, websocket.TextMessage, hello); err != nil {
 		conn.Close()
 		llog("error", "Agent WS hello failed: %v", err)
 		return false
@@ -4530,7 +4592,7 @@ func sendAgentFramesWS(conn *websocket.Conn, hostname string) {
 		if err != nil {
 			continue
 		}
-		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		if err := safeWriteMessage(conn, websocket.TextMessage, msg); err != nil {
 			llog("error", "Agent WS send frame failed: %v", err)
 			conn.Close()
 			return
@@ -4600,7 +4662,7 @@ func agentReadLoop(conn *websocket.Conn, hostname string) {
 				"type": "pong",
 				"ts":   int64(ts),
 			})
-			conn.WriteMessage(websocket.TextMessage, pongMsg)
+			safeWriteMessage(conn, websocket.TextMessage, pongMsg)
 		case "pong":
 			ts, _ := msgMap["ts"].(float64)
 			agentHandlePong(int64(ts))
@@ -4765,7 +4827,7 @@ func tryAgentWebRTC(hostname, serverURL string) bool {
 			"mode":     "agent",
 		},
 	})
-	if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
+	if err := safeWriteMessage(conn, websocket.TextMessage, hello); err != nil {
 		conn.Close()
 		return false
 	}
@@ -4838,7 +4900,7 @@ func tryCreateAgentDataChannel(wsConn *websocket.Conn, hostname string) (*webrtc
 		"sdp":   offer.SDP,
 		"agent": true,
 	})
-	if err := wsConn.WriteMessage(websocket.TextMessage, offerMsg); err != nil {
+	if err := safeWriteMessage(wsConn, websocket.TextMessage, offerMsg); err != nil {
 		pc.Close()
 		return nil, false
 	}
@@ -4891,7 +4953,7 @@ func tryCreateAgentDataChannel(wsConn *websocket.Conn, hostname string) (*webrtc
 			"type":      "webrtc_ice",
 			"candidate": string(candJSON),
 		})
-		wsConn.WriteMessage(websocket.TextMessage, iceMsg)
+		safeWriteMessage(wsConn, websocket.TextMessage, iceMsg)
 	})
 
 	select {
@@ -4959,7 +5021,7 @@ func sendAgentFramesHybrid(wsConn *websocket.Conn, dc *webrtc.DataChannel, hostn
 			triedWS = true
 		}
 		// Fallback to WS
-		if err := wsConn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		if err := safeWriteMessage(wsConn, websocket.TextMessage, msg); err != nil {
 			llog("error", "Agent %s WS send failed: %v", hostname, err)
 			wsConn.Close()
 			return
@@ -5137,7 +5199,7 @@ func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket
 		"type": "webrtc_answer",
 		"sdp":  answer.SDP,
 	})
-	wsConn.WriteMessage(websocket.TextMessage, reply)
+	safeWriteMessage(wsConn, websocket.TextMessage, reply)
 
 	var dc *webrtc.DataChannel
 	dcReady := make(chan struct{})
@@ -5210,7 +5272,7 @@ func (m *WebRTCManager) HandleOffer(connID string, sdp string, wsConn *websocket
 			"type":      "webrtc_ice",
 			"candidate": string(candJSON),
 		})
-		wsConn.WriteMessage(websocket.TextMessage, msg)
+		safeWriteMessage(wsConn, websocket.TextMessage, msg)
 	})
 
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {

