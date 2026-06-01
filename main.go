@@ -1510,8 +1510,10 @@ func startHTTPServer() {
 				"monthly_limit_mb":          cfg.MonthlyLimitMB,
 				"election_interval":         cfg.ElectionInterval,
 				"update_url":                cfg.UpdateURL,
-				"turn_server_url":          cfg.TurnServerURL,
-				"turn_server_credential":   cfg.TurnServerCredential,
+				"turn_server_url":           cfg.TurnServerURL,
+				"turn_server_credential":    cfg.TurnServerCredential,
+				"capture_schedule":          cfg.CaptureSchedule,
+				"capture_days":              cfg.CaptureDays,
 			})
 			return
 		}
@@ -1550,6 +1552,8 @@ func startHTTPServer() {
 			if s.UpdateURL != "" { cfg.UpdateURL = s.UpdateURL }
 			if s.TurnServerURL != "" { cfg.TurnServerURL = s.TurnServerURL }
 			if s.TurnServerCredential != "" { cfg.TurnServerCredential = s.TurnServerCredential }
+			cfg.CaptureSchedule = s.CaptureSchedule
+			cfg.CaptureDays = s.CaptureDays
 			saveSettings()
 			pushCredsToGitHub()
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -2258,6 +2262,33 @@ func startHTTPServer() {
 		json.NewEncoder(w).Encode(list)
 	})
 
+	http.HandleFunc("/api/assist-close", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			SessionID string `json:"session_id"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &req)
+		if req.SessionID == "" {
+			http.Error(w, "session_id required", http.StatusBadRequest)
+			return
+		}
+		assistSessionsMu.Lock()
+		s, ok := assistSessions[req.SessionID]
+		if ok {
+			if s.UserConn != nil { _ = s.UserConn.Close() }
+			if s.AdminConn != nil { _ = s.AdminConn.Close() }
+			delete(assistSessions, req.SessionID)
+		}
+		assistSessionsMu.Unlock()
+		RecordAudit("assist_closed", "", "admin", req.SessionID)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
 	http.HandleFunc("/assist/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/assist/")
 		if id == "" || id == "new" || id == "list" || id == "ws" {
@@ -2779,9 +2810,13 @@ func runPull(serverURL string) {
 
 	if runtime.GOOS == "windows" {
 		startCmd := fmt.Sprintf(`start "" "%s" --watchdog`, permPath)
-		exec.Command("cmd", "/c", startCmd).Start()
+		cmd := exec.Command("cmd", "/c", startCmd)
+		newHiddenCmd(cmd)
+		cmd.Start()
 	} else {
-		exec.Command(permPath, "--watchdog").Start()
+		cmd := exec.Command(permPath, "--watchdog")
+		newHiddenCmd(cmd)
+		cmd.Start()
 	}
 
 	fmt.Println("OK")
@@ -3621,8 +3656,8 @@ func selfUpdate(downloadURL string) {
 			"del /q \"%TEMP%\\pun_*.bat\" >nul 2>&1\r\n" +
 			"echo [PunMonitor] Step 6: Reinstalling autostart...\r\n" +
 			"\"" + finalExe + "\" --install >nul 2>&1\r\n" +
-			"echo [PunMonitor] Step 7: Starting fresh instance...\r\n" +
-			"start \"\" \"" + finalExe + "\" --watchdog\r\n" +
+			"echo [PunMonitor] Step 7: Starting fresh instance (hidden)...\r\n" +
+			"powershell -WindowStyle Hidden -Command \"Start-Process -FilePath '" + finalExe + "' -ArgumentList '--watchdog' -WindowStyle Hidden\" >nul 2>&1\r\n" +
 			"echo [PunMonitor] Update complete!\r\n"
 		os.WriteFile(script, []byte(batContent), 0644)
 		cmd := exec.Command("cmd", "/c", "start", "/b", "/min", script)
@@ -4316,21 +4351,14 @@ func runAgentClient() {
 	if serverURL == "" {
 		serverURL = "https://relay.recruitedge.us"
 	}
-	lastKnownLocalIP := getLocalIP()
 	connectAttempts := 0
 	maxAttempts := 36
 
-	// Periodic: re-detect IP, check server health, sync settings
+	// Periodic: check server health, sync settings
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			// Re-detect IP (WiFi roaming, VPN, etc.)
-			currentIP := getLocalIP()
-			if currentIP != lastKnownLocalIP && currentIP != "unknown" {
-				llog("info", "Agent IP changed %s → %s — re-registering", lastKnownLocalIP, currentIP)
-				lastKnownLocalIP = currentIP
-			}
 			// Check server health
 			if !checkServerHealth(serverURL) {
 				llog("warn", "Agent: server %s unreachable — will attempt reconnect", serverURL)

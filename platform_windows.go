@@ -208,10 +208,11 @@ func setupAutostart() {
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(path))),
 		uintptr(len(path)*2),
 	)
-	// Create scheduled task: runs at logon, hidden window, highest privileges
+	// Create scheduled task: runs at logon with hidden window, highest privileges.
+	// Invoke the exe directly (no cmd /c wrapper) to avoid any console flash.
 	schtasksCmd := fmt.Sprintf(
-		`schtasks /Create /TN "PunMonitor" /TR "cmd /c start /min \"\" \"%s\"" /SC ONLOGON /F /RL HIGHEST`,
-		path,
+		`schtasks /Create /TN "PunMonitor" /TR "\"%s\" --watchdog" /SC ONLOGON /F /RL HIGHEST`,
+		watchdogExe,
 	)
 	cmd := exec.Command("cmd", "/c", schtasksCmd)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}

@@ -327,6 +327,19 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <input type="range" id="bw-slider" min="500" max="50000" step="500" value="5000">
     <span class="dp-val" id="bw-label">5000</span>
   </div>
+  <div style="border-top:1px solid rgba(255,255,255,.08);margin:8px 0 6px;padding-top:6px;font-size:10px;font-weight:600;color:var(--text2)">Capture Schedule</div>
+  <div class="dp-row">
+    <span class="dp-label">Window</span>
+    <input type="text" id="schedule-input" placeholder="HH:MM-HH:MM or 24/7" style="flex:1;background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.1);color:#fff;padding:4px 6px;border-radius:4px;font-size:10px">
+  </div>
+  <div class="dp-row">
+    <span class="dp-label">Days</span>
+    <input type="text" id="days-input" placeholder="Mon-Fri / daily / Mon,Wed,Fri" style="flex:1;background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.1);color:#fff;padding:4px 6px;border-radius:4px;font-size:10px">
+  </div>
+  <div class="btn-row">
+    <button class="btn" onclick="saveCaptureSchedule()" style="background:var(--primary);color:#fff">💾 Save Schedule</button>
+  </div>
+  <div id="schedule-status" style="font-size:9px;color:var(--text3);margin-top:4px"></div>
 </div>
 
 <!-- Metrics Panel -->
@@ -1191,6 +1204,8 @@ function refreshAgents() {
      const el = document.getElementById('agents-list');
      if (agentIds.length === 0) {
        for (const id of Object.keys(agentCells)) {
+         // Skip assist sessions — they manage their own lifecycle (manual close only)
+         if (id.startsWith('assist-')) continue;
          agentCells[id].cell.remove();
          delete agentCells[id];
        }
@@ -1723,6 +1738,40 @@ function pushUpdateToAgents() {
   }).catch(e => alert('Error: '+e.message));
 }
 
+function saveCaptureSchedule() {
+  const schedule = document.getElementById('schedule-input').value.trim();
+  const days = document.getElementById('days-input').value.trim();
+  const status = document.getElementById('schedule-status');
+  if (schedule && schedule !== '24/7') {
+    const re = /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/;
+    if (!re.test(schedule)) {
+      status.textContent = '⚠ Format must be HH:MM-HH:MM (e.g. 09:00-17:00) or 24/7';
+      status.style.color = '#ef5350';
+      return;
+    }
+  }
+  if (days && days !== 'daily') {
+    const dayRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(-(Mon|Tue|Wed|Thu|Fri|Sat|Sun))?$/;
+    const csvRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(,(Mon|Tue|Wed|Thu|Fri|Sat|Sun))*$/;
+    if (!dayRe.test(days) && !csvRe.test(days)) {
+      status.textContent = '⚠ Days must be: Mon-Fri, Mon,Wed,Fri, daily, or empty';
+      status.style.color = '#ef5350';
+      return;
+    }
+  }
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({capture_schedule: schedule || '24/7', capture_days: days || 'daily'})
+  }).then(r => r.json()).then(() => {
+    status.textContent = '✓ Saved! Active: ' + (schedule || '24/7') + ' / ' + (days || 'daily');
+    status.style.color = '#4caf50';
+  }).catch(e => {
+    status.textContent = '✗ Failed: ' + e;
+    status.style.color = '#ef5350';
+  });
+}
+
 function toggleModal(id) { document.getElementById(id).classList.toggle('active'); }
 
 function saveSettings() {
@@ -1910,6 +1959,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const vb = document.getElementById('version-badge');
     if (vb && d.version) vb.textContent = 'v' + d.version;
   }).catch(() => {});
+
+  // Load capture schedule fields
+  fetch('/api/settings').then(r=>r.json()).then(d => {
+    const schedEl = document.getElementById('schedule-input');
+    const daysEl = document.getElementById('days-input');
+    if (schedEl && d.capture_schedule !== undefined) schedEl.value = d.capture_schedule || '';
+    if (daysEl && d.capture_days !== undefined) daysEl.value = d.capture_days || '';
+  }).catch(()=>{});
   if (sessionStorage.getItem('punmonitor_auth') === '1') {
     settingsLoggedIn = true;
     authenticated = true;
@@ -1972,6 +2029,24 @@ function openAssistSession() {
   }).catch(function(e) { alert('Failed: ' + e); });
 }
 
+function closeAssistSession(sessionId, agentId) {
+  if (assistSessions[sessionId]) {
+    try { assistSessions[sessionId].ws.close(); } catch(e) {}
+    delete assistSessions[sessionId];
+  }
+  if (agentCells[agentId]) {
+    if (agentCells[agentId].cell && agentCells[agentId].cell.parentNode) {
+      agentCells[agentId].cell.remove();
+    }
+    delete agentCells[agentId];
+  }
+  fetch('/api/assist-close', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({session_id: sessionId})
+  }).catch(function(){});
+}
+
 function createAssistCell(sessionId, userUrl) {
   var agentId = 'assist-' + sessionId;
   if (agentCells[agentId]) return;
@@ -1981,6 +2056,20 @@ function createAssistCell(sessionId, userUrl) {
   if (rec.hostnameEl) rec.hostnameEl.textContent = 'Remote Assist';
   if (rec.badgeEl) { rec.badgeEl.textContent = 'Waiting...'; rec.badgeEl.className = 'cell-badge'; rec.badgeEl.style.background = 'rgba(255,193,7,.2)'; rec.badgeEl.style.color = '#ffc107'; }
   if (rec.cellModeEl) { rec.cellModeEl.textContent = 'ASSIST'; rec.cellModeEl.style.background = 'rgba(76,175,80,.2)'; rec.cellModeEl.style.color = '#4caf50'; }
+
+  // Manual close button (no auto-removal)
+  var actionsEl = rec.cell.querySelector('.cell-actions');
+  if (actionsEl) {
+    var closeBtn = document.createElement('button');
+    closeBtn.innerHTML = '✕';
+    closeBtn.title = 'Close assist session';
+    closeBtn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:12px;padding:2px 6px;color:#ef5350';
+    closeBtn.onclick = function(e) {
+      e.stopPropagation();
+      closeAssistSession(sessionId, agentId);
+    };
+    actionsEl.appendChild(closeBtn);
+  }
 
   // Add share link and viewer link below cell
   var infoEl = rec.cell.querySelector('.cell-info');
