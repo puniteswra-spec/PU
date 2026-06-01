@@ -103,3 +103,10 @@ func RecordAudit(action, agentID, user, detail string) {
 		globalAudit.Record(action, agentID, user, detail)
 	}
 }
+
+func truncateForAudit(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
+}

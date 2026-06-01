@@ -1753,6 +1753,9 @@ func startHTTPServer() {
 		writer.Flush()
 	})
 
+	http.HandleFunc("/api/report.xlsx", handleReportXLSX)
+	http.HandleFunc("/api/report.xls", handleReportXLSX)
+
 	http.HandleFunc("/api/agents", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		agentConnsMu.RLock()
@@ -2051,6 +2054,7 @@ func startHTTPServer() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		RecordAudit("terminal_exec", req.AgentID, "dashboard", truncateForAudit(req.Command, 200))
 		handleTerminalCommand(req.ID, req.Command, req.AgentID, "dashboard")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
@@ -2070,6 +2074,7 @@ func startHTTPServer() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		RecordAudit("file_browse", req.AgentID, "dashboard", truncateForAudit(req.Path, 200))
 		handleDirListRequest(req.ID, req.Path, req.AgentID, "dashboard")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
@@ -2089,6 +2094,7 @@ func startHTTPServer() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		RecordAudit("file_download", req.AgentID, "dashboard", truncateForAudit(req.Path, 200))
 		handleFileDownloadRequest(req.ID, req.Path, req.AgentID, "dashboard")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})

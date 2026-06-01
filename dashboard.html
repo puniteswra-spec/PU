@@ -242,6 +242,28 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 #report-panel.auth-gated.visible{display:block!important}
 #admin-toolbar.auth-gated.visible{display:flex!important}
 
+/* ── Tabs ── */
+.tab-btn{transition:all .15s}
+.tab-btn:hover{background:rgba(255,255,255,0.05)!important}
+.tab-btn.active{color:var(--primary)!important;border-bottom-color:var(--primary)!important}
+.tab-page{display:none}
+.tab-page.active{display:block}
+
+/* ── Audit page ── */
+#audit-table-body > div{display:grid;grid-template-columns:160px 200px 200px 100px 1fr;gap:0;padding:8px 14px;font-size:12px;border-bottom:1px solid var(--border);align-items:center;transition:background .1s}
+#audit-table-body > div:hover{background:rgba(255,255,255,0.04)}
+#audit-table-body > div .action-chip{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;letter-spacing:.3px}
+.act-terminal_exec{background:rgba(46,204,113,.15);color:#2ecc71}
+.act-file_browse{background:rgba(52,152,219,.15);color:#3498db}
+.act-file_download{background:rgba(155,89,182,.15);color:#9b59b6}
+.act-promote_to_server{background:rgba(241,196,15,.15);color:#f1c40f}
+.act-setup_complete{background:rgba(26,188,156,.15);color:#1abc9c}
+.act-server_migrate{background:rgba(230,126,34,.15);color:#e67e22}
+.act-assist_created{background:rgba(52,152,219,.15);color:#5dade2}
+.act-assist_closed{background:rgba(231,76,60,.15);color:#e74c3c}
+.act-assist_view{background:rgba(149,165,166,.15);color:#95a5a6}
+.act-default{background:rgba(255,255,255,.08);color:var(--text2)}
+
 /* ── Admin Page ── */
 #admin-page{display:none;height:100vh;overflow-y:auto;background:var(--bg)}
 #admin-page.active{display:block}
@@ -300,6 +322,14 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
   <button class="auth-gated sidebar-btn" onclick="openFileManager(controlledAgentId||Object.keys(agentCells)[0])" title="Files"><span>📁</span><span class="sb-label">Files</span></button>
   <button class="auth-gated sidebar-btn" onclick="openAuditLog()" title="Audit Log"><span>📋</span><span class="sb-label">Audit</span></button>
   <button class="auth-gated sidebar-btn" onclick="openMigration()" title="Migrate"><span>🔄</span><span class="sb-label">Migrate</span></button>
+</div>
+
+<!-- Tab Bar -->
+<div id="tab-bar" style="display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 12px;gap:0;position:sticky;top:44px;z-index:50">
+  <button id="tab-dashboard" class="tab-btn active" onclick="switchTab('dashboard')" style="background:none;border:none;color:var(--primary);padding:10px 18px;font-size:12px;font-weight:600;cursor:pointer;border-bottom:2px solid var(--primary)">▦ Dashboard</button>
+  <button id="tab-audit" class="tab-btn" onclick="switchTab('audit')" style="background:none;border:none;color:var(--text2);padding:10px 18px;font-size:12px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent">📋 Audit Log <span id="audit-count" style="background:rgba(45,140,240,.2);color:var(--primary);padding:1px 6px;border-radius:8px;font-size:10px;margin-left:4px">0</span></button>
+  <div style="flex:1"></div>
+  <button id="tab-report" class="tab-btn" onclick="downloadReportCSV()" title="Download XLSX report with Activity + Audit Log sheets" style="background:none;border:none;color:var(--text2);padding:10px 14px;font-size:11px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent">📊 Download Report (.xlsx)</button>
 </div>
 
 <!-- Quality Panel -->
@@ -381,11 +411,53 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 <!-- App -->
 <div id="app">
   <div id="main">
-    <div id="cctv-grid">
-      <div id="grid-empty" style="grid-column:1/-1;padding:40px;text-align:center;color:var(--text3);font-size:13px">
-        <div class="icon float" style="font-size:36px;opacity:.25;color:var(--primary);margin-bottom:8px">◈</div>
-        <div>Waiting for agents…</div>
-        <div class="sub" style="font-size:10px;margin-top:4px">Agents appear here in grid view when connected</div>
+    <div id="dashboard-page" class="tab-page active" style="display:block">
+      <div id="cctv-grid">
+        <div id="grid-empty" style="grid-column:1/-1;padding:40px;text-align:center;color:var(--text3);font-size:13px">
+          <div class="icon float" style="font-size:36px;opacity:.25;color:var(--primary);margin-bottom:8px">◈</div>
+          <div>Waiting for agents…</div>
+          <div class="sub" style="font-size:10px;margin-top:4px">Agents appear here in grid view when connected</div>
+        </div>
+      </div>
+    </div>
+    <div id="audit-page" class="tab-page" style="display:none;padding:18px;background:var(--bg1);min-height:calc(100vh - 100px)">
+      <div style="max-width:1400px;margin:0 auto">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+          <div style="font-size:16px;font-weight:600;color:var(--text1)">📋 Audit Log</div>
+          <div style="flex:1"></div>
+          <input id="audit-search" type="text" placeholder="🔍 Search action, agent, user, detail…" oninput="renderAuditPage()" style="background:var(--surface);border:1px solid var(--border);color:var(--text1);padding:6px 12px;border-radius:5px;font-size:12px;width:280px">
+          <select id="audit-action-filter" onchange="renderAuditPage()" style="background:var(--surface);border:1px solid var(--border);color:var(--text1);padding:6px 10px;border-radius:5px;font-size:12px">
+            <option value="">All actions</option>
+            <option value="terminal_exec">terminal_exec</option>
+            <option value="file_browse">file_browse</option>
+            <option value="file_download">file_download</option>
+            <option value="promote_to_server">promote_to_server</option>
+            <option value="setup_complete">setup_complete</option>
+            <option value="server_migrate">server_migrate</option>
+            <option value="assist_created">assist_created</option>
+            <option value="assist_closed">assist_closed</option>
+            <option value="assist_view">assist_view</option>
+          </select>
+          <select id="audit-time-filter" onchange="renderAuditPage()" style="background:var(--surface);border:1px solid var(--border);color:var(--text1);padding:6px 10px;border-radius:5px;font-size:12px">
+            <option value="0">All time</option>
+            <option value="1">Last hour</option>
+            <option value="24">Last 24 hours</option>
+            <option value="168">Last week</option>
+          </select>
+          <button onclick="refreshAuditLog();renderAuditPage()" style="background:var(--primary);border:none;color:#fff;padding:6px 12px;border-radius:5px;cursor:pointer;font-size:12px">🔄 Refresh</button>
+          <button onclick="downloadReportCSV()" style="background:rgba(45,140,240,.15);border:1px solid var(--primary);color:var(--primary);padding:6px 12px;border-radius:5px;cursor:pointer;font-size:12px">📊 Export XLSX</button>
+        </div>
+        <div id="audit-table-wrap" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)">
+          <div id="audit-table-header" style="display:grid;grid-template-columns:160px 200px 200px 100px 1fr;gap:0;background:linear-gradient(135deg,var(--primary),var(--primary-light));color:#fff;font-size:11px;font-weight:600;padding:10px 14px">
+            <div>Date / Time</div>
+            <div>Action</div>
+            <div>Agent ID</div>
+            <div>User</div>
+            <div>Detail</div>
+          </div>
+          <div id="audit-table-body" style="max-height:calc(100vh - 220px);overflow-y:auto"></div>
+        </div>
+        <div id="audit-stats" style="margin-top:10px;font-size:11px;color:var(--text3);text-align:right"></div>
       </div>
     </div>
     <div id="screen-container">
@@ -1828,6 +1900,12 @@ function compileMonthly() {
 
 function downloadReportCSV() {
   const a = document.createElement('a');
+  a.href = '/api/report.xlsx';
+  a.download = 'punmonitor-report-' + new Date().toISOString().slice(0,10) + '.xlsx';
+  a.click();
+}
+function downloadReportLegacy() {
+  const a = document.createElement('a');
   a.href = '/api/report.csv';
   a.download = 'activity-report-' + new Date().toISOString().slice(0,10) + '.csv';
   a.click();
@@ -1989,6 +2067,23 @@ document.addEventListener('DOMContentLoaded', () => {
   if (savedAgent) {
     setTimeout(function() { setControlledAgent(savedAgent, false); }, 1000);
   }
+  // Restore active tab
+  var savedTab = localStorage.getItem('pm_active_tab');
+  if (savedTab === 'audit') {
+    switchTab('audit');
+  }
+  // Auto-refresh audit count badge every 30s
+  setInterval(function() {
+    if (document.getElementById('tab-audit').classList.contains('active')) {
+      refreshAuditLog();
+    } else {
+      fetch('/api/audit').then(r=>r.json()).then(entries => {
+        const c = document.getElementById('audit-count');
+        if (c) c.textContent = (entries && entries.length) || 0;
+        allAuditEntries = (entries || []).slice().reverse();
+      }).catch(()=>{});
+    }
+  }, 30000);
   if (location.pathname === '/admin') {
     document.getElementById('admin-page').classList.add('active');
     document.getElementById('topbar').style.display = 'none';
@@ -2236,31 +2331,85 @@ function handleFileDownloadDash(d) {
 }
 
 // ── Audit Log ──
+let allAuditEntries = [];
 function openAuditLog() {
-  document.getElementById('audit-panel').style.display = 'flex';
-  refreshAuditLog();
+  switchTab('audit');
 }
-function closeAuditLog() { document.getElementById('audit-panel').style.display = 'none'; }
+function closeAuditLog() {
+  switchTab('dashboard');
+}
+function switchTab(name) {
+  document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-page').forEach(p => p.style.display = 'none');
+  if (name === 'audit') {
+    document.getElementById('audit-page').classList.add('active');
+    document.getElementById('audit-page').style.display = 'block';
+    document.getElementById('tab-audit').classList.add('active');
+    refreshAuditLog();
+  } else {
+    document.getElementById('dashboard-page').classList.add('active');
+    document.getElementById('dashboard-page').style.display = 'block';
+    document.getElementById('tab-dashboard').classList.add('active');
+  }
+  try { localStorage.setItem('pm_active_tab', name); } catch (e) {}
+}
 function refreshAuditLog() {
   fetch('/api/audit').then(r=>r.json()).then(entries => {
     const el = document.getElementById('audit-list');
-    if (!entries || !entries.length) { el.innerHTML = '<div style="padding:8px;color:var(--text3);font-size:11px">No audit entries</div>'; return; }
-    el.innerHTML = '';
-    entries.reverse().forEach(e => {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:grid;grid-template-columns:140px 120px 110px 80px 1fr;gap:0;padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.05);font-size:11px;align-items:center';
-      const d = new Date(e.ts);
-      const ts = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
-      const actionColors = {terminal_exec:'#4caf50', file_browse:'#2196f3', file_download:'#ff9800', server_migrate:'#9c27b0', assist_created:'#03a9f4', assist_closed:'#f44336', file_upload:'#8bc34a'};
-      const c = actionColors[e.action] || '#888';
-      row.innerHTML = '<div style="color:var(--text3);font-family:monospace">' + ts + '</div>' +
-                      '<div style="color:' + c + ';font-weight:600">' + escapeHtml(e.action) + '</div>' +
-                      '<div style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(e.agentId||'') + '">' + escapeHtml(e.agentId||'—') + '</div>' +
-                      '<div style="color:var(--text3)">' + escapeHtml(e.user||'—') + '</div>' +
-                      '<div style="color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(e.detail||'') + '">' + escapeHtml(e.detail||'') + '</div>';
-      el.appendChild(row);
-    });
+    if (!entries || !entries.length) {
+      if (el) el.innerHTML = '<div style="padding:8px;color:var(--text3);font-size:11px">No audit entries</div>';
+      allAuditEntries = [];
+      renderAuditPage();
+      return;
+    }
+    if (el) el.innerHTML = '';
+    allAuditEntries = entries.slice().reverse();
+    const c = document.getElementById('audit-count');
+    if (c) c.textContent = allAuditEntries.length;
+    renderAuditPage();
   }).catch(()=>{});
+}
+function renderAuditPage() {
+  const body = document.getElementById('audit-table-body');
+  const stats = document.getElementById('audit-stats');
+  if (!body) return;
+  const search = (document.getElementById('audit-search')?.value || '').toLowerCase();
+  const actionFilter = document.getElementById('audit-action-filter')?.value || '';
+  const hours = parseInt(document.getElementById('audit-time-filter')?.value || '0', 10);
+  const cutoff = hours > 0 ? Date.now() - hours * 3600 * 1000 : 0;
+  const filtered = allAuditEntries.filter(e => {
+    if (actionFilter && e.action !== actionFilter) return false;
+    if (cutoff > 0 && e.ts < cutoff) return false;
+    if (search) {
+      const hay = (e.action + ' ' + (e.agentId||'') + ' ' + (e.user||'') + ' ' + (e.detail||'')).toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  });
+  if (filtered.length === 0) {
+    body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text3);font-size:12px">No entries match the current filter</div>';
+  } else {
+    const rows = filtered.slice(0, 1000).map(e => {
+      const d = new Date(e.ts);
+      const ts = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + ' ' +
+                 String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+      const cls = 'act-' + (e.action || 'default');
+      return '<div>' +
+             '<div style="color:var(--text3);font-family:monospace">' + ts + '</div>' +
+             '<div><span class="action-chip ' + cls + '">' + escapeHtml(e.action) + '</span></div>' +
+             '<div style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(e.agentId||'') + '">' + escapeHtml(e.agentId||'—') + '</div>' +
+             '<div style="color:var(--text3)">' + escapeHtml(e.user||'—') + '</div>' +
+             '<div style="color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(e.detail||'') + '">' + escapeHtml(e.detail||'') + '</div>' +
+             '</div>';
+    }).join('');
+    body.innerHTML = rows;
+  }
+  if (stats) {
+    const showing = Math.min(filtered.length, 1000);
+    const total = allAuditEntries.length;
+    stats.textContent = 'Showing ' + showing + ' of ' + filtered.length + ' filtered (' + total + ' total). Download XLSX for full history.';
+  }
 }
 
 // ── Server Migration ──
