@@ -116,6 +116,7 @@ func setupSSHServer() error {
 		// Local port forwarding (`ssh -L host:port`): client opens a
 		// "direct-tcpip" channel for each connection
 		ChannelHandlers: map[string]glssh.ChannelHandler{
+			"session":      glssh.DefaultSessionHandler, // required when ChannelHandlers is non-nil — gliderlabs doesn't auto-add
 			"direct-tcpip": glssh.DirectTCPIPHandler,
 		},
 		// Reverse port forwarding (`ssh -R host:port`): client requests

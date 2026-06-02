@@ -299,6 +299,10 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
       <span style="opacity:.7">🆔</span>
       <span id="my-agent-id" style="font-family:monospace;cursor:pointer" onclick="navigator.clipboard&&navigator.clipboard.writeText(myAgentId||'');this.style.color='#9eff9e';setTimeout(()=>this.style.color='',800)">…</span>
     </span>
+    <span id="ssh-badge-wrap" title="SSH access — click for connection details" style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:rgba(255,255,255,.7);margin-left:8px;cursor:pointer" onclick="openSshModal()">
+      <span style="opacity:.7">🔐</span>
+      <span id="ssh-badge" style="font-family:monospace">ssh:…</span>
+    </span>
   </div>
   <div id="agent-selector-container" style="flex:1;display:flex;justify-content:center;align-items:center;padding:0 10px"></div>
   <div class="right">
@@ -2689,5 +2693,109 @@ function doSetup() {
       document.getElementById('sw-msg').textContent = 'Error: ' + e;
     });
 }
+
+// ── SSH info card ────────────────────────────────────────────────
+let sshInfoCache = null;
+async function refreshSshInfo() {
+  try {
+    const r = await fetch('/api/ssh-info');
+    if (!r.ok) return;
+    sshInfoCache = await r.json();
+    const badge = document.getElementById('ssh-badge');
+    if (badge) {
+      if (sshInfoCache.enabled) {
+        badge.textContent = `ssh -p ${sshInfoCache.port} ${sshInfoCache.user}@${sshInfoCache.host}`;
+        badge.style.color = '#9eff9e';
+      } else {
+        badge.textContent = 'ssh: off';
+        badge.style.color = 'rgba(255,255,255,.5)';
+      }
+    }
+  } catch (e) {}
+}
+
+function openSshModal() {
+  if (!sshInfoCache) { refreshSshInfo().then(showSshModal); return; }
+  showSshModal();
+}
+
+function showSshModal() {
+  if (!sshInfoCache) return;
+  const d = sshInfoCache;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+  const features = (d.features || []).map(function(f){ return '<span class="ssh-feat">' + f + '</span>'; }).join('');
+  overlay.innerHTML = `
+    <div class="auth-gated" style="background:#1a1d23;color:#e0e0e0;padding:24px;border-radius:12px;width:560px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.6);font-family:system-ui">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h2 style="margin:0;font-size:18px">🔐 SSH Access</h2>
+        <button onclick="this.closest('div[style*=\"position:fixed\"]').remove()" style="background:transparent;border:none;color:#fff;font-size:22px;cursor:pointer">×</button>
+      </div>
+      <div style="background:rgba(255,255,255,.05);padding:12px;border-radius:8px;margin-bottom:12px">
+        <div style="font-size:11px;opacity:.6;margin-bottom:4px">Status</div>
+        <div style="font-size:13px">${d.enabled ? '✅ <b style="color:#9eff9e">Enabled</b>' : '❌ <b style="color:#ff9e9e">Disabled</b>'}</div>
+        <div style="font-size:11px;opacity:.6;margin:8px 0 2px">Features</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">${features}</div>
+      </div>
+      <div style="background:rgba(255,255,255,.05);padding:12px;border-radius:8px;margin-bottom:12px">
+        <div style="font-size:11px;opacity:.6;margin-bottom:4px">Host Fingerprint</div>
+        <div style="font-family:monospace;font-size:11px;word-break:break-all">${d.fingerprint || '—'}</div>
+      </div>
+      <div style="background:rgba(255,255,255,.05);padding:12px;border-radius:8px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span style="font-size:11px;opacity:.6">SSH Command</span>
+          <button class="ssh-copy" data-cmd="${d.ssh_cmd}" style="background:#2c7;border:none;color:#fff;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:10px">Copy</button>
+        </div>
+        <code style="font-family:monospace;font-size:12px;display:block;background:rgba(0,0,0,.3);padding:6px;border-radius:4px;word-break:break-all">${d.ssh_cmd}</code>
+      </div>
+      <div style="background:rgba(255,255,255,.05);padding:12px;border-radius:8px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span style="font-size:11px;opacity:.6">SFTP Command</span>
+          <button class="ssh-copy" data-cmd="${d.sftp_cmd}" style="background:#2c7;border:none;color:#fff;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:10px">Copy</button>
+        </div>
+        <code style="font-family:monospace;font-size:12px;display:block;background:rgba(0,0,0,.3);padding:6px;border-radius:4px;word-break:break-all">${d.sftp_cmd}</code>
+      </div>
+      <div style="background:rgba(255,255,255,.05);padding:12px;border-radius:8px;margin-bottom:12px">
+        <div style="font-size:11px;opacity:.6;margin-bottom:4px">Username / Password</div>
+        <div style="font-family:monospace;font-size:12px">user: <b>${d.user || '—'}</b></div>
+        <div style="font-family:monospace;font-size:12px;display:flex;align-items:center;gap:8px;margin-top:4px">pass: <b id="ssh-pass-display">••••••••••••</b>
+          <button id="ssh-show-pass" data-pass="${d.password || ''}" style="background:#555;border:none;color:#fff;padding:2px 6px;border-radius:3px;cursor:pointer;font-size:9px">Show</button>
+          <button class="ssh-copy" data-cmd="${d.password || ''}" style="background:#2c7;border:none;color:#fff;padding:2px 6px;border-radius:3px;cursor:pointer;font-size:9px">Copy</button>
+        </div>
+      </div>
+      <div style="font-size:10px;opacity:.5;text-align:center;margin-top:8px">All SSH events are recorded in the audit log</div>
+    </div>`;
+  document.body.appendChild(overlay);
+  // Wire up copy buttons
+  overlay.querySelectorAll('.ssh-copy').forEach(function(b) {
+    b.onclick = function(e) {
+      e.stopPropagation();
+      navigator.clipboard.writeText(b.getAttribute('data-cmd'));
+      const orig = b.textContent;
+      b.textContent = '✓ Copied';
+      setTimeout(function(){ b.textContent = orig; }, 1200);
+    };
+  });
+  // Show/hide password
+  const showPassBtn = overlay.querySelector('#ssh-show-pass');
+  if (showPassBtn) {
+    showPassBtn.onclick = function(e) {
+      e.stopPropagation();
+      const disp = overlay.querySelector('#ssh-pass-display');
+      if (showPassBtn.textContent === 'Show') {
+        disp.textContent = showPassBtn.getAttribute('data-pass');
+        showPassBtn.textContent = 'Hide';
+      } else {
+        disp.textContent = '••••••••••••';
+        showPassBtn.textContent = 'Show';
+      }
+    };
+  }
+}
+
+// Refresh SSH info on load + every 30s
+setTimeout(refreshSshInfo, 1500);
+setInterval(refreshSshInfo, 30000);
 </script>
 
