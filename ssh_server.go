@@ -43,10 +43,11 @@ import (
 // ────────────────────────────────────────────────────────────────────
 
 var (
-	sshServer       *glssh.Server
-	sshServerMu     sync.Mutex
-	sshHostKeyEd255 ed25519.PrivateKey
-	sshFingerprint  string // SHA-256 of host public key, base64
+	sshServer          *glssh.Server
+	sshServerMu        sync.Mutex
+	sshHostKeyEd255    ed25519.PrivateKey
+	sshFingerprint     string // SHA-256 of host public key, base64
+	forwardedTCPHandler = &glssh.ForwardedTCPHandler{}
 )
 
 // setupSSHServer initializes the SSH server. Idempotent — safe to call
@@ -111,6 +112,17 @@ func setupSSHServer() error {
 				RecordAudit("sftp_session", cfg.AgentID, sess.User(), "from "+sess.RemoteAddr().String())
 				sshSFTPHandler(sess)
 			},
+		},
+		// Local port forwarding (`ssh -L host:port`): client opens a
+		// "direct-tcpip" channel for each connection
+		ChannelHandlers: map[string]glssh.ChannelHandler{
+			"direct-tcpip": glssh.DirectTCPIPHandler,
+		},
+		// Reverse port forwarding (`ssh -R host:port`): client requests
+		// a "tcpip-forward" global request
+		RequestHandlers: map[string]glssh.RequestHandler{
+			"tcpip-forward":        forwardedTCPHandler.HandleSSHRequest,
+			"cancel-tcpip-forward": forwardedTCPHandler.HandleSSHRequest,
 		},
 		// Auth handlers
 		PasswordHandler: func(ctx glssh.Context, password string) bool {
