@@ -1299,7 +1299,7 @@ func tryClaimLeadership() (bool, error) {
     interval := getElectionInterval()
     if primary.Host == cfg.AgentID {
         llog("info", "Already the leader, renewing leadership")
-        ok, werr := writePrimaryServerFile(cfg.AgentID, "")
+        ok, werr := writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
         if werr != nil {
             setElectionStatus("github", "error", werr.Error(), primary.Host, leaderTime)
         } else {
@@ -1357,7 +1357,13 @@ func writePrimaryServerFile(hostname, sha string) (bool, error) {
     if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusConflict {
         return false, nil // Failed to claim (no token or already claimed), act as agent
     }
-return false, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+    // Read response body for diagnostic detail
+    bodyBytes, _ := io.ReadAll(resp.Body)
+    bodyStr := strings.TrimSpace(string(bodyBytes))
+    if len(bodyStr) > 500 {
+        bodyStr = bodyStr[:500] + "..."
+    }
+    return false, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, bodyStr)
 }
 
 func renewLeadership() (bool, error) {
@@ -1367,12 +1373,19 @@ func renewLeadership() (bool, error) {
     req.Header.Set("Accept", "application/vnd.github.v3+json")
     resp, err := httpFastClient.Do(req)
     if err != nil {
+        setElectionStatus("github", "error", err.Error(), "", time.Time{})
         return false, err
     }
     defer resp.Body.Close()
     if resp.StatusCode == http.StatusNotFound {
         llog("info", "No primary_server.json found, claiming leadership")
-        return writePrimaryServerFile(cfg.AgentID, "")
+        ok, werr := writePrimaryServerFile(cfg.AgentID, "")
+        if werr != nil {
+            setElectionStatus("github", "error", werr.Error(), "", time.Time{})
+        } else {
+            setElectionStatus("github", "claimed", "", cfg.AgentID, time.Now())
+        }
+        return ok, werr
     }
     if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
         llog("info", "GitHub auth failed (%d) – acting as agent", resp.StatusCode)
@@ -1433,11 +1446,17 @@ func renewLeadership() (bool, error) {
             if serverCancel != nil { serverCancel() }
         } else {
             llog("info", "New leader %s not reachable – reclaiming leadership", primary.Host)
-            return writePrimaryServerFile(cfg.AgentID, "")
+            return writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
         }
         return true, nil
     }
-    return writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
+    ok, werr := writePrimaryServerFile(cfg.AgentID, ghResp.SHA)
+    if werr != nil {
+        setElectionStatus("github", "error", werr.Error(), primary.Host, time.UnixMilli(primary.Updated))
+    } else {
+        setElectionStatus("github", "renewed", "", primary.Host, time.Now())
+    }
+    return ok, werr
 }
 
 func runServerComponents() {
@@ -3440,7 +3459,12 @@ func main() {
         cfg.AgentID = fmt.Sprintf("%s-%s", myHostname, randomString(4))
         saveSettings()
     }
-    llog("info", "AgentID: %s", cfg.AgentID)
+	llog("info", "AgentID: %s", cfg.AgentID)
+
+	// One-time self-heal: remove legacy autostart entries from prior project
+	// iterations that point to .bat / .vbs / old binary locations and cause
+	// periodic cmd / wscript / powershell popups.
+	cleanDuplicateAutostartEntries()
 
 	if defaultGitHubRepo != "" {
 		cfg.GitHubRepo = defaultGitHubRepo

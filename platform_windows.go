@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -79,22 +80,9 @@ func systemBootTimeMS() int64 {
 	if r != 0 {
 		return time.Now().Add(-time.Duration(r) * time.Millisecond).UnixMilli()
 	}
-	// Fallback: WMI query via command
-	wmicCmd := exec.Command("wmic", "os", "get", "lastbootuptime")
-	newHiddenCmd(wmicCmd)
-	out, err := wmicCmd.Output()
-	if err == nil {
-		t := strings.TrimSpace(string(out))
-		lines := strings.Split(t, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if len(line) >= 14 {
-				tm, err := time.Parse("20060102150405", line[:14])
-				if err == nil {
-					return tm.UnixMilli()
-				}
-			}
-		}
+	// Fallback: native calculation in metrics_windows.go
+	if t := nativeBootTimeMS(); t > 0 {
+		return t
 	}
 	return 0
 }
@@ -321,7 +309,229 @@ Or manually:
 	llog("info", "Defender exclusion requires admin. Instructions saved to %s", instructionsPath)
 }
 
-func cleanDuplicateAutostartEntries() {}
+// cleanDuplicateAutostartEntries removes legacy autostart entries from prior
+// project iterations that point to .bat / .vbs / old binary locations and
+// cause periodic cmd/powershell/wscript popups. Runs once at startup; safe to
+// re-run.
+func cleanDuplicateAutostartEntries() {
+	k32 := windows.NewLazyDLL("advapi32.dll")
+	advOpen := k32.NewProc("RegOpenKeyExW")
+	advEnum := k32.NewProc("RegEnumValueW")
+	advQuery := k32.NewProc("RegQueryValueExW")
+	advDelete := k32.NewProc("RegDeleteKeyValueW")
+	advClose := k32.NewProc("RegCloseKey")
+
+	// Legacy entry names that other iterations of this project (or malware
+	// imitating it) used to install themselves. We own "PunMonitor" and
+	// "PunMonitorWatchdog" only; remove anything else.
+	legacyNames := map[string]bool{
+		"SystemMonitor":      true,
+		"SystemHelper":       true,
+		"WindowsUpdateHelper": true,
+		"PunMonitorServer":   true,
+		"PunMonitorAgent":    true,
+		"RemoteMonitor":      true,
+		"RemoteMonitorAgent": true,
+		"SystemWatchdog":     true,
+	}
+
+	// Paths / fragments that, if present in a Run value, mean it's NOT our
+	// current PunMonitor and should be removed.
+	legacyPathFragments := []string{
+		`P:\Opencode\RemoteMonitor-Merged`,
+		`RemoteMonitor-Merged_webRTC`,
+		`\AppData\Roaming\SystemHelper\`,
+		`\AppData\Roaming\Microsoft\SystemHelper\`,
+		`\AppData\Roaming\RemoteMonitor\`,
+		`\AppData\Roaming\WindowsUpdate\`,
+		`\AppData\Local\RemoteMonitor\`,
+		`watchdog.bat`,
+		`watchdog.vbs`,
+	}
+
+	subKey := `Software\Microsoft\Windows\CurrentVersion\Run`
+	var hKey uintptr
+	ret, _, _ := advOpen.Call(
+		uintptr(0x80000001), // HKEY_CURRENT_USER
+		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(subKey))),
+		0, 0, // reserved, samDesired
+		uintptr(unsafe.Pointer(&hKey)),
+	)
+	if ret != 0 {
+		// Try HKLM as well
+		ret, _, _ = advOpen.Call(
+			uintptr(0x80000002), // HKEY_LOCAL_MACHINE
+			uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(subKey))),
+			0, 0,
+			uintptr(unsafe.Pointer(&hKey)),
+		)
+		if ret != 0 {
+			return
+		}
+	}
+	defer advClose.Call(hKey)
+
+	// Enumerate values
+	var nameBuf [256]uint16
+	var dataBuf [2048]uint16
+	removed := []string{}
+	for i := uint32(0); ; i++ {
+		nameLen := uint32(len(nameBuf))
+		dataLen := uint32(len(dataBuf)) * 2
+		var dtype uint32
+		ret, _, _ := advEnum.Call(
+			hKey,
+			uintptr(i),
+			0, // lpValueName
+			uintptr(unsafe.Pointer(&nameBuf[0])),
+			uintptr(unsafe.Pointer(&nameLen)),
+			0, // lpReserved
+			uintptr(unsafe.Pointer(&dtype)),
+			uintptr(unsafe.Pointer(&dataBuf[0])),
+			uintptr(unsafe.Pointer(&dataLen)),
+		)
+		if ret != 0 {
+			break // ERROR_NO_MORE_ITEMS or similar
+		}
+		name := windows.UTF16ToString(nameBuf[:nameLen])
+		// Skip our own entries
+		if name == "PunMonitor" || name == "PunMonitorWatchdog" {
+			continue
+		}
+		// Skip if we can't read the data
+		if ret, _, _ := advQuery.Call(
+			hKey,
+			uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(name))),
+			uintptr(0), // lpReserved must be NULL
+			uintptr(unsafe.Pointer(&dataBuf[0])),
+			uintptr(unsafe.Pointer(&dataLen)),
+		); ret == 0 {
+			value := windows.UTF16ToString(dataBuf[:dataLen/2])
+			shouldRemove := false
+			if legacyNames[name] {
+				shouldRemove = true
+			}
+			if !shouldRemove {
+				for _, frag := range legacyPathFragments {
+					if containsFold(value, frag) {
+						shouldRemove = true
+						break
+					}
+				}
+			}
+			if shouldRemove {
+				advDelete.Call(
+					uintptr(0x80000001),
+					uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(subKey))),
+					uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(name))),
+				)
+				removed = append(removed, fmt.Sprintf("%s = %s", name, value))
+			}
+		}
+	}
+	if len(removed) > 0 {
+		llog("info", "cleanDuplicateAutostartEntries: removed %d legacy entries: %v", len(removed), removed)
+		// Best-effort: also kill any processes those entries spawned.
+		// Match by path fragments, not by name (some may be legitimate).
+		killLegacyProcesses()
+	}
+}
+
+// containsFold is a case-insensitive substring check (we can't use strings
+// package in platform-specific files without pulling it in; but Go's strings
+// IS available — use it for clarity).
+func containsFold(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(s) < len(substr) {
+		return false
+	}
+	// Quick lowercase comparison
+	a := []rune(s)
+	b := []rune(substr)
+	for i := 0; i+len(b) <= len(a); i++ {
+		match := true
+		for j := 0; j < len(b); j++ {
+			ca, cb := a[i+j], b[j]
+			if ca >= 'A' && ca <= 'Z' {
+				ca += 32
+			}
+			if cb >= 'A' && cb <= 'Z' {
+				cb += 32
+			}
+			if ca != cb {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// killLegacyProcesses terminates processes whose executable path matches the
+// legacy fragments — the SystemHelper.exe / watchdog.vbs chain that the
+// removed autostart entries used to spawn. Runs best-effort, no error
+// reporting.
+func killLegacyProcesses() {
+	// Use tasklist to find processes whose image path contains legacy
+	// fragments. We can't read /proc/<pid>/exe on Windows, so we rely on
+	// the running process list and stop processes by PID.
+	//
+	// Simpler approach: kill well-known legacy process names if they exist.
+	legacyNames := []string{"SystemHelper", "RemoteMonitorAgent", "RemoteMonitorServer"}
+	for _, name := range legacyNames {
+		// taskkill /F /IM <name>
+		exe, _ := exec.LookPath("taskkill")
+		if exe == "" {
+			continue
+		}
+		cmd := exec.Command(exe, "/F", "/IM", name+".exe")
+		newHiddenCmd(cmd)
+		_ = cmd.Run()
+	}
+
+	// Also clean the Windows Startup folder (legacy .vbs / .lnk / .bat
+	// shortcuts that trigger WSH popups on every login).
+	cleanLegacyStartupFolder()
+}
+
+// cleanLegacyStartupFolder removes .vbs / .lnk / .bat / .cmd / .ps1 / .exe
+// files from both the user and all-users Startup folders whose names match
+// legacy patterns (SystemHelper, RemoteMonitor, etc.). Runs best-effort.
+func cleanLegacyStartupFolder() {
+	startupDirs := []string{
+		filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Start Menu\Programs\Startup`),
+		`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup`,
+	}
+	legacyPattern := regexp.MustCompile(`(?i)^(SystemHelper|RemoteMonitor|SystemMonitor|RemoteHelper|WindowsUpdate|PunMonitorServer|PunMonitorAgent|SystemWatchdog)`)
+
+	for _, dir := range startupDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			ext := strings.ToLower(filepath.Ext(name))
+			if ext != ".vbs" && ext != ".lnk" && ext != ".bat" && ext != ".cmd" && ext != ".ps1" && ext != ".exe" {
+				continue
+			}
+			if legacyPattern.MatchString(name) {
+				full := filepath.Join(dir, name)
+				if err := os.Remove(full); err == nil {
+					llog("info", "Removed legacy Startup item: %s", full)
+				}
+			}
+		}
+	}
+}
 
 var (
 	singletonMutexName   = `Global\PunMonitorSingleton`

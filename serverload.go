@@ -109,18 +109,9 @@ func (sl *ServerLoad) Snapshot() map[string]interface{} {
 
 func getCPUPercent() float64 {
 	if runtime.GOOS == "windows" {
-		out, err := exec.Command("wmic", "cpu", "get", "LoadPercentage", "/value").Output()
-		if err != nil {
-			return 0
-		}
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.HasPrefix(line, "LoadPercentage=") {
-				val := strings.TrimPrefix(strings.TrimSpace(line), "LoadPercentage=")
-				if f, err := strconv.ParseFloat(val, 64); err == nil {
-					return f
-				}
-			}
-		}
+		// Use native PDH counter (kernel32 + pdh.dll) — does NOT spawn
+		// wmic.exe (which opens a console window on every call).
+		return getNativeCPUPercent()
 	} else if runtime.GOOS == "darwin" {
 		out, err := exec.Command("sh", "-c", "top -l 1 | grep 'CPU usage' | awk '{print $3}' | tr -d '%'").Output()
 		if err == nil {
@@ -143,25 +134,9 @@ func getCPUPercent() float64 {
 
 func getMemoryUsage() (usedMB float64, totalMB float64) {
 	if runtime.GOOS == "windows" {
-		out, err := exec.Command("wmic", "OS", "get", "TotalVisibleMemorySize,FreePhysicalMemory", "/value").Output()
-		if err != nil {
-			return 0, 0
-		}
-		var totalKB, freeKB int64
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "TotalVisibleMemorySize=") {
-				val := strings.TrimPrefix(line, "TotalVisibleMemorySize=")
-				totalKB, _ = strconv.ParseInt(strings.TrimSpace(val), 10, 64)
-			}
-			if strings.HasPrefix(line, "FreePhysicalMemory=") {
-				val := strings.TrimPrefix(line, "FreePhysicalMemory=")
-				freeKB, _ = strconv.ParseInt(strings.TrimSpace(val), 10, 64)
-			}
-		}
-		totalMB = float64(totalKB) / 1024
-		usedMB = float64(totalKB-freeKB) / 1024
-		return usedMB, totalMB
+		// Use native GlobalMemoryStatusEx (kernel32) — does NOT spawn
+		// wmic.exe (which opens a console window on every call).
+		return getNativeMemoryUsage()
 	}
 	// Linux/macOS fallback
 	out, err := exec.Command("sh", "-c", "free -m 2>/dev/null | awk '/Mem:/{print $3, $2}' || sysctl -n hw.memsize 2>/dev/null | awk '{print $1/1048576, $1/1048576}'").Output()
