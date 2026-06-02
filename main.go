@@ -776,10 +776,23 @@ func loadSettings() {
 	// Decrypt sensitive fields. decryptSecret passes through plaintext
 	// unchanged, so legacy unencrypted settings.json files still load.
 	if s.GitHubToken != "" {
-		if t, err := decryptSecret(s.GitHubToken); err == nil {
-			cfg.GitHubToken = t
+		llog("info", "settings: decrypting github_token (len=%d prefix=%q)", len(s.GitHubToken), s.GitHubToken[:min(20, len(s.GitHubToken))])
+		t, err := decryptSecret(s.GitHubToken)
+		if err != nil {
+			llog("warn", "settings: github_token decrypt FAILED: %v — clearing in-memory token", err)
+			cfg.GitHubToken = ""
 		} else {
-			llog("warn", "settings: github_token decrypt failed (encrypted on a different user/machine?): %v", err)
+			// Defensive: decrypt should never return the same string back
+			// (decryptSecret returns plaintext, not the encrypted blob).
+			// If it did, treat as failure so the user gets a clean error
+			// instead of "Bad credentials: token type: unknown".
+			if t == s.GitHubToken {
+				llog("warn", "settings: github_token decrypt returned the encrypted blob unchanged — DPAPI call likely failed silently")
+				cfg.GitHubToken = ""
+			} else {
+				llog("info", "settings: github_token decrypt OK (plaintext len=%d prefix=%q)", len(t), t[:min(8, len(t))])
+				cfg.GitHubToken = t
+			}
 		}
 	}
 	if s.AuthUser != "" { cfg.AuthUser = s.AuthUser }
@@ -2550,6 +2563,81 @@ func startHTTPServer() {
 		json.NewEncoder(w).Encode(resp)
 	})
 
+	// /api/reports/list — GET a list of all report-*.xlsx files in the
+	// GitHub repo. Used by the dashboard "Historical reports" UI so the
+	// admin can pull past reports and see row-wise history across days.
+	http.HandleFunc("/api/reports/list", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+			http.Error(w, "GitHub not configured", http.StatusBadRequest)
+			return
+		}
+		authOK, _ := isGitHubAuthOK()
+		if !authOK {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"ok": false,
+				"error": "GitHub auth failed — update token in settings",
+				"reports": []interface{}{},
+			})
+			return
+		}
+		apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/", normalizeGitHubRepo(cfg.GitHubRepo))
+		req, _ := http.NewRequest("GET", apiURL, nil)
+		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		httpClient := &http.Client{Timeout: 15 * time.Second}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": err.Error(), "reports": []interface{}{}})
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": string(body), "reports": []interface{}{}})
+			return
+		}
+		var files []struct {
+			Name        string `json:"name"`
+			Path        string `json:"path"`
+			Size        int64  `json:"size"`
+			SHA         string `json:"sha"`
+			DownloadURL string `json:"download_url"`
+			HTMLURL     string `json:"html_url"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": err.Error(), "reports": []interface{}{}})
+			return
+		}
+		reports := []map[string]interface{}{}
+		for _, f := range files {
+			if !strings.HasPrefix(f.Name, "report-") || !strings.HasSuffix(f.Name, ".xlsx") {
+				continue
+			}
+			reports = append(reports, map[string]interface{}{
+				"name": f.Name,
+				"size": f.Size,
+				"sha": f.SHA,
+				"download_url": f.DownloadURL,
+				"html_url":    f.HTMLURL,
+				"raw_url":     "https://raw.githubusercontent.com/" + normalizeGitHubRepo(cfg.GitHubRepo) + "/main/" + f.Name,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "count": len(reports), "reports": reports})
+	})
+
+	// /api/reports/merged — GET a merged XLSX of all report-*.xlsx files
+	// in the repo. This is the "compile sheet" view the admin asked for:
+	// it downloads each daily report, parses the rows, and re-emits a
+	// single XLSX with one row per event across all days.
+	http.HandleFunc("/api/reports/merged", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		w.Header().Set("Content-Disposition", `attachment; filename="punmonitor-merged-`+time.Now().Format("2006-01-02")+`.xlsx"`)
+		if err := buildMergedReportXLSX(w); err != nil {
+			http.Error(w, "merged report build: "+err.Error(), http.StatusInternalServerError)
+		}
+	})
+
 	http.HandleFunc("/api/setup-status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		needsSetup := cfg.ServerURL == "" && cfg.GitHubRepo == ""
@@ -3378,10 +3466,14 @@ func pushCredsToGitHub() {
 	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
 		return
 	}
-	// Skip if we already know the token is bad — saves the log spam
-	if ok, _ := isGitHubAuthOK(); !ok {
-		return
-	}
+	// CRITICAL: do NOT skip when auth is bad. The user may have JUST
+	// updated their token via /api/settings — at that moment the cached
+	// githubAuthOK flag is still false (it resets to false on every
+	// process start). If we skip the push, the new token will never reach
+	// GitHub, and the next syncFromGitHub() will pull the OLD token back
+	// and overwrite the new one. Always attempt the push; the PUT call
+	// will fail with 401 if the token really is still bad, and
+	// setGitHubAuth() will be called from the response handler.
 	// Push punmonitor-credentials.json
 	credsPath := filepath.Join(dataDir(), "punmonitor-credentials.json")
 	if credData, err := os.ReadFile(credsPath); err == nil {
@@ -3518,9 +3610,23 @@ func syncFromGitHub() {
 				syncFromGitHub() // re-sync with new repo
 				return
 			}
-			if remoteSettings.GitHubToken != "" { cfg.GitHubToken = remoteSettings.GitHubToken; changed = true }
+			// CRITICAL: do NOT sync the GitHub token from the remote.
+			// The token in the GitHub repo's settings.json is a SNAPSHOT
+			// of an old value (last time pushCredsToGitHub ran). If the
+			// user updated their token locally, pulling the remote value
+			// here would overwrite the new token with the stale one,
+			// causing the very "token keeps reverting" bug this is fixing.
+			// The token is a LOCAL secret; only the user can change it,
+			// via /api/settings or the dashboard.
+			//
+			// We also skip AuthPass and CloudflareTunnelSecret for the
+			// same reason — they are encrypted-on-this-machine secrets
+			// that can't be decrypted on a different machine, so pulling
+			// them from GitHub would just set the in-memory value to a
+			// blob we can't use. (punmonitor-credentials.json in the
+			// repo is plaintext and is handled separately in step 1.)
 			if remoteSettings.AuthUser != "" { cfg.AuthUser = remoteSettings.AuthUser; changed = true }
-			if remoteSettings.AuthPass != "" { cfg.AuthPass = remoteSettings.AuthPass; changed = true }
+			// AuthPass is an encrypted-on-this-machine secret — skip remote pull.
 			if remoteSettings.TunnelProvider != "" { cfg.TunnelProvider = remoteSettings.TunnelProvider; changed = true }
 			if remoteSettings.TunnelHostname != "" { cfg.TunnelHostname = remoteSettings.TunnelHostname; changed = true }
 			if remoteSettings.ServerURL != "" { cfg.ServerURL = remoteSettings.ServerURL; changed = true }
@@ -3533,7 +3639,7 @@ func syncFromGitHub() {
 				changed = true
 			}
 			if remoteSettings.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = remoteSettings.CloudflareAccountTag; changed = true }
-			if remoteSettings.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = remoteSettings.CloudflareTunnelSecret; changed = true }
+			// CloudflareTunnelSecret is an encrypted-on-this-machine secret — skip remote pull.
 			if remoteSettings.CloudflareTunnelID != "" { cfg.CloudflareTunnelID = remoteSettings.CloudflareTunnelID; changed = true }
 			if remoteSettings.UpdateURL != "" && remoteSettings.UpdateURL != cfg.UpdateURL {
 				cfg.UpdateURL = remoteSettings.UpdateURL
@@ -3905,7 +4011,7 @@ func startQuickTunnel(cfg *Config) {
 
 var defaultGitHubRepo string
 var defaultGitHubToken string
-var binaryVersion = "10.0.0"
+var binaryVersion = "10.0.33"
 
 func main() {
     hideConsole()
@@ -4085,6 +4191,11 @@ func main() {
 
 	// LAN discovery is started inside startGitHubLeaderElection
 	// No separate scan goroutine needed — UDP broadcast handles it
+
+	// Load election history from disk so we have row-wise history even
+	// after a restart. Without this, restarting the service would lose
+	// all events, leaving the daily Excel report empty.
+	loadElectionHistoryFromDisk()
 
 	startGitHubLeaderElection()
 }

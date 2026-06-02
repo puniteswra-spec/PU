@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -621,6 +625,171 @@ func modeBadge() string {
 		return "SERVER"
 	}
 	return "AGENT"
+}
+
+// buildMergedReportXLSX downloads every report-*.xlsx file from the GitHub
+// repo, parses the row data from each sheet, and writes a single merged
+// XLSX with all days' data row-wise. This is the "compile sheet" view
+// the admin asked for: one XLSX with every Activity, Audit Log, and
+// Election event from every day concatenated.
+//
+// The merged file is named punmonitor-merged-YYYY-MM-DD.xlsx and the
+// endpoint is /api/reports/merged. The user can pull this file from
+// the dashboard and see the full history in row-wise form.
+func buildMergedReportXLSX(w io.Writer) error {
+	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+		return fmt.Errorf("GitHub not configured")
+	}
+	authOK, _ := isGitHubAuthOK()
+	if !authOK {
+		return fmt.Errorf("GitHub auth failed — update token in settings")
+	}
+	// 1. List all report-*.xlsx files in the repo
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/", normalizeGitHubRepo(cfg.GitHubRepo))
+	req, _ := http.NewRequest("GET", apiURL, nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("list repo: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("list repo returned %d: %s", resp.StatusCode, string(body)[:minInt(200, len(body))])
+	}
+	var files []struct {
+		Name        string `json:"name"`
+		DownloadURL string `json:"download_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+		return fmt.Errorf("decode list: %w", err)
+	}
+
+	// 2. Build a fresh XLSX in memory
+	f := excelize.NewFile()
+	defer f.Close()
+	// Create the 3 sheets (same as daily report)
+	for _, name := range []string{"Activity", "Audit Log", "Election"} {
+		if _, err := f.NewSheet(name); err != nil {
+			return err
+		}
+	}
+	f.DeleteSheet("Sheet1")
+
+	// 3. Write headers
+	activityHeader := []string{"Source Date", "Agent ID", "Hostname", "Local IP", "WAN IP", "OS", "Architecture", "Binary Version", "Mode", "Transport", "Health", "Latency (ms)", "Bytes/sec", "CPU%", "Mem%", "Uptime (s)", "Last update"}
+	auditHeader := []string{"Source Date", "Timestamp (ISO)", "Timestamp (Unix)", "Action", "Agent ID", "User", "Detail", "Duration (ms)"}
+	electionHeader := []string{"Source Date", "Timestamp (ISO)", "Action", "Method", "Agent ID", "Hostname", "Leader ID", "Leader Age (ms)", "Result", "Error"}
+
+	for _, sh := range []struct {
+		name   string
+		header []string
+	}{
+		{"Activity", activityHeader},
+		{"Audit Log", auditHeader},
+		{"Election", electionHeader},
+	} {
+		for i, h := range sh.header {
+			cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+			f.SetCellValue(sh.name, cell, h)
+		}
+	}
+
+	// 4. For each report file, download + parse + append
+	activityRow := 2
+	auditRow := 2
+	electionRow := 2
+
+	// Sort files by name (YYYY-MM-DD) so they merge chronologically
+	var reportFiles []struct{ Name, URL string }
+	for _, fi := range files {
+		if strings.HasPrefix(fi.Name, "report-") && strings.HasSuffix(fi.Name, ".xlsx") {
+			reportFiles = append(reportFiles, struct{ Name, URL string }{fi.Name, fi.DownloadURL})
+		}
+	}
+	sort.Slice(reportFiles, func(i, j int) bool { return reportFiles[i].Name < reportFiles[j].Name })
+
+	httpClient2 := &http.Client{Timeout: 60 * time.Second}
+	for _, rf := range reportFiles {
+		// Extract YYYY-MM-DD from filename
+		dateStr := strings.TrimSuffix(strings.TrimPrefix(rf.Name, "report-"), ".xlsx")
+		llog("info", "merged report: downloading %s (%s)", rf.Name, rf.URL)
+		dresp, derr := httpClient2.Get(rf.URL)
+		if derr != nil {
+			llog("warn", "merged report: download %s failed: %v", rf.Name, derr)
+			continue
+		}
+		data, _ := io.ReadAll(dresp.Body)
+		dresp.Body.Close()
+		if dresp.StatusCode != 200 {
+			llog("warn", "merged report: download %s returned %d", rf.Name, dresp.StatusCode)
+			continue
+		}
+		// Open the daily report XLSX in memory
+		rf2, rerr := excelize.OpenReader(bytes.NewReader(data))
+		if rerr != nil {
+			llog("warn", "merged report: parse %s failed: %v", rf.Name, rerr)
+			continue
+		}
+		// For each sheet in the daily report, copy rows into the merged file
+		for _, shName := range []string{"Activity", "Audit Log", "Election"} {
+			rows, rerr := rf2.GetRows(shName)
+			if rerr != nil {
+				continue
+			}
+			if len(rows) <= 1 {
+				continue // empty (only header)
+			}
+			// Find which row in the merged file to write to
+			var targetRow int
+			switch shName {
+			case "Activity":
+				targetRow = activityRow
+			case "Audit Log":
+				targetRow = auditRow
+			case "Election":
+				targetRow = electionRow
+			}
+			// Skip header row (rows[0]), copy data rows
+			for _, row := range rows[1:] {
+				// Prepend the source date to each row
+				out := append([]string{dateStr}, row...)
+				// Pad to header width
+				for len(out) < len(activityHeader) && shName == "Activity" {
+					out = append(out, "")
+				}
+				for len(out) < len(auditHeader) && shName == "Audit Log" {
+					out = append(out, "")
+				}
+				for len(out) < len(electionHeader) && shName == "Election" {
+					out = append(out, "")
+				}
+				for ci, val := range out {
+					cell, _ := excelize.CoordinatesToCellName(ci+1, targetRow)
+					f.SetCellValue(shName, cell, val)
+				}
+				targetRow++
+			}
+			switch shName {
+			case "Activity":
+				activityRow = targetRow
+			case "Audit Log":
+				auditRow = targetRow
+			case "Election":
+				electionRow = targetRow
+			}
+		}
+		rf2.Close()
+	}
+
+	// 5. Set the first sheet active so Excel opens to it
+	idx, _ := f.GetSheetIndex("Activity")
+	f.SetActiveSheet(idx)
+
+	// 6. Write to the response
+	return f.Write(w)
 }
 
 var _ = sync.Mutex{}

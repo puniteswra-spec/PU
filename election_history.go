@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +61,10 @@ var (
 // Periodic "renewed" events are still captured once per dedupInterval so the
 // log shows ongoing activity. State changes (claimed, takeover, error,
 // different leader) are always logged immediately.
+//
+// Events are also appended to disk (election_history.jsonl) so they survive
+// restarts. The disk file is the source of truth; on startup we load from
+// disk into the in-memory ring buffer.
 func appendElectionEvent(ev ElectionEvent) {
 	ev.TimestampISO = ev.Timestamp.Format(time.RFC3339Nano)
 	key := ev.Method + "|" + ev.Result + "|" + ev.LeaderID + "|" + ev.Error
@@ -72,6 +79,102 @@ func appendElectionEvent(ev ElectionEvent) {
 	electionHistory = append(electionHistory, ev)
 	if len(electionHistory) > electionHistoryMax {
 		electionHistory = electionHistory[len(electionHistory)-electionHistoryMax:]
+	}
+	// Persist to disk (append-only JSONL). This survives restarts so the
+	// daily Excel report can include all history, not just in-memory.
+	go appendElectionEventToDisk(ev)
+}
+
+// electionHistoryFilePath is %APPDATA%\PunMonitor\election_history.jsonl
+func electionHistoryFilePath() string {
+	return filepath.Join(dataDir(), "election_history.jsonl")
+}
+
+// appendElectionEventToDisk appends one event to the JSONL file. Errors
+// are logged but do not affect the in-memory state.
+func appendElectionEventToDisk(ev ElectionEvent) {
+	f, err := os.OpenFile(electionHistoryFilePath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		llog("warn", "election history: cannot open %s: %v", electionHistoryFilePath(), err)
+		return
+	}
+	defer f.Close()
+	line, _ := json.Marshal(ev)
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		llog("warn", "election history: cannot write: %v", err)
+	}
+}
+
+// loadElectionHistoryFromDisk reads election_history.jsonl and populates
+// the in-memory ring buffer. Called once at startup. The disk file is
+// truncated to the last 50,000 events if it grows too large, to keep the
+// daily report under GitHub's 100MB file-size limit.
+func loadElectionHistoryFromDisk() {
+	path := electionHistoryFilePath()
+	f, err := os.Open(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			llog("warn", "election history: cannot read %s: %v", path, err)
+		}
+		return
+	}
+	defer f.Close()
+	loaded := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB max per line
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var ev ElectionEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			continue // skip corrupt lines
+		}
+		electionHistoryMu.Lock()
+		electionHistory = append(electionHistory, ev)
+		loaded++
+		electionHistoryMu.Unlock()
+	}
+	if loaded > 0 {
+		// Trim ring buffer if loaded more than max
+		electionHistoryMu.Lock()
+		if len(electionHistory) > electionHistoryMax {
+			electionHistory = electionHistory[len(electionHistory)-electionHistoryMax:]
+		}
+		// Seed dedup state from the most recent event
+		if len(electionHistory) > 0 {
+			last := electionHistory[len(electionHistory)-1]
+			lastElectionKey = last.Method + "|" + last.Result + "|" + last.LeaderID + "|" + last.Error
+			lastElectionLogTime = last.Timestamp
+		}
+		electionHistoryMu.Unlock()
+		llog("info", "election history: loaded %d events from disk (%s)", loaded, path)
+	}
+	// Truncate disk file if too large (>10MB)
+	fi, err := os.Stat(path)
+	if err == nil && fi.Size() > 10*1024*1024 {
+		llog("info", "election history: truncating %s (%d bytes) to last 50000 events", path, fi.Size())
+		electionHistoryMu.RLock()
+		all := make([]ElectionEvent, len(electionHistory))
+		copy(all, electionHistory)
+		electionHistoryMu.RUnlock()
+		// Keep last 50000 events
+		if len(all) > 50000 {
+			all = all[len(all)-50000:]
+		}
+		tmpPath := path + ".tmp"
+		tmp, _ := os.Create(tmpPath)
+		if tmp != nil {
+			w := bufio.NewWriter(tmp)
+			for _, ev := range all {
+				line, _ := json.Marshal(ev)
+				w.Write(append(line, '\n'))
+			}
+			w.Flush()
+			tmp.Close()
+			os.Rename(tmpPath, path)
+		}
 	}
 }
 

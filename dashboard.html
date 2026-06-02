@@ -371,19 +371,21 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 </div>
 
 <!-- Live Election Events Modal (real-time row-wise view) -->
-<div id="election-events-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1900;align-items:center;justify-content:center">
-  <div style="background:#1e1e1e;color:#fff;border-radius:8px;padding:16px;width:920px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.5)">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+<div id="election-events-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1900;align-items:center;justify-content:center" onclick="if(event.target===this) closeElectionEventsModal()">
+  <div style="background:#1e1e1e;color:#fff;border-radius:8px;padding:16px;width:920px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.5);position:relative;z-index:1901">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-shrink:0">
       <h3 style="margin:0;font-size:15px">📜 Live Election Events <span id="election-events-count" style="font-size:11px;color:#888;font-weight:400;margin-left:6px">0 events</span></h3>
-      <div style="display:flex;gap:6px">
-        <button onclick="refreshElectionEventsModal()" style="background:rgba(255,255,255,.1);color:#fff;border:none;padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer">↻ Refresh</button>
-        <button onclick="closeElectionEventsModal()" style="background:transparent;color:#aaa;border:1px solid #555;padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer">Close</button>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button id="election-refresh-btn" type="button" onclick="refreshElectionEventsModal();return false" style="background:#4a9eff;color:#fff;border:none;padding:6px 14px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:600;pointer-events:auto;z-index:1902">↻ Refresh now</button>
+        <button type="button" onclick="openHistoricalReportsModal();return false" style="background:rgba(255,255,255,.15);color:#fff;border:1px solid #555;padding:6px 12px;border-radius:4px;font-size:12px;cursor:pointer;pointer-events:auto;z-index:1902">📚 Historical</button>
+        <button type="button" onclick="downloadMergedReport();return false" style="background:#2c7;color:#fff;border:none;padding:6px 12px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:600;pointer-events:auto;z-index:1902">⬇ Merged XLSX</button>
+        <button type="button" onclick="closeElectionEventsModal();return false" style="background:transparent;color:#aaa;border:1px solid #555;padding:6px 12px;border-radius:4px;font-size:12px;cursor:pointer;pointer-events:auto;z-index:1902">Close</button>
       </div>
     </div>
-    <div id="election-events-status" style="background:rgba(255,255,255,.04);padding:8px 10px;border-radius:4px;font-size:11px;margin-bottom:8px;font-family:monospace"></div>
-    <div style="flex:1;overflow:auto;border:1px solid #333;border-radius:4px">
+    <div id="election-events-status" style="background:rgba(255,255,255,.04);padding:8px 10px;border-radius:4px;font-size:11px;margin-bottom:8px;font-family:monospace;flex-shrink:0"></div>
+    <div style="flex:1;overflow:auto;border:1px solid #333;border-radius:4px;min-height:200px">
       <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:monospace">
-        <thead style="position:sticky;top:0;background:#2a2a2a">
+        <thead style="position:sticky;top:0;background:#2a2a2a;z-index:1">
           <tr>
             <th style="padding:6px;text-align:left;border-bottom:1px solid #444">Time</th>
             <th style="padding:6px;text-align:left;border-bottom:1px solid #444">Action</th>
@@ -397,6 +399,25 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
         </thead>
         <tbody id="election-events-tbody"></tbody>
       </table>
+    </div>
+    <div style="font-size:10px;color:#666;margin-top:6px;text-align:center;flex-shrink:0">Events are auto-refreshed every 3s while this window is open. Refresh button reloads immediately. Historical opens the GitHub report list. Merged XLSX downloads a single file with all daily reports concatenated row-wise.</div>
+  </div>
+</div>
+
+<!-- Historical Reports Modal (list of report-*.xlsx files in GitHub) -->
+<div id="historical-reports-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:2100;align-items:center;justify-content:center" onclick="if(event.target===this) closeHistoricalReportsModal()">
+  <div style="background:#1e1e1e;color:#fff;border-radius:8px;padding:20px;width:600px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.5);position:relative;z-index:2101">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-shrink:0">
+      <h3 style="margin:0;font-size:15px">📚 Historical Reports (GitHub)</h3>
+      <div style="display:flex;gap:6px">
+        <button type="button" onclick="downloadMergedReport();return false" style="background:#2c7;color:#fff;border:none;padding:6px 12px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:600;pointer-events:auto;z-index:2102">⬇ Download Merged</button>
+        <button type="button" onclick="closeHistoricalReportsModal();return false" style="background:transparent;color:#aaa;border:1px solid #555;padding:6px 12px;border-radius:4px;font-size:12px;cursor:pointer;pointer-events:auto;z-index:2102">Close</button>
+      </div>
+    </div>
+    <div id="historical-reports-list" style="flex:1;overflow:auto;border:1px solid #333;border-radius:4px;padding:8px;font-size:12px;font-family:monospace;min-height:200px">Loading…</div>
+    <div style="font-size:10px;color:#666;margin-top:6px;text-align:center;flex-shrink:0">
+      Each <code>report-YYYY-MM-DD.xlsx</code> in the GitHub repo contains 3 sheets: Activity + Audit Log + Election (row-wise).
+      <br>"Merged" downloads a single XLSX with all days concatenated row-wise.
     </div>
   </div>
 </div>
@@ -1771,6 +1792,52 @@ setInterval(() => {
   const m = document.getElementById('election-events-modal');
   if (m && m.style.display === 'flex') refreshElectionEventsModal();
 }, 3000);
+
+// === Historical Reports Modal ===
+function openHistoricalReportsModal() {
+  document.getElementById('historical-reports-modal').style.display = 'flex';
+  refreshHistoricalReportsList();
+}
+function closeHistoricalReportsModal() {
+  document.getElementById('historical-reports-modal').style.display = 'none';
+}
+async function refreshHistoricalReportsList() {
+  const listEl = document.getElementById('historical-reports-list');
+  listEl.innerHTML = '<div style="padding:20px;text-align:center;color:#888">⏳ Loading from GitHub…</div>';
+  try {
+    const resp = await fetch('/api/reports/list');
+    const data = await resp.json();
+    if (!data.ok) {
+      listEl.innerHTML = '<div style="padding:12px;background:rgba(255,80,80,.15);border-radius:4px;color:#fcc">✗ ' + (data.error || 'Unknown error') + '</div>';
+      return;
+    }
+    if (!data.reports || data.reports.length === 0) {
+      listEl.innerHTML = '<div style="padding:12px;color:#888">No report-*.xlsx files in the repo yet. They get auto-pushed daily at 00:05 local time.</div>';
+      return;
+    }
+    listEl.innerHTML = data.reports.map(r => {
+      const sizeKB = (r.size / 1024).toFixed(1);
+      const dateStr = r.name.replace('report-', '').replace('.xlsx', '');
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #2a2a2a">' +
+        '<span style="color:#7cf;min-width:90px">📅 ' + dateStr + '</span>' +
+        '<span style="color:#888;min-width:60px">' + sizeKB + ' KB</span>' +
+        '<a href="' + r.raw_url + '" target="_blank" style="color:#4a9eff;text-decoration:none">⬇ Download</a>' +
+        '<a href="' + r.html_url + '" target="_blank" style="color:#888;text-decoration:none">🔗 GitHub</a>' +
+        '</div>';
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = '<div style="padding:12px;color:#fcc">Error: ' + e + '</div>';
+  }
+}
+function downloadMergedReport() {
+  // /api/reports/merged streams an XLSX with all daily reports concatenated
+  const a = document.createElement('a');
+  a.href = '/api/reports/merged';
+  a.download = 'punmonitor-merged-' + new Date().toISOString().slice(0, 10) + '.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
 
 function updateCellVisibility() {
   const hasFilter = selectedAgents.size > 0;
