@@ -889,6 +889,21 @@ func startScreenCapture(ctx context.Context) {
 		}
 	}()
 	llog("info", "startScreenCapture: starting (fps=%v display=%d quality=%d)", cfg.MaxFPS, cfg.DisplayIndex, cfg.JPEGQuality)
+
+	// Register this server's own AgentID in the agentStats map so the
+	// local "self" cell in the dashboard shows transport/health/latency/
+	// bandwidth. Without this entry, broadcastFrame() can't record stats
+	// for frames the server is capturing from itself (the map is normally
+	// populated only when a remote agent sends its "hello" message).
+	if cfg.AgentID != "" {
+		if _, ok := agentStats.Load(cfg.AgentID); !ok {
+			s := NewAgentStats()
+			s.Transport = "self"
+			agentStats.Store(cfg.AgentID, s)
+			llog("info", "Registered self agentStats entry for %s", cfg.AgentID)
+		}
+	}
+
 	fps := cfg.MaxFPS
     if fps <= 0 {
         fps = 1
@@ -907,6 +922,7 @@ func startScreenCapture(ctx context.Context) {
             if !isCaptureAllowed() {
                 continue
             }
+            frameStart := time.Now()
 			img, err := captureScreenByIndex(cfg.DisplayIndex)
 			if err != nil {
 				llog("warn", "screen capture failed: %v", err)
@@ -924,6 +940,15 @@ func startScreenCapture(ctx context.Context) {
             wm := WireMessage{Type: MSG_FRAME, Data: buf.Bytes(), AgentID: cfg.AgentID}
             msg := wm.Marshal()
             broadcastFrame(msg, &wm)
+            // Record self-latency: time from frame capture start to broadcast
+            // completion. This is a useful local metric even though there
+            // is no network round-trip for the server's own cell.
+            if v, ok := agentStats.Load(cfg.AgentID); ok {
+                s := v.(*AgentStats)
+                s.mu.Lock()
+                s.LatencyMS = float64(time.Since(frameStart).Milliseconds())
+                s.mu.Unlock()
+            }
         case <-ctx.Done():
             return
         }
@@ -5286,16 +5311,44 @@ func getTransportStatus() map[string]interface{} {
 		return true
 	})
 
+	// Aggregate per-agent stats so the transport modal can show fleet-wide
+	// latency and bandwidth at a glance. Without this, the modal only
+	// showed transport names with no live numbers, and users had to open
+	// each cell to see what was happening.
+	var totalBps, avgLatency float64
+	var liveCount, latencyCount int
+	agentStats.Range(func(k, v interface{}) bool {
+		s := v.(*AgentStats)
+		s.UpdateHealth()
+		snap := s.Snapshot()
+		totalBps += snap["bytes_per_sec"].(float64)
+		if snap["latency_ms"].(float64) > 0 {
+			avgLatency += snap["latency_ms"].(float64)
+			latencyCount++
+		}
+		if snap["health"].(string) == "good" || snap["health"].(string) == "excellent" {
+			liveCount++
+		}
+		return true
+	})
+	if latencyCount > 0 {
+		avgLatency = avgLatency / float64(latencyCount)
+	}
+
 	return map[string]interface{}{
-		"active":           bestName,
-		"active_priority":  bestPrio,
-		"healthy":          !healthChecker.IsDead(bestName),
-		"ws_clients":       wsCount,
-		"quic_agents":      quicAgentCount,
-		"tunnel_type":      tunnelType,
-		"tunnel_active":    tunnelCmd != nil || cfg.CloudflareTunnelID != "",
-		"all_transports":   allTransports,
-		"quic_server_port": defaultQUICPort,
+		"active":             bestName,
+		"active_priority":    bestPrio,
+		"healthy":            !healthChecker.IsDead(bestName),
+		"ws_clients":         wsCount,
+		"quic_agents":        quicAgentCount,
+		"tunnel_type":        tunnelType,
+		"tunnel_active":      tunnelCmd != nil || cfg.CloudflareTunnelID != "",
+		"all_transports":     allTransports,
+		"quic_server_port":   defaultQUICPort,
+		"total_bandwidth_bps": totalBps,
+		"avg_latency_ms":     avgLatency,
+		"live_agents":        liveCount,
+		"total_agents":       wsCount,
 	}
 }
 
@@ -5473,11 +5526,26 @@ func runAgentClient() {
 
 	for {
 		connected := false
-		// Try transports in order: WebSocket → QUIC → WebRTC → GitHub
-		// WebSocket is the first because it's the only path that carries
-		// signaling/admin-control messages. QUIC is second for high-throughput
-		// screen frames; WebRTC is third for cross-network NAT traversal.
-		connected = tryAgentWebSocket(hostname, serverURL)
+		// Transport priority (best to worst):
+		//   1. WebRTC  — peer-to-peer data channel, lowest server load
+		//                (server doesn't re-broadcast frames to other
+		//                viewers). Uses WS for signaling only.
+		//   2. QUIC    — HTTP/3 over UDP, NAT-friendly, no TCP HoL blocking
+		//   3. WebSocket — universal fallback; carries both control and frames
+		//   4. GitHub  — last-resort API polling (slow, but works anywhere)
+		//
+		// Note: tryAgentWebRTC internally opens a WebSocket first for
+		// signaling — the WS here is just a control channel, frames go
+		// over the WebRTC data channel when the handshake succeeds. If
+		// the WebRTC handshake times out, it falls back to using the
+		// same WS for frames (no wasted work).
+		//
+		// The previous order (WS → QUIC → WebRTC) worked but routed all
+		// frames through WS first, which meant we only ever used WebRTC
+		// when both WS AND QUIC failed — never the optimal case.
+
+		// 1) WebRTC first (peer-to-peer, lowest server load)
+		connected = tryAgentWebRTC(hostname, serverURL)
 		if connected {
 			connectAttempts = 0
 			reconnectDelay = 1 * time.Second
@@ -5486,7 +5554,7 @@ func runAgentClient() {
 		connectAttempts++
 		agentConnQuality.RecordReconnect()
 
-		// Try QUIC (HTTP/3 over UDP) — high-throughput, NAT-friendly
+		// 2) QUIC (HTTP/3 over UDP) — high-throughput, NAT-friendly
 		if !connected {
 			connected = tryAgentQUIC(hostname, serverURL)
 			if connected {
@@ -5496,9 +5564,9 @@ func runAgentClient() {
 			}
 		}
 
-		// Try WebRTC
+		// 3) WebSocket — universal fallback
 		if !connected {
-			connected = tryAgentWebRTC(hostname, serverURL)
+			connected = tryAgentWebSocket(hostname, serverURL)
 			if connected {
 				connectAttempts = 0
 				reconnectDelay = 1 * time.Second
@@ -5506,7 +5574,7 @@ func runAgentClient() {
 			}
 		}
 
-		// Try GitHub transport
+		// 4) GitHub transport — last resort
 		if cfg.GitHubRepo != "" && cfg.GitHubToken != "" {
 			connected = tryAgentGitHub(hostname)
 		}

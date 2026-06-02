@@ -1555,7 +1555,7 @@ function refreshAgentStats() {
       if (!rec) continue;
       if (rec.transportEl) {
         const t = s.transport || '—';
-        const colors = { webrtc: '#4caf50', websocket: '#2196f3', github: '#ff9800' };
+        const colors = { webrtc: '#4caf50', websocket: '#2196f3', github: '#ff9800', quic: '#9c27b0', self: '#ce93d8' };
         rec.transportEl.innerHTML = '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + (colors[t]||'#888') + ';margin-right:3px"></span>' + t;
       }
       if (rec.healthEl) {
@@ -1564,7 +1564,13 @@ function refreshAgentStats() {
         rec.healthEl.innerHTML = '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + (hcolors[h]||'#888') + ';margin-right:3px"></span>' + h;
       }
       if (rec.latencyEl) {
-        rec.latencyEl.textContent = s.latency_ms > 0 ? Math.round(s.latency_ms) + 'ms' : '—';
+        // "self" transport shows capture-to-broadcast time; <8ms is typical
+        // for local JPEG encode + in-process send.
+        if (s.transport === 'self') {
+          rec.latencyEl.textContent = s.latency_ms > 0 ? Math.round(s.latency_ms) + 'ms (local)' : '—';
+        } else {
+          rec.latencyEl.textContent = s.latency_ms > 0 ? Math.round(s.latency_ms) + 'ms' : '—';
+        }
       }
       if (rec.bandwidthEl) {
         const kbps = s.bytes_per_sec || 0;
@@ -1897,7 +1903,7 @@ let _updateCheckInFlight = false;
 let _updateApplyInFlight = false;
 let _latestUpdateInfo = null;
 
-async function checkForUpdates(openModal) {
+async function checkForUpdates(openModal = true) {
   if (_updateCheckInFlight) return;
   _updateCheckInFlight = true;
 
@@ -3393,6 +3399,9 @@ function showTransportModal() {
         <p style="margin:6px 0"><b>QUIC agents connected:</b> ${d.quic_agents}</p>
         <p style="margin:6px 0"><b>QUIC server port:</b> ${d.quic_server_port} (UDP)</p>
         <p style="margin:6px 0"><b>Tunnel:</b> ${d.tunnel_type} (${d.tunnel_active ? 'active' : 'inactive'})</p>
+        <p style="margin:6px 0"><b>Live agents:</b> ${d.live_agents||0} / ${d.total_agents||0}</p>
+        <p style="margin:6px 0"><b>Avg latency:</b> ${(d.avg_latency_ms||0) > 0 ? Math.round(d.avg_latency_ms) + 'ms' : '—'}</p>
+        <p style="margin:6px 0"><b>Total bandwidth:</b> ${(() => { const bps = d.total_bandwidth_bps || 0; if (bps > 1048576) return (bps/1048576).toFixed(2) + ' MB/s'; if (bps > 1024) return (bps/1024).toFixed(1) + ' KB/s'; return Math.round(bps) + ' B/s'; })()}</p>
       </div>
       <h3 style="margin:14px 0 8px">All registered transports</h3>
       <ul style="margin:0;padding-left:20px;line-height:1.7">${allTransports || '<li>none</li>'}</ul>
