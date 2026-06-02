@@ -300,9 +300,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
   </div>
   <div id="agent-selector-container" style="flex:1;display:flex;justify-content:center;align-items:center;padding:0 10px"></div>
   <div class="right">
-    <button id="btn-election-xlsx" onclick="downloadElectionHistoryXLSX()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;font-size:11px;cursor:pointer" title="Download GitHub election history (row-wise .xlsx)">🗳️ Elections</button>
-    <button id="btn-election-push" onclick="pushElectionHistoryToGitHub()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 8px;border-radius:5px;font-size:11px;cursor:pointer" title="Push election history XLSX to GitHub">↑ GH</button>
-    <button id="btn-report-csv" onclick="downloadReportCSV()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;font-size:11px;cursor:pointer;font-weight:500" title="Download activity report CSV">📊 Report</button>
+    <button id="btn-report-csv" onclick="downloadReportCSV()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;font-size:11px;cursor:pointer;font-weight:500" title="Download full report (.xlsx with 3 sheets: Activity, Audit Log, Election row-wise history) — also auto-pushed to GitHub daily as report-YYYY-MM-DD.xlsx">📊 Report</button>
     <button onclick="openAssistSession()" title="Click to create & copy assist link" style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);color:#fff;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600">🖥️ Remote Assistant</button>
     <button onclick="toggleAgentsPanel()" title="Connected agents" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">🖥️ Agents</button>
     <span id="version-badge" class="badge" style="font-weight:400;background:rgba(255,255,255,.1);font-size:10px">v—</span>
@@ -2003,33 +2001,6 @@ function downloadReportCSV() {
   a.click();
 }
 
-function downloadElectionHistoryXLSX() {
-  // Fetch the XLSX directly, then either save as file or open in browser
-  // For simplicity, just trigger a download
-  const a = document.createElement('a');
-  a.href = '/api/election-history.xlsx';
-  a.download = 'election-history-' + new Date().toISOString().slice(0,10) + '.xlsx';
-  a.click();
-}
-
-function pushElectionHistoryToGitHub() {
-  const btn = document.getElementById('btn-election-xlsx');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Pushing...'; }
-  fetch('/api/election-history/push', { method: 'POST' })
-    .then(r => r.json())
-    .then(d => {
-      if (btn) { btn.disabled = false; btn.textContent = '🗳️ Elections'; }
-      if (d.ok) {
-        alert('✅ Pushed to GitHub:\n' + d.message + '\n' + d.event_count + ' events');
-      } else {
-        alert('❌ Push failed: ' + (d.message || 'unknown') + (d.error ? '\n' + d.error : ''));
-      }
-    })
-    .catch(e => {
-      if (btn) { btn.disabled = false; btn.textContent = '🗳️ Elections'; }
-      alert('Error: ' + e.message);
-    });
-}
 function downloadReportLegacy() {
   const a = document.createElement('a');
   a.href = '/api/report.csv';

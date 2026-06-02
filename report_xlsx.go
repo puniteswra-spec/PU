@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -214,15 +213,30 @@ func writeAuditSheet(f *excelize.File, sheetName string) error {
 }
 
 func handleReportXLSX(w http.ResponseWriter, r *http.Request) {
+	data, err := buildReportXLSX()
+	if err != nil {
+		http.Error(w, "build report: "+err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"punmonitor-report-"+time.Now().Format("2006-01-02")+".xlsx\"")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	w.Write(data)
+}
+
+// buildReportXLSX builds the full 3-tab report (Activity + Audit Log +
+// Election row-wise history) and returns it as bytes. Used both by the
+// HTTP handler /api/report.xlsx and the daily GitHub auto-push.
+func buildReportXLSX() ([]byte, error) {
 	f := excelize.NewFile()
+	defer f.Close()
 
 	defaultSheet := f.GetSheetName(0)
 	if err := f.SetSheetName(defaultSheet, "Activity"); err != nil {
 		llog("warn", "xlsx: SetSheetName: %v", err)
 	}
 	if err := writeActivitySheet(f, "Activity"); err != nil {
-		http.Error(w, "activity sheet error: "+err.Error(), 500)
-		return
+		return nil, fmt.Errorf("activity: %w", err)
 	}
 	if err := f.SetSheetView("Activity", 0, &excelize.ViewOptions{ShowGridLines: boolPtr(false)}); err != nil {
 		llog("warn", "xlsx: SetSheetView activity: %v", err)
@@ -240,15 +254,11 @@ func handleReportXLSX(w http.ResponseWriter, r *http.Request) {
 		llog("warn", "xlsx: SetColWidth E-I: %v", err)
 	}
 
-	auditIdx, err := f.NewSheet("Audit Log")
-	if err != nil {
-		http.Error(w, "new audit sheet: "+err.Error(), 500)
-		return
+	if _, err := f.NewSheet("Audit Log"); err != nil {
+		return nil, fmt.Errorf("new audit sheet: %w", err)
 	}
-	_ = auditIdx
 	if err := writeAuditSheet(f, "Audit Log"); err != nil {
-		http.Error(w, "audit sheet error: "+err.Error(), 500)
-		return
+		return nil, fmt.Errorf("audit: %w", err)
 	}
 	if err := f.SetSheetView("Audit Log", 0, &excelize.ViewOptions{ShowGridLines: boolPtr(false)}); err != nil {
 		llog("warn", "xlsx: SetSheetView audit: %v", err)
@@ -283,19 +293,47 @@ func handleReportXLSX(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := f.NewSheet("Election"); err != nil {
-		llog("warn", "xlsx: NewSheet election: %v", err)
+		return nil, fmt.Errorf("new election sheet: %w", err)
 	}
 	if err := writeElectionSheet(f, "Election"); err != nil {
-		llog("warn", "xlsx: writeElectionSheet: %v", err)
+		return nil, fmt.Errorf("election: %w", err)
 	}
 	if err := f.SetSheetView("Election", 0, &excelize.ViewOptions{ShowGridLines: boolPtr(false)}); err != nil {
 		llog("warn", "xlsx: SetSheetView election: %v", err)
 	}
-	if err := f.SetColWidth("Election", "A", "A", 30); err != nil {
+	if err := f.SetColWidth("Election", "A", "A", 5); err != nil {
 		llog("warn", "xlsx: SetColWidth election A: %v", err)
 	}
-	if err := f.SetColWidth("Election", "B", "B", 60); err != nil {
+	if err := f.SetColWidth("Election", "B", "B", 28); err != nil {
 		llog("warn", "xlsx: SetColWidth election B: %v", err)
+	}
+	if err := f.SetColWidth("Election", "C", "D", 12); err != nil {
+		llog("warn", "xlsx: SetColWidth election CD: %v", err)
+	}
+	if err := f.SetColWidth("Election", "E", "F", 12); err != nil {
+		llog("warn", "xlsx: SetColWidth election EF: %v", err)
+	}
+	if err := f.SetColWidth("Election", "G", "H", 22); err != nil {
+		llog("warn", "xlsx: SetColWidth election GH: %v", err)
+	}
+	if err := f.SetColWidth("Election", "I", "I", 32); err != nil {
+		llog("warn", "xlsx: SetColWidth election I: %v", err)
+	}
+	if err := f.SetColWidth("Election", "J", "J", 14); err != nil {
+		llog("warn", "xlsx: SetColWidth election J: %v", err)
+	}
+	if err := f.SetColWidth("Election", "K", "K", 16); err != nil {
+		llog("warn", "xlsx: SetColWidth election K: %v", err)
+	}
+	if err := f.SetColWidth("Election", "L", "L", 50); err != nil {
+		llog("warn", "xlsx: SetColWidth election L: %v", err)
+	}
+	if err := f.SetPanes("Election", &excelize.Panes{
+		Freeze: true, Split: false, XSplit: 0, YSplit: 1,
+		TopLeftCell: "A2", ActivePane: "bottomLeft",
+		Selection: []excelize.Selection{{SQRef: "A2", ActiveCell: "A2", Pane: "bottomLeft"}},
+	}); err != nil {
+		llog("warn", "xlsx: SetPanes election: %v", err)
 	}
 
 	if err := f.SetSheetView(defaultSheet, 0, &excelize.ViewOptions{ShowGridLines: boolPtr(false)}); err != nil {
@@ -304,32 +342,14 @@ func handleReportXLSX(w http.ResponseWriter, r *http.Request) {
 
 	var buf bytes.Buffer
 	if err := f.Write(&buf); err != nil {
-		http.Error(w, "write xlsx: "+err.Error(), 500)
-		return
+		return nil, fmt.Errorf("write xlsx: %w", err)
 	}
-	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"punmonitor-report-"+time.Now().Format("2006-01-02")+".xlsx\"")
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", buf.Len()))
-	buf.WriteTo(w)
-
-	if f != nil {
-		_ = f.Close()
-	}
+	return buf.Bytes(), nil
 }
 
 func boolPtr(b bool) *bool { return &b }
 
 func writeElectionSheet(f *excelize.File, sheetName string) error {
-	globalElectionStatusMu.RLock()
-	s := globalElectionStatus
-	globalElectionStatusMu.RUnlock()
-	s.Configured = cfg.GitHubRepo != "" && cfg.GitHubToken != ""
-	s.Repo = cfg.GitHubRepo
-	s.SelfIsLeader = s.LeaderID != "" && s.LeaderID == cfg.AgentID
-	if !s.LeaderUpdated.IsZero() {
-		s.LeaderStale = time.Since(s.LeaderUpdated) > electionInterval
-	}
-
 	headerStyle, _ := f.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true, Color: "FFFFFF", Size: 11},
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"1F4E78"}, Pattern: 1},
@@ -341,106 +361,104 @@ func writeElectionSheet(f *excelize.File, sheetName string) error {
 			{Type: "bottom", Color: "BFBFBF", Style: 1},
 		},
 	})
-	labelStyle, _ := f.NewStyle(&excelize.Style{
-		Font: &excelize.Font{Bold: true, Size: 10, Color: "333333"},
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"F2F2F2"}, Pattern: 1},
-		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
+	cellStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Size: 10},
+		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left", WrapText: true},
+		Border: []excelize.Border{
+			{Type: "left", Color: "DDDDDD", Style: 1},
+			{Type: "right", Color: "DDDDDD", Style: 1},
+			{Type: "top", Color: "DDDDDD", Style: 1},
+			{Type: "bottom", Color: "DDDDDD", Style: 1},
+		},
 	})
-	valueStyle, _ := f.NewStyle(&excelize.Style{
-		Font: &excelize.Font{Size: 10},
+	errorStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Size: 10, Color: "C00000"},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"FFEEEE"}, Pattern: 1},
 		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left", WrapText: true},
 	})
-	sectionStyle, _ := f.NewStyle(&excelize.Style{
-		Font: &excelize.Font{Bold: true, Color: "FFFFFF", Size: 10},
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"4F81BD"}, Pattern: 1},
+	claimedStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Size: 10, Color: "006100", Bold: true},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"E2F0D9"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
 	})
 
-	method := s.Method
-	if method == "" {
-		method = "none"
+	headers := []string{
+		"#", "Timestamp", "Date", "Time", "Action", "Method",
+		"Agent ID (self)", "Hostname", "Leader ID", "Leader Age (sec)",
+		"Result", "Error",
 	}
-	if !s.Configured {
-		method = "no-github"
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue(sheetName, cell, h)
 	}
-	repoDisplay := s.Repo
-	if repoDisplay == "" {
-		repoDisplay = "(not configured)"
-	}
-	selfIsLeader := "No"
-	if s.SelfIsLeader {
-		selfIsLeader = "YES — this instance is the primary server"
-	}
-	leaderDisplay := s.LeaderID
-	if leaderDisplay == "" {
-		leaderDisplay = "(no leader recorded)"
-	}
-	updatedDisplay := "(never)"
-	if !s.LeaderUpdated.IsZero() {
-		updatedDisplay = s.LeaderUpdated.Format(time.RFC3339) + " (" + time.Since(s.LeaderUpdated).Truncate(time.Second).String() + " ago)"
-	}
-	lastCheckDisplay := "(never)"
-	if !s.LastCheck.IsZero() {
-		lastCheckDisplay = s.LastCheck.Format(time.RFC3339) + " (" + time.Since(s.LastCheck).Truncate(time.Second).String() + " ago)"
-	}
-	leaderStaleDisplay := "No"
-	if s.LeaderStale {
-		leaderStaleDisplay = "YES — leader hasn't renewed in " + electionInterval.String()
-	}
-	role := "AGENT (connects to leader)"
-	if cfg.IsServerMode {
-		role = "SERVER (primary)"
-	}
-	if s.SelfIsLeader {
-		role = "SERVER+LEADER (this instance is the GitHub primary)"
-	}
-	section := func(row int, title string) error {
-		return f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), title)
-	}
-	_ = section
-	f.SetCellValue(sheetName, "A1", "PunMonitor Leader Election Status")
-	f.SetCellValue(sheetName, "B1", "Generated "+time.Now().Format(time.RFC3339))
-	f.SetCellStyle(sheetName, "A1", "B1", sectionStyle)
+	f.SetCellStyle(sheetName, "A1", fmt.Sprintf("%s1", colLetter(len(headers))), headerStyle)
 
-	rows := [][2]string{
-		{"ELECTION METHOD", method},
-		{"GitHub configured", boolStr(s.Configured)},
-		{"GitHub repo", repoDisplay},
-		{"Fallback relay", firstNonEmpty(s.FallbackServer, "https://relay.recruitedge.us")},
-		{"", ""},
-		{"THIS INSTANCE", ""},
-		{"AgentID", cfg.AgentID},
-		{"Hostname", getHostname()},
-		{"Local IP", getLocalIP()},
-		{"Mode badge", modeBadge()},
-		{"Role on network", role},
-		{"Self is leader", selfIsLeader},
-		{"", ""},
-		{"CURRENT LEADER", ""},
-		{"Leader AgentID", leaderDisplay},
-		{"Leader last update", updatedDisplay},
-		{"Leader is stale", leaderStaleDisplay},
-		{"Election interval", electionInterval.String()},
-		{"", ""},
-		{"LAST CHECK", ""},
-		{"Checked at", lastCheckDisplay},
-		{"Result", firstNonEmpty(s.LastResult, "(no check yet)")},
-		{"Check count", fmt.Sprintf("%d", s.CheckCount)},
-		{"Last error", firstNonEmpty(s.LastError, "(none)")},
-	}
-	for i, r := range rows {
-		row := 3 + i
-		f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), r[0])
-		f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), r[1])
-		if r[0] != "" && (r[0] == strings.ToUpper(r[0]) || strings.Contains(r[0], "STATUS") || strings.HasSuffix(r[0], "LEADER") || strings.Contains(r[0], "INSTANCE") || strings.Contains(r[0], "CHECK")) {
-			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("B%d", row), sectionStyle)
-		} else if r[0] == "" {
-			_ = 0
-		} else {
-			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("A%d", row), labelStyle)
-			f.SetCellStyle(sheetName, fmt.Sprintf("B%d", row), fmt.Sprintf("B%d", row), valueStyle)
+	// Column widths
+	f.SetColWidth(sheetName, "A", "A", 5)
+	f.SetColWidth(sheetName, "B", "B", 28)
+	f.SetColWidth(sheetName, "C", "D", 12)
+	f.SetColWidth(sheetName, "E", "F", 12)
+	f.SetColWidth(sheetName, "G", "H", 22)
+	f.SetColWidth(sheetName, "I", "I", 32)
+	f.SetColWidth(sheetName, "J", "J", 14)
+	f.SetColWidth(sheetName, "K", "K", 16)
+	f.SetColWidth(sheetName, "L", "L", 50)
+
+	events := getElectionHistory()
+	for i, ev := range events {
+		row := i + 2
+		dateStr := ev.Timestamp.Format("2006-01-02")
+		timeStr := ev.Timestamp.Format("15:04:05.000")
+		leaderAgeSec := ev.LeaderAgeMS / 1000
+		if leaderAgeSec < 0 {
+			leaderAgeSec = 0
+		}
+		rowVals := []interface{}{
+			i + 1,
+			ev.TimestampISO,
+			dateStr,
+			timeStr,
+			ev.Action,
+			ev.Method,
+			ev.AgentID,
+			ev.Hostname,
+			ev.LeaderID,
+			leaderAgeSec,
+			ev.Result,
+			ev.Error,
+		}
+		for ci, v := range rowVals {
+			cell, _ := excelize.CoordinatesToCellName(ci+1, row)
+			f.SetCellValue(sheetName, cell, v)
+		}
+		rowEnd := fmt.Sprintf("L%d", row)
+		switch ev.Action {
+		case "claimed", "renewed":
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), rowEnd, claimedStyle)
+		case "error":
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), rowEnd, errorStyle)
+		default:
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), rowEnd, cellStyle)
 		}
 	}
-	_ = headerStyle
+
+	footerRow := len(events) + 3
+	f.SetCellValue(sheetName, fmt.Sprintf("A%d", footerRow), "Generated")
+	f.SetCellValue(sheetName, fmt.Sprintf("B%d", footerRow), time.Now().Format(time.RFC3339))
+	f.SetCellValue(sheetName, fmt.Sprintf("D%d", footerRow), "Total events")
+	f.SetCellValue(sheetName, fmt.Sprintf("E%d", footerRow), len(events))
+
+	f.SetPanes(sheetName, &excelize.Panes{
+		Freeze:      true,
+		Split:       false,
+		XSplit:      0,
+		YSplit:      1,
+		TopLeftCell: "A2",
+		ActivePane:  "bottomLeft",
+		Selection: []excelize.Selection{
+			{SQRef: "A2", ActiveCell: "A2", Pane: "bottomLeft"},
+		},
+	})
 	return nil
 }
 

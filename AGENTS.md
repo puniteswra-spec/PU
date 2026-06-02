@@ -1,24 +1,42 @@
 # Anchored Summary
 
 ## Goal
-Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard.
+Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard. Multi-machine leader election via GitHub. SSH server for command-line access. Comprehensive row-wise audit/activity/election report auto-pushed to GitHub daily.
 
 ## Architecture
-- 5 .go files: `main.go` + 3 platform files (`platform_windows.go`, `platform_darwin.go`, `platform_default.go`) + `report_xlsx.go` (XLSX report generator using excelize/v2)
-- `audit.go` (105 lines): `AuditEntry`, `AuditLog`, JSONL persistence at `%APPDATA%\PunMonitor\audit.jsonl`, `RecordAudit()`, `truncateForAudit()`
-- Dashboard (`dashboard.html`) served on `:8080`
-- GitHub repo (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`
-- Watchdog same binary (`--watchdog`), auto-installed on first run
-- Autostart via Windows registry / macOS LaunchAgent, auto-installed on first run
+- **Go files** (package main):
+  - `main.go` (~5800 lines): core — Config, SettingsFile, all HTTP handlers, `runAgentClient`, `startScreenCapture`, `safeWriteMessage`, `connWriteMu`, `broadcastFrame`, `selfUpdate`, `cleanOldFiles`, `runWatchdog`, `startWatchdogProcess`, `monitorWatchdogProcess`, `addHeartbeat`, `/api/assist-close`, `/api/settings`, `saveSettings`/`loadSettings` (with SSH defaults restoration `if !s.SSHEnabled && s.SSHHostKeyPEM == ""`), `/api/check-update`, `ElectionStatus` struct, `setElectionStatus` (also calls `appendElectionEvent`), `tryClaimLeadership`/`renewLeadership` (with SHA fix), `maskToken`, `compareVersions`, `runServerComponents` (calls `setupSSHServer` + `startElectionHistoryPusher`), `/api/election-history` (JSON), `/api/election-history.xlsx` (download), `/api/report.xlsx` (3-tab report: Activity + Audit Log + Election), `var binaryVersion = "10.0.27"`, AgentID generation with `getStableMachineID` + `isLegacyRandomAgentID`, `getHostname`, `randomString`, `/api/system-info` (with `agent_id` field), `/api/ssh-info`, native CPU/memory/boot on Windows, autostart + watchdog setup.
+  - `ssh_server.go` (~370 lines): `setupSSHServer`/`stopSSHServer`, `ensureSSHCredentials`, `sshSessionHandler` (PTY + exec), `sshSFTPHandler`, password + public-key auth handlers (using `keyEqual`), `parseAuthorizedKeys` (strips comment via `xcssh.ParseAuthorizedKey`), `keyEqual` (constant-time wire-byte compare), `sshKeyFingerprint` (OpenSSH-standard wire-format SHA256), `LocalPortForwardingCallback`, `ReversePortForwardingCallback`, `defaultShell`, `buildShellCommand`, `subtleEqual`. Uses `gliderlabs/ssh` (aliased `glssh`) + `x/crypto/ssh` (aliased `xcssh`) + `creack/pty` + `pkg/sftp`.
+  - `election_history.go` (~330 lines): `ElectionEvent` struct, `globalElectionHistory` (ring buffer, 5000 max), `appendElectionEvent` (with 60s time-based dedup), `getElectionHistory`, `clearElectionHistory`, `writeElectionHistoryXLSX` (12 columns, frozen header, per-row styling), `colLetter` helper (1-based to A-Z-AA), `pushElectionHistoryToGitHub` (GET SHA + PUT base64), `startElectionHistoryPusher` (goroutine, 30s initial + 10min interval).
+  - `report_xlsx.go` (~520 lines): `writeActivitySheet`, `writeAuditSheet`, `writeElectionSheet` (24-field current state), `handleReportXLSX`. **3 sheets: Activity + Audit Log + Election (current state)**.
+  - `metrics_windows.go` (~165 lines): `//go:build windows` — `getNativeCPUPercent()` (PDH), `getNativeMemoryUsage()` (GlobalMemoryStatusEx), `nativeBootTimeMS()` (GetTickCount64). Uses `syscall.NewLazyDLL` for `kernel32`/`pdh`/`psapi`.
+  - `metrics_other.go` (~14 lines): `//go:build !windows` — stubs returning 0.
+  - `serverload.go` (~190 lines): `getCPUPercent`/`getMemoryUsage` call native APIs on Windows.
+  - `platform_windows.go` (~480 lines): `newHiddenCmd`, `setupAutostart`, `isWindowsAdmin()`, `addDefenderExclusion`, `monitorAlreadyRunning()`, `systemBootTimeMS`, `singleton`/`watchdogSingleton`, `platformStableMachineID`.
+  - `platform_darwin.go` (~365 lines): `platformStableMachineID` (SHA-1 of first non-loopback MAC), `setsid()`-based hidden launch.
+  - `platform_default.go` (~85 lines): `platformStableMachineID() string { return "" }` stub.
+  - `audit.go` (~115 lines): `AuditEntry`, `AuditLog`, JSONL at `%APPDATA%\PunMonitor\audit.jsonl`, `RecordAudit()`, `truncateForAudit()`. Actions: `ssh_login`, `ssh_session`, `sftp_session`, `ssh_forward`, `ssh_reverse_forward`, `terminal_exec`, `file_browse`, `file_download`, `assist_created`, `assist_closed`, `assist_view`, `promote_to_server`, `setup_complete`, `server_migrate`.
+  - `discovery.go` (229 lines): `PeerDiscovery`, UDP broadcast on port 9999.
+  - `lan_election.go` (241 lines): `LANLeaderElection`, `runElection`.
+  - `heartbeat.go` (261 lines): `ConnectionQuality`, `startAgentPingLoop`, etc.
+  - `terminal.go` (265 lines): `CommandRequest`, `DirRequest`, terminal/file manager functions.
+  - `tls.go` (88 lines): `ensureTLSCert`, `createTLSConfig`.
+  - `deploy.go` (235 lines): SMB-based auto-deploy.
+- **Dashboard** (`dashboard.html` ~2780 lines): single view (no tab bar since v10.0.26). Topbar contains: 🆔 stable ID badge + 🔐 SSH badge + agent-selector + 🗳️ Elections + ↑ GH + 📊 Report + Remote Assistant + Agents + ⚙ Settings. `#app` height `calc(100vh - 44px)`. SSH modal (auto-refresh 30s) with status/features/fingerprint/ssh_cmd/sftp_cmd/user/password show/hide/copy.
+- **GitHub repo** (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`.
+- **Watchdog** same binary (`--watchdog`), auto-installed on first run.
+- **Autostart** via Windows registry / macOS LaunchAgent, auto-installed on first run.
+- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.27 -H windowsgui" -o PunMonitor.exe .`
+- **Go module**: `PunMonitor` go 1.25.0. Deps: `github.com/pkg/sftp v1.13.10`, `github.com/gliderlabs/ssh v0.3.8`, `github.com/creack/pty v1.1.24`, `golang.org/x/crypto v0.52.0`, `golang.org/x/sys v0.45.0`, `xuri/excelize/v2`, `pion/webrtc/v4 v4.2.12`, `quic-go/quic-go`, `gorilla/websocket`, `kbinani/screenshot`.
 
 ## Key Behaviors
 - **Fully hidden**: `FreeConsole()` + `-H windowsgui` on Windows; `setsid()` on macOS — no window, no terminal, ever
+- **No CMD popups**: native PDH for CPU/memory (no `wmic.exe` subprocess), registry-only autostart (no `schtasks` flash), legacy cleanup of `schtasks`/`startup` folder on first run
 - **First run**: pulls `punmonitor-credentials.json` + `settings.json` from GitHub → starts tunnel → screen capture → HTTP server → auto-installs autostart + watchdog → done
 - **Subsequent runs**: reads cached settings, syncs from GitHub for updates
 - **Restart on crash**: watchdog (auto-installed via LaunchAgent / Registry) restarts monitor if killed
-- **Task manager kill**: autostart reinstalled every 2 minutes; LaunchAgent `KeepAlive` / Registry ensures restart on reboot or after kill
-- **Remote control**: Win32 `SendInput` for mouse/keyboard via dashboard Take Control
-- **Agent transport fallback**: WebSocket → WebRTC → GitHub (tries next transport if one fails)
+- **SSH server** (auto-enabled on port 2222): password + public-key auth, PTY + exec, SFTP subsystem, local port forwarding (`-L`), reverse port forwarding (`-R`). All events audit-logged.
+- **Election history** (in-memory ring buffer, 5000 max): every leader-election state change appended with time-based dedup (60s window for periodic renewals, always-logged for state changes). Auto-pushed to GitHub as `election_history.xlsx` every 10 min.
 
 ## Config File (in GitHub repo)
 | Field | Purpose | Example |
@@ -32,6 +50,12 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 | `cloudflare_tunnel_secret` | CF tunnel secret | |
 | `cloudflare_tunnel_id` | CF tunnel ID | |
 | `election_interval` | Leader re-election interval | `5m` |
+| `ssh_enabled` | SSH server on/off | `true` |
+| `ssh_port` | SSH listen port | `2222` |
+| `ssh_user` | SSH username | `admin` |
+| `ssh_password` | 16-char admin password (auto-generated) | `zePR1g0aepQFbTjB` |
+| `ssh_authorized_keys` | List of allowed public keys | (one per line) |
+| `ssh_host_key_pem` | PEM-encoded ed25519 host key | (auto-generated) |
 
 ## Self-Update
 - Dashboard → Settings → "Push update (.exe)" — prompts for download URL
@@ -40,14 +64,16 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 - Watchdog (3s delay) restarts with new binary
 - Version tracked via `-X main.binaryVersion` at build time
 
-## Leader Election (multi‑machine)
+## Leader Election (multi-machine)
 - Every instance writes `primary_server.json` to the GitHub repo via API.
-- The instance whose AgentID is in that file acts as **server** (tunnel + HTTP + screen capture).
+- The instance whose AgentID is in that file acts as **server** (tunnel + HTTP + screen capture + SSH).
 - All other instances act as **agents** (connect to the server via WebSocket and relay frames).
 - Every `election_interval` (default `5m`), each instance re-reads the file:
   - If the leader is stale (> `election_interval` since last update), any instance can take over.
   - If the AgentID is the current leader, it renews its timestamp.
+- LAN election runs first (8s window) so same-network works without GitHub round-trips.
 - No GitHub token = always runs as standalone server.
+- Every state change is appended to election history with (timestamp, action, method, agent_id, hostname, leader_id, leader_age_ms, result, error).
 
 ## Agent Transport Fallback
 - **Priority order**: WebSocket → WebRTC → GitHub
@@ -64,54 +90,63 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 | `/api/version` | GET | Returns binary version |
 | `/api/update` | POST | Self-update from URL |
 | `/api/promote` | POST | Designate as primary server |
+| `/api/check-update` | GET | Check GitHub Releases for newer version |
 | `/api/health` | GET | Health check (no auth) |
 | `/api/agents` | GET | Agent list (IDs only, includes server) |
 | `/api/agents/full` | GET | Agent list with hidden state |
 | `/api/agent-system-info/{id}` | GET | Per-agent system info |
 | `/api/hide-agent` | POST | Toggle agent visibility |
-| `/api/system-info` | GET | Hostname, IP, uptime, version |
+| `/api/system-info` | GET | Hostname, IP, uptime, version, agent_id |
 | `/api/transport-status` | GET | Active transport, health |
+| `/api/ssh-info` | GET | SSH server status, fingerprint, ssh_cmd, sftp_cmd |
+| `/api/election-history` | GET | Election history events (JSON) |
+| `/api/election-history.xlsx` | GET | Election history XLSX (download) |
+| `/api/election-history/push` | POST | Manual GitHub push |
+| `/api/report.xlsx` | GET | 3-tab report (Activity + Audit Log + Election current state) |
+| `/api/report.csv` | GET | Legacy single-sheet CSV report |
 | `/ws` | WS | Frame broadcast + remote control |
+| `/ws/webrtc` | WS | WebRTC signaling |
 
 ## Next Steps
-- Deploy updated binary and verify 502 error resolved.
-- Verify agent cells show correct Host/IP/WAN per agent.
-- Optionally notarize macOS binary to eliminate Gatekeeper dialogs.
+- **Format all Go files**: `gofmt -w .`
+- **Remove dead code**: `var lanElectionDone = make(chan chan struct{})` at `main.go:445`
+- **Fix `go vet` warning**: change `NewQuicTransport` to take `*quic.Conn` + `*quic.Stream` pointers
+- **Add SSH section to admin settings page**: toggle enabled, change port, regenerate password, view/rotate host key, manage authorized_keys
+- **Wire update flow**: `fetch('/api/check-update')` → if newer, prompt user → `POST /api/update` with `url` from response → existing `selfUpdate` + broadcast to agents
+- **Add reverse SSH tunnel** (agent → central SSH server) as alternative to Cloudflare tunnel
+- **Optimize election**: only leader should renew; agents should only check on demand
+- **Multiple GitHub accounts** for distributed rate limiting at 50+ machines
+- **Server switch** (Oracle, Azure, AWS): extend `tunnelProvider` to support more backends; currently only `cloudflare` and `direct` (local IP) are supported. `cfg.ServerURL` is the override field for any HTTPS URL
+- **WebRTC for screen sharing**: pion/webrtc/v4 v4.2.12 used; verify the WebRTC transport path is being taken for screen frames to offload server
+- **Test binary recovery**: delete `C:\Program Files\PunMonitor\PunMonitor.exe`, verify watchdog re-downloads
+- **Test Task Manager kill**: verify watchdog restarts main process within ~3s with no CMD flash
+- **User: revoke the GitHub token that was exposed in earlier chat** (referenced in conversation, NOT in repo). Visit https://github.com/settings/tokens
 
-## Reports (v10.0.10)
-- `/api/report.xlsx` — Excel file with two sheets:
-  - **Activity** sheet: server row + per-agent rows with transport/health/latency/bytes/frames/uptime/boot/wake/idle
-  - **Audit Log** sheet: all `RecordAudit()` events (timestamp + date/time split columns, action, agent, user, detail)
-  - Header bold white on blue (`s="1"`), gridlines hidden, column widths tuned, audit sheet has frozen header row
-  - Generated in ~60ms, ~8.5KB typical; uses excelize/v2 (added ~4MB to binary)
-- `/api/report.csv` — legacy single-sheet activity report (still available via `downloadReportLegacy()`)
-- `downloadReportCSV()` in dashboard → downloads `punmonitor-report-YYYY-MM-DD.xlsx`
+## Reports
+- **v10.0.10**: `/api/report.xlsx` — Excel file with 3 sheets: Activity, Audit Log, Election (current state)
+- **v10.0.26**: Separate election history XLSX (`/api/election-history.xlsx`) with row-wise events
+- **v10.0.27+ planned**: Merge election history into the main report's Election sheet (row-wise), auto-push entire report to GitHub daily as `report-YYYY-MM-DD.xlsx`
 
-## Dashboard Tabs (v10.0.10)
-- `#tab-bar` with three buttons: `▦ Dashboard` (default) | `📋 Audit Log [count]` | `📊 Download Report (.xlsx)`
-- Tab switching: `switchTab(name)` — toggles `.tab-page.active`, persists to `localStorage['pm_active_tab']`
-- Audit Log tab features:
-  - Search input (filters action, agent, user, detail)
-  - Action filter dropdown (terminal_exec, file_browse, file_download, etc.)
-  - Time filter dropdown (All / Last hour / 24h / week)
-  - Color-coded action chips (`act-terminal_exec`, `act-file_browse`, etc.)
-  - Stats footer ("Showing X of Y filtered, Z total. Download XLSX for full history")
-  - Auto-refreshes every 30s (and immediately on switch)
-  - Audit count badge on tab updates every 30s even when on dashboard tab
-
-## Audit Log Recording (v10.0.10)
-Events now recorded via `RecordAudit(action, agentID, user, detail)`:
-- `promote_to_server`, `setup_complete`, `server_migrate`
-- `terminal_exec` (command truncated to 200 chars)
-- `file_browse` (path truncated to 200 chars)
-- `file_download` (path truncated to 200 chars)
-- `assist_created`, `assist_closed`, `assist_view`
-- Persisted to JSONL at `%APPDATA%\PunMonitor\audit.jsonl`
-- `Recent(max)` returns last N entries (capped at 10000 in XLSX export)
+## SSH Server
+- **Library**: `gliderlabs/ssh v0.3.8` + `x/crypto/ssh v0.52.0` + `creack/pty v1.1.24` + `pkg/sftp v1.13.10`
+- **Auto-enabled on port 2222**, host keys auto-generated (ed25519, persisted to settings.json)
+- **Auth**: password (16-char auto-generated) + public key (ed25519, RSA, ECDSA — wire-format compare via `keyEqual`)
+- **Fingerprint**: OpenSSH-standard SHA256 of wire-format public key (51 bytes for ed25519)
+- **Channels**: session (PTY + exec), direct-tcpip (local -L forwarding), sftp (subsystem)
+- **Requests**: env, exec, shell, pty-req, window-change, signal, subsystem (session); tcpip-forward + cancel-tcpip-forward (reverse -R)
+- **Audit-logged**: `ssh_login` (with auth method), `ssh_session` (with cmd), `sftp_session`, `ssh_forward`, `ssh_reverse_forward`
 
 ## Key Decisions
 - **Per-agent system info**: Agent sends `systemInfo` in WebSocket hello; server stores in `agentSystemInfo` map; dashboard fetches via `/api/agent-system-info/{id}`.
-- **/api/health endpoint**: Returns `{"status":"ok"}` with no auth — allows Cloudflare or external monitoring to verify server is alive.
-- **Server listed in /api/agents**: Server's own AgentID included so its screen cell appears in the dashboard pill selector.
-- **agentSystemInfo cleanup**: Stale agent info deleted on WebSocket disconnect to prevent memory leaks.
+- **`/api/health` endpoint**: Returns `{"status":"ok"}` with no auth — allows Cloudflare or external monitoring to verify server is alive.
+- **Server listed in `/api/agents`**: Server's own AgentID included so its screen cell appears in the dashboard pill selector.
+- **`agentSystemInfo` cleanup**: Stale agent info deleted on WebSocket disconnect to prevent memory leaks.
 - **Named tunnel fallback**: If named tunnel exits with error, falls through to quick tunnel instead of leaving tunnel down.
+- **Stable AgentID** (v10.0.17+): `<hostname>-<8-char-machine-id>` format survives reboots, reinstalls, settings wipes. SHA-1 of `MachineGuid` (Windows) / MAC (macOS) / hostname (Linux), first 8 hex chars. Legacy 4-alphanumeric suffix detected and migrated.
+- **SSH wire-format fingerprint** (v10.0.22): SHA256 of 51-byte `ssh-ed25519` public-key wire format, not raw 32-byte key.
+- **SSH public-key auth** (v10.0.22): `xcssh.ParseAuthorizedKey` + constant-time byte compare of `Marshal()` wire bytes, ignores comment.
+- **SFTP subsystem** (v10.0.22): registered via `SubsystemHandlers["sftp"]` map (subsystem requests are dispatched before main handler).
+- **Port forwarding** (v10.0.23): local via `ChannelHandlers["direct-tcpip"] = glssh.DirectTCPIPHandler`; reverse via `RequestHandlers["tcpip-forward"] = ForwardedTCPHandler.HandleSSHRequest` with shared `forwardedTCPHandler = &glssh.ForwardedTCPHandler{}`.
+- **gliderlabs/ssh gotcha** (v10.0.25 fix): when `ChannelHandlers` is non-nil, you MUST add `"session": glssh.DefaultSessionHandler` explicitly — it doesn't auto-merge defaults.
+- **Election history dedup** (v10.0.26): 60s time-based dedup of "same state" events; state-changing actions (claimed, takeover, error) always logged.
+- **Dashboard tab removed** (v10.0.26): audit data only in XLSX + `/api/audit`. Single Dashboard view. `#app` height `calc(100vh - 44px)`.

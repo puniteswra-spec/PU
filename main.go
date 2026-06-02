@@ -1617,7 +1617,7 @@ func runServerComponents() {
 	} else {
 		defer stopSSHServer()
 	}
-	startElectionHistoryPusher()
+	startDailyReportPusher()
 	go safeRun("leader-renewal", func() {
 		ticker := time.NewTicker(getElectionInterval() / 2)
 		defer ticker.Stop()
@@ -2231,40 +2231,52 @@ func startHTTPServer() {
 	http.HandleFunc("/api/election-history", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"events":       getElectionHistory(),
-			"count":        len(getElectionHistory()),
-			"last_push":    lastElectionPushAttempt,
+			"events":    getElectionHistory(),
+			"count":     len(getElectionHistory()),
+			"last_push": lastDailyReportStatus(),
 		})
 	})
 
-	// /api/election-history.xlsx — downloads the row-wise Excel report
-	http.HandleFunc("/api/election-history.xlsx", func(w http.ResponseWriter, r *http.Request) {
-		data, err := writeElectionHistoryXLSX()
-		if err != nil {
-			http.Error(w, "xlsx build: "+err.Error(), 500)
-			return
-		}
-		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-		w.Header().Set("Content-Disposition", "attachment; filename=\"election-history-"+time.Now().Format("2006-01-02")+".xlsx\"")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
-		w.Write(data)
+	// /api/report/status — returns the last daily report push status
+	http.HandleFunc("/api/report/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		dailyReportPushMu.Lock()
+		pushed := lastDailyReportPushed
+		state := dailyReportPusherState
+		dailyReportPushMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"last_pushed_file": pushed,
+			"status":           state,
+			"next_push_at":     time.Now().Add(time.Until(nextMidnight())),
+		})
 	})
 
-	// /api/election-history/push — POST to manually push the XLSX to GitHub
-	http.HandleFunc("/api/election-history/push", func(w http.ResponseWriter, r *http.Request) {
+	// /api/report/push — POST to manually trigger a daily report push
+	http.HandleFunc("/api/report/push", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", 405)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		ok, msg, err := pushElectionHistoryToGitHub()
+		filename, msg, err := pushDailyReportToGitHub()
+		dailyReportPushMu.Lock()
+		if err != nil {
+			dailyReportPusherState = "ERROR " + time.Now().Format(time.RFC3339) + ": " + err.Error()
+		} else {
+			dailyReportPusherState = "OK " + time.Now().Format(time.RFC3339) + ": " + msg
+			lastDailyReportPushed = filename
+		}
+		dailyReportPushMu.Unlock()
 		resp := map[string]interface{}{
-			"ok":            ok,
-			"message":       msg,
-			"event_count":   len(getElectionHistory()),
+			"filename":    filename,
+			"message":     msg,
+			"event_count": len(getElectionHistory()),
 		}
 		if err != nil {
 			resp["error"] = err.Error()
+			resp["ok"] = false
+		} else {
+			resp["ok"] = true
 		}
 		json.NewEncoder(w).Encode(resp)
 	})
