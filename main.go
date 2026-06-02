@@ -241,6 +241,12 @@ type Config struct {
     DisplayIndex        int    // which monitor to capture (-1 = primary)
     AutoQuality         bool   // auto-adjust JPEG quality based on bandwidth
     JPEGQuality         int    // manual quality override (30-95)
+    SSHEnabled          bool   // expose SSH server on this machine
+    SSHPort             int    // default 2222
+    SSHUsername         string // default "admin"
+    SSHPassword         string // auto-generated 16-char password
+    SSHHostKeyPEM       string // ed25519 host key (PEM)
+    SSHAuthorizedKeys   []string
 }
 
 type SettingsFile struct {
@@ -271,6 +277,12 @@ type SettingsFile struct {
     DisplayIndex           int              `json:"display_index,omitempty"`
     AutoQuality            bool             `json:"auto_quality,omitempty"`
     JPEGQuality            int              `json:"jpeg_quality,omitempty"`
+    SSHEnabled             bool             `json:"ssh_enabled,omitempty"`
+    SSHPort                int              `json:"ssh_port,omitempty"`
+    SSHUsername            string           `json:"ssh_username,omitempty"`
+    SSHPassword            string           `json:"ssh_password,omitempty"`
+    SSHHostKeyPEM          string           `json:"ssh_host_key_pem,omitempty"`
+    SSHAuthorizedKeys      []string         `json:"ssh_authorized_keys,omitempty"`
 }
 
 type CaptureTier int
@@ -666,6 +678,12 @@ func saveSettings() error {
         DeployDomain:           deployCreds.Domain,
         CaptureSchedule:        cfg.CaptureSchedule,
         CaptureDays:            cfg.CaptureDays,
+        SSHEnabled:             cfg.SSHEnabled,
+        SSHPort:                cfg.SSHPort,
+        SSHUsername:            cfg.SSHUsername,
+        SSHPassword:            cfg.SSHPassword,
+        SSHHostKeyPEM:          cfg.SSHHostKeyPEM,
+        SSHAuthorizedKeys:      cfg.SSHAuthorizedKeys,
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil { return err }
@@ -706,6 +724,19 @@ func loadSettings() {
 	}
 	cfg.CaptureSchedule = s.CaptureSchedule
 	cfg.CaptureDays = s.CaptureDays
+	cfg.SSHEnabled = s.SSHEnabled
+	if s.SSHPort > 0 { cfg.SSHPort = s.SSHPort }
+	// After loadSettings, if the file didn't include SSHEnabled (defaults to
+	// false in JSON), restore the ON default so the SSH server starts up
+	// out of the box. Users who explicitly disable it in /api/settings will
+	// set it to false, which will then be persisted via saveSettings().
+	if !s.SSHEnabled && s.SSHHostKeyPEM == "" {
+		cfg.SSHEnabled = true
+	}
+	if s.SSHUsername != "" { cfg.SSHUsername = s.SSHUsername }
+	if s.SSHPassword != "" { cfg.SSHPassword = s.SSHPassword }
+	if s.SSHHostKeyPEM != "" { cfg.SSHHostKeyPEM = s.SSHHostKeyPEM }
+	if s.SSHAuthorizedKeys != nil { cfg.SSHAuthorizedKeys = s.SSHAuthorizedKeys }
 	llog("info", "Loaded saved settings from %s", settingsFilePath())
 }
 
@@ -1568,6 +1599,11 @@ func runServerComponents() {
 	})
 	go startTransportMonitor(context.Background())
 	go startServerLoadMonitor()
+	if err := setupSSHServer(); err != nil {
+		llog("error", "SSH server failed to start: %v", err)
+	} else {
+		defer stopSSHServer()
+	}
 	go safeRun("leader-renewal", func() {
 		ticker := time.NewTicker(getElectionInterval() / 2)
 		defer ticker.Stop()
@@ -2131,6 +2167,36 @@ func startHTTPServer() {
 	http.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"version": binaryVersion})
+	})
+
+	http.HandleFunc("/api/ssh-info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		port := cfg.SSHPort
+		if port == 0 {
+			port = 2222
+		}
+		// Determine the public-facing host (tunnel or local IP)
+		host := "localhost"
+		if h := cfg.TunnelHostname; h != "" && (cfg.TunnelProvider == "cloudflare" || cfg.TunnelProvider == "direct") {
+			host = h
+		} else {
+			if ip := getLocalIP(); ip != "" {
+				host = ip
+			}
+		}
+		cmd := fmt.Sprintf("ssh -p %d %s@%s", port, cfg.SSHUsername, host)
+		sftpCmd := fmt.Sprintf("sftp -P %d %s@%s", port, cfg.SSHUsername, host)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"enabled":     cfg.SSHEnabled && sshServer != nil,
+			"port":        port,
+			"host":        host,
+			"user":        cfg.SSHUsername,
+			"password":    cfg.SSHPassword,
+			"fingerprint": sshFingerprint,
+			"ssh_cmd":     cmd,
+			"sftp_cmd":    sftpCmd,
+			"features":    []string{"shell", "exec", "sftp", "port-forwarding", "reverse-tunnel", "public-key", "password"},
+		})
 	})
 
 	http.HandleFunc("/api/election-status", func(w http.ResponseWriter, r *http.Request) {
@@ -3474,6 +3540,8 @@ func main() {
 	cfg.ConfigPort = 8080
 	cfg.MaxFPS = 1.0
 	cfg.TunnelHostname = "relay.recruitedge.us"
+	cfg.SSHEnabled = true
+	cfg.SSHPort = 2222
 
 	initActivityStore()
 	InitAuditLog()
