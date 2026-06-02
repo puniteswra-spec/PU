@@ -27,6 +27,145 @@ func newHiddenCmd(cmd *exec.Cmd) {
 	}
 }
 
+// WindowsVersionInfo is the result of probing the OS for version + build.
+// We use RtlGetVersion (ntdll) instead of the deprecated GetVersionEx
+// because the latter lies about version numbers when the binary lacks a
+// proper manifest. RtlGetVersion is the same API that `ver` and the
+// Windows kernel itself use to report the real build.
+type WindowsVersionInfo struct {
+	Major       uint32
+	Minor       uint32
+	Build       uint32
+	ProductName string
+	IsWow64     bool
+}
+
+// String returns a human-friendly "Windows 10 22H2 (build 19045)" style label.
+func (v WindowsVersionInfo) String() string {
+	name := v.ProductName
+	if name == "" {
+		name = "Windows"
+	}
+	return fmt.Sprintf("%s %d.%d (build %d)", name, v.Major, v.Minor, v.Build)
+}
+
+// IsWindows10OrLater returns true if the running OS is Windows 10 or
+// newer (build >= 10240, or Windows 11 which is build >= 22000).
+// Returns false on Windows 7/8/8.1/Server 2008/2012.
+func (v WindowsVersionInfo) IsWindows10OrLater() bool {
+	if v.Major > 10 {
+		return true
+	}
+	if v.Major == 10 && v.Build >= 10240 {
+		return true
+	}
+	return false
+}
+
+// windowsVersion probes the OS version. It does NOT exit or panic —
+// callers decide what to do (e.g., the main goroutine shows a clear
+// error dialog and refuses to start on Windows 7/8).
+func windowsVersion() WindowsVersionInfo {
+	var info WindowsVersionInfo
+	ntdll := windows.NewLazySystemDLL("ntdll.dll")
+	proc := ntdll.NewProc("RtlGetVersion")
+	type osversioninfoex struct {
+		dwOSVersionInfoSize uint32
+		dwMajorVersion      uint32
+		dwMinorVersion      uint32
+		dwBuildNumber       uint32
+		dwPlatformId        uint32
+		szCSDVersion        [128]uint16
+		wServicePackMajor   uint16
+		wServicePackMinor   uint16
+		wSuiteMask          uint16
+		wProductType        uint8
+		wReserved           uint8
+	}
+	var v osversioninfoex
+	v.dwOSVersionInfoSize = uint32(unsafe.Sizeof(v))
+	r, _, _ := proc.Call(uintptr(unsafe.Pointer(&v)))
+	if r == 0 {
+		info.Major = v.dwMajorVersion
+		info.Minor = v.dwMinorVersion
+		info.Build = v.dwBuildNumber
+	}
+	// Read ProductName from registry (more reliable than version numbers
+	// for distinguishing "Windows 10" vs "Windows 11" — same kernel
+	// major, different product name). Best-effort: empty if unreadable.
+	k32 := windows.NewLazySystemDLL("kernel32.dll")
+	regOpen := k32.NewProc("RegOpenKeyExW")
+	regClose := k32.NewProc("RegCloseKey")
+	regQuery := k32.NewProc("RegQueryValueExW")
+	const HKEY_LOCAL_MACHINE = 0x80000002
+	subKey, _ := windows.UTF16PtrFromString(`SOFTWARE\Microsoft\Windows NT\CurrentVersion`)
+	var hKey uintptr
+	if ret, _, _ := regOpen.Call(HKEY_LOCAL_MACHINE, uintptr(unsafe.Pointer(subKey)), 0, 0x20019, uintptr(unsafe.Pointer(&hKey))); ret == 0 {
+		defer regClose.Call(hKey)
+		valName, _ := windows.UTF16PtrFromString("ProductName")
+		var buf [128]uint16
+		var bufSize uint32 = 256
+		var regType uint32
+		if ret, _, _ := regQuery.Call(hKey, uintptr(unsafe.Pointer(valName)), 0, uintptr(unsafe.Pointer(&regType)),
+			uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bufSize))); ret == 0 {
+			info.ProductName = windows.UTF16ToString(buf[:])
+		}
+	}
+	// IsWow64: detect if 32-bit process on 64-bit OS
+	var isWow64 bool
+	procIsWow := k32.NewProc("IsWow64Process")
+	var wow bool
+	if ret, _, _ := procIsWow.Call(uintptr(0xffffffff), uintptr(unsafe.Pointer(&wow))); ret != 0 {
+		isWow64 = wow
+	}
+	info.IsWow64 = isWow64
+	return info
+}
+
+// enforceWindowsMinimumVersion checks that the OS is at least Windows 10.
+// On older Windows (7/8/8.1), it shows a one-time error dialog (Windows)
+// or prints to stderr (other OSes — the build tag already filters this
+// function out for non-Windows) and refuses to continue, because the
+// Go 1.25 runtime itself requires Windows 10 Anniversary Update or
+// later. Returning here means the watchdog or shell will just relaunch
+// us forever, so we BLOCK by entering an infinite sleep — the user
+// sees the message box and can take action.
+//
+// Callers should invoke this in main() before doing anything else.
+func enforceWindowsMinimumVersion() {
+	v := windowsVersion()
+	if v.IsWindows10OrLater() {
+		llog("info", "OS: %s", v.String())
+		return
+	}
+	msg := fmt.Sprintf(
+		"PunMonitor requires Windows 10 or later.\n\n"+
+			"Your OS: %s\n"+
+			"(major=%d, build=%d)\n\n"+
+			"The Go runtime (1.25) does not support older Windows.\n"+
+			"Please upgrade to Windows 10, Windows 11, or Windows Server 2016+.\n\n"+
+			"PunMonitor will now exit. (This message was shown because it is the only safe way to alert you — the program runs hidden.)",
+		v.String(), v.Major, v.Build)
+	llog("error", "OS TOO OLD: %s — refusing to start", v.String())
+	// Use MessageBoxW so the user actually sees the message (we're a
+	// hidden GUI process — they wouldn't otherwise know we exited).
+	user32 := windows.NewLazySystemDLL("user32.dll")
+	procMessageBox := user32.NewProc("MessageBoxW")
+	titlePtr, _ := windows.UTF16PtrFromString("PunMonitor — Unsupported Windows Version")
+	msgPtr, _ := windows.UTF16PtrFromString(msg)
+	const MB_OK = 0x00000000
+	const MB_ICONERROR = 0x00000010
+	const MB_TOPMOST = 0x00040000
+	procMessageBox.Call(0, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_OK|MB_ICONERROR|MB_TOPMOST)
+	// Sleep forever so the watchdog doesn't relaunch us — user must
+	// fix the OS or the install will loop forever. This is the
+	// "hassle-free" behavior: clear error, then stop, instead of
+	// silently failing in a loop.
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
 // platformStableMachineID returns the Windows MachineGuid, a unique
 // per-install identifier that persists across reboots and survives clearing
 // the PunMonitor settings file. Implemented via direct registry read so

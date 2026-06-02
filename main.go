@@ -4011,10 +4011,21 @@ func startQuickTunnel(cfg *Config) {
 
 var defaultGitHubRepo string
 var defaultGitHubToken string
-var binaryVersion = "10.0.33"
+var binaryVersion = "10.0.34"
 
 func main() {
     hideConsole()
+
+	// On Windows, refuse to start on anything older than Windows 10.
+	// The Go 1.25 runtime itself doesn't support Win7/8/8.1, so we'd
+	// just crash with an opaque error if we tried. The check is in
+	// platform_windows.go (build tag windows), so this is a no-op on
+	// macOS and Linux. The watchdog child does NOT run this check
+	// (it runs as a small loop, not a full main), so we skip it for
+	// --watchdog.
+	if len(os.Args) <= 1 || os.Args[1] != "--watchdog" {
+		enforceWindowsMinimumVersion()
+	}
 
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {

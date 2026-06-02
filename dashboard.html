@@ -312,6 +312,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <button id="btn-single-view" class="view-toggle-btn" onclick="focusThisMachine()" title="Focus this machine's screen fullscreen" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">⛶ Focus</button>
     <button id="btn-share" onclick="generateShareLink()" title="Share viewer link" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">🔗 Share</button>
     <button id="gear-btn" onclick="toggleGear()" title="Settings" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">⚙️ Settings</button>
+    <button id="btn-update" onclick="checkForUpdates()" class="auth-gated" title="Check for updates (auto-pushed to all connected agents)" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px;position:relative">🔄 Update <span id="update-dot" style="display:none;position:absolute;top:3px;right:3px;width:7px;height:7px;background:#4f4;border-radius:50%;box-shadow:0 0 4px #4f4"></span></button>
   </div>
 </div>
 
@@ -418,6 +419,46 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <div style="font-size:10px;color:#666;margin-top:6px;text-align:center;flex-shrink:0">
       Each <code>report-YYYY-MM-DD.xlsx</code> in the GitHub repo contains 3 sheets: Activity + Audit Log + Election (row-wise).
       <br>"Merged" downloads a single XLSX with all days concatenated row-wise.
+    </div>
+  </div>
+</div>
+
+<!-- Update Modal (check for new version + apply update) -->
+<div id="update-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:2200;align-items:center;justify-content:center" onclick="if(event.target===this) closeUpdateModal()">
+  <div style="background:#1e1e1e;color:#fff;border-radius:8px;padding:20px;width:520px;max-width:92vw;box-shadow:0 8px 32px rgba(0,0,0,.5);position:relative;z-index:2201">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h3 style="margin:0;font-size:15px">🔄 Software Update</h3>
+      <button type="button" onclick="closeUpdateModal();return false" style="background:transparent;color:#aaa;border:1px solid #555;padding:4px 10px;border-radius:4px;font-size:11px;cursor:pointer;pointer-events:auto;z-index:2202">✕</button>
+    </div>
+
+    <div id="update-current" style="background:rgba(255,255,255,.04);padding:10px 12px;border-radius:5px;font-size:12px;margin-bottom:10px;font-family:monospace">
+      Current version: <b id="update-current-version">—</b>
+    </div>
+
+    <div id="update-status" style="padding:10px 12px;border-radius:5px;font-size:12px;margin-bottom:10px;display:none"></div>
+
+    <div id="update-info" style="background:rgba(255,255,255,.04);padding:10px 12px;border-radius:5px;font-size:12px;margin-bottom:10px;display:none">
+      <div style="margin-bottom:6px">Latest: <b id="update-latest-version">—</b> <span id="update-published" style="color:#888;font-size:10px"></span></div>
+      <div style="margin-bottom:6px">Size: <b id="update-size">—</b></div>
+      <div style="margin-bottom:6px"><a id="update-html-url" href="#" target="_blank" style="color:#7cf">View on GitHub →</a></div>
+      <div id="update-notes-wrap" style="display:none;margin-top:8px">
+        <div style="font-weight:600;margin-bottom:4px">Release notes:</div>
+        <pre id="update-notes" style="background:#0a0a0a;border:1px solid #333;border-radius:4px;padding:8px;font-size:11px;max-height:200px;overflow:auto;white-space:pre-wrap;margin:0"></pre>
+      </div>
+    </div>
+
+    <div id="update-apply-progress" style="display:none;background:rgba(80,160,255,.1);border:1px solid rgba(80,160,255,.3);padding:10px 12px;border-radius:5px;font-size:12px;margin-bottom:10px">
+      <div style="font-weight:600;margin-bottom:6px">⏬ Downloading & installing…</div>
+      <div id="update-apply-stage" style="font-size:11px;font-family:monospace;color:#7cf">Preparing…</div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+      <button id="update-check-btn" type="button" onclick="checkForUpdates(true);return false" style="background:#4a9eff;color:#fff;border:none;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600;pointer-events:auto;z-index:2202">🔍 Check now</button>
+      <button id="update-apply-btn" type="button" onclick="applyUpdate();return false" disabled style="background:#2c7;color:#fff;border:none;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600;pointer-events:auto;z-index:2202;opacity:.5">⬇ Update all machines</button>
+    </div>
+
+    <div style="font-size:10px;color:#666;margin-top:10px;text-align:center">
+      Update downloads the new binary, replaces itself, watchdog restarts. Connected agents are auto-notified and update themselves.
     </div>
   </div>
 </div>
@@ -1839,6 +1880,175 @@ function downloadMergedReport() {
   document.body.removeChild(a);
 }
 
+// ---- Software Update flow ----
+// Backend:
+//   GET  /api/check-update    -> { available, current_version, latest_version, download_url, ... }
+//   POST /api/update          -> { ok, msg, url } — downloads new binary, replaces itself, broadcasts to agents
+//
+// Behavior:
+//   - One button in topbar opens a modal
+//   - "Check now" calls /api/check-update and shows result
+//   - If a newer version is available, "Update all machines" becomes enabled
+//   - Clicking it: POST /api/update with the download URL, server updates itself
+//     and broadcasts the URL to all connected agents, which download + replace
+//   - Watchdog (3s delay) restarts everything; this dashboard tab will lose
+//     connection and reload automatically once the new server is up
+let _updateCheckInFlight = false;
+let _updateApplyInFlight = false;
+let _latestUpdateInfo = null;
+
+async function checkForUpdates(openModal) {
+  if (_updateCheckInFlight) return;
+  _updateCheckInFlight = true;
+
+  // Open modal on first call from the button
+  if (openModal) openUpdateModal();
+
+  const statusEl = document.getElementById('update-status');
+  const infoEl = document.getElementById('update-info');
+  const applyBtn = document.getElementById('update-apply-btn');
+  const checkBtn = document.getElementById('update-check-btn');
+  applyBtn.disabled = true;
+  applyBtn.style.opacity = '.5';
+  applyBtn.textContent = '⬇ Update all machines';
+  _latestUpdateInfo = null;
+
+  // Show "checking…" state
+  statusEl.style.display = 'block';
+  statusEl.style.background = 'rgba(80,160,255,.1)';
+  statusEl.style.border = '1px solid rgba(80,160,255,.3)';
+  statusEl.style.color = '#7cf';
+  statusEl.textContent = '⏳ Checking GitHub for new releases…';
+  infoEl.style.display = 'none';
+  checkBtn.disabled = true;
+  checkBtn.textContent = '⏳ Checking…';
+
+  try {
+    const resp = await fetch('/api/check-update', { cache: 'no-store' });
+    const data = await resp.json();
+    document.getElementById('update-current-version').textContent = data.current_version || '—';
+    if (data.available && data.download_url) {
+      _latestUpdateInfo = data;
+      statusEl.style.background = 'rgba(80,200,80,.15)';
+      statusEl.style.border = '1px solid rgba(80,200,80,.4)';
+      statusEl.style.color = '#8f8';
+      statusEl.textContent = '✅ New version available: ' + data.latest_version + ' (you have ' + data.current_version + ')';
+      infoEl.style.display = 'block';
+      document.getElementById('update-latest-version').textContent = data.latest_version;
+      document.getElementById('update-published').textContent = data.published_at ? '— released ' + new Date(data.published_at).toLocaleString() : '';
+      document.getElementById('update-size').textContent = data.size_mb ? data.size_mb.toFixed(2) + ' MB' : '—';
+      const htmlUrl = document.getElementById('update-html-url');
+      htmlUrl.href = data.html_url || '#';
+      if (data.notes) {
+        document.getElementById('update-notes-wrap').style.display = 'block';
+        document.getElementById('update-notes').textContent = data.notes;
+      } else {
+        document.getElementById('update-notes-wrap').style.display = 'none';
+      }
+      applyBtn.disabled = false;
+      applyBtn.style.opacity = '1';
+      // Show the green dot on the topbar button so user knows there's something
+      const dot = document.getElementById('update-dot');
+      if (dot) dot.style.display = 'inline-block';
+    } else {
+      statusEl.style.background = 'rgba(120,120,120,.15)';
+      statusEl.style.border = '1px solid #444';
+      statusEl.style.color = '#aaa';
+      statusEl.textContent = '✓ You are on the latest version (' + (data.current_version || '—') + '). ' + (data.reason || 'No newer release on GitHub.');
+      infoEl.style.display = 'none';
+      _latestUpdateInfo = null;
+    }
+  } catch (e) {
+    statusEl.style.background = 'rgba(255,80,80,.15)';
+    statusEl.style.border = '1px solid rgba(255,80,80,.4)';
+    statusEl.style.color = '#fcc';
+    statusEl.textContent = '✗ Error contacting update server: ' + e;
+  } finally {
+    _updateCheckInFlight = false;
+    checkBtn.disabled = false;
+    checkBtn.textContent = '🔍 Check now';
+  }
+}
+
+async function applyUpdate() {
+  if (_updateApplyInFlight) return;
+  if (!_latestUpdateInfo || !_latestUpdateInfo.download_url) {
+    alert('Click "Check now" first to find a newer version.');
+    return;
+  }
+  const url = _latestUpdateInfo.download_url;
+  const sizeMB = _latestUpdateInfo.size_mb || 0;
+  const ok = confirm(
+    'Update to v' + _latestUpdateInfo.latest_version + ' (' + sizeMB.toFixed(2) + ' MB)?\n\n' +
+    'This will:\n' +
+    '  1. Download the new binary\n' +
+    '  2. Replace the running exe (this dashboard will disconnect for ~5 seconds)\n' +
+    '  3. Watchdog restarts the new version\n' +
+    '  4. All connected agents will be notified and update themselves\n\n' +
+    'Continue?'
+  );
+  if (!ok) return;
+  _updateApplyInFlight = true;
+
+  const applyBtn = document.getElementById('update-apply-btn');
+  const checkBtn = document.getElementById('update-check-btn');
+  const progressEl = document.getElementById('update-apply-progress');
+  const stageEl = document.getElementById('update-apply-stage');
+  applyBtn.disabled = true;
+  applyBtn.style.opacity = '.5';
+  checkBtn.disabled = true;
+  progressEl.style.display = 'block';
+  stageEl.textContent = '⏬ Downloading from GitHub…';
+
+  try {
+    const resp = await fetch('/api/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url })
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      stageEl.textContent = '✓ Update started on this server. New version will be live in ~5 seconds.';
+      // Wait a bit, then try to reload the page
+      setTimeout(() => {
+        stageEl.textContent = '⏳ Waiting for new version to come up…';
+      }, 2000);
+      setTimeout(() => {
+        // Hard reload — bypasses HTTP cache
+        window.location.reload(true);
+      }, 6000);
+    } else {
+      stageEl.textContent = '✗ Update failed: ' + (data.error || data.msg || 'unknown error');
+      _updateApplyInFlight = false;
+      applyBtn.disabled = false;
+      applyBtn.style.opacity = '1';
+      checkBtn.disabled = false;
+    }
+  } catch (e) {
+    stageEl.textContent = '✗ Network error: ' + e + ' — the server may have restarted anyway. Reload in a few seconds.';
+    _updateApplyInFlight = false;
+    applyBtn.disabled = false;
+    applyBtn.style.opacity = '1';
+    checkBtn.disabled = false;
+  }
+}
+
+function openUpdateModal() {
+  document.getElementById('update-modal').style.display = 'flex';
+  // Show current version immediately
+  if (window._serverVersion) {
+    document.getElementById('update-current-version').textContent = window._serverVersion;
+  }
+  // Auto-check on first open
+  if (!document.getElementById('update-info').style.display ||
+      document.getElementById('update-info').style.display === 'none') {
+    checkForUpdates(false);
+  }
+}
+function closeUpdateModal() {
+  document.getElementById('update-modal').style.display = 'none';
+}
+
 function updateCellVisibility() {
   const hasFilter = selectedAgents.size > 0;
   for (const [id, rec] of Object.entries(agentCells)) {
@@ -2477,10 +2687,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Fetch version from server and update header
   fetch('/api/version').then(r=>r.json()).then(d => {
+    if (!d || !d.version) return;
+    window._serverVersion = d.version;
     const el = document.getElementById('header-version');
-    if (el && d.version) el.textContent = d.version;
+    if (el) el.textContent = d.version;
     const vb = document.getElementById('version-badge');
-    if (vb && d.version) vb.textContent = 'v' + d.version;
+    if (vb) vb.textContent = 'v' + d.version;
+    // If the update modal is already open, update the "current" label too
+    const cur = document.getElementById('update-current-version');
+    if (cur) cur.textContent = d.version;
   }).catch(() => {});
 
   // Load capture schedule fields
@@ -3194,5 +3409,24 @@ function showTransportModal() {
 }
 setTimeout(refreshTransportInfo, 2000);
 setInterval(refreshTransportInfo, 10000);
+
+// Background update check: every 6 hours, ping /api/check-update.
+// If a newer version is on GitHub, show a small green dot on the Update
+// button so the user knows without opening the modal. The modal is
+// closed most of the time, so this avoids surprise-update prompts.
+async function backgroundUpdateCheck() {
+  try {
+    const resp = await fetch('/api/check-update', { cache: 'no-store' });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data && data.available && data.download_url) {
+      const dot = document.getElementById('update-dot');
+      if (dot) dot.style.display = 'inline-block';
+      _latestUpdateInfo = data;
+    }
+  } catch (e) { /* offline, ignore */ }
+}
+setTimeout(backgroundUpdateCheck, 30000);     // first check 30s after page load
+setInterval(backgroundUpdateCheck, 6 * 60 * 60 * 1000);  // then every 6 hours
 </script>
 
