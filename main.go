@@ -3272,10 +3272,15 @@ func startHTTPServer() {
 // testGitHubToken validates a GitHub token by calling /user. Returns
 // (ok, error_message, username). Used by /api/github/auth-test and after
 // /api/settings save so the dashboard can immediately show whether the new
-// token works.
+// token works. The returned error message includes step-by-step guidance when
+// the token is bad — common causes are:
+//   1. The token was revoked (paste the old/revoked one by mistake)
+//   2. The token doesn't have 'repo' scope (classic PAT)
+//   3. The token is a fine-grained PAT but the resource owner is not the repo owner
+//   4. The token expired
 func testGitHubToken(token string) (bool, string, string) {
 	if token == "" {
-		return false, "no token", ""
+		return false, "No token entered. Go to https://github.com/settings/tokens and generate one (choose 'repo' scope, expiration: No expiration).", ""
 	}
 	req, _ := http.NewRequest("GET", "https://api.github.com/user", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -3283,12 +3288,13 @@ func testGitHubToken(token string) (bool, string, string) {
 	httpClient := &http.Client{Timeout: 8 * time.Second}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return false, err.Error(), ""
+		return false, "Network error: " + err.Error(), ""
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		var u struct {
-			Login string `json:"login"`
+			Login     string `json:"login"`
+			TokenType string `json:"type"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&u); err == nil {
 			return true, "", u.Login
@@ -3296,7 +3302,29 @@ func testGitHubToken(token string) (bool, string, string) {
 		return true, "", ""
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return false, "Bad credentials — token revoked or missing 'repo' scope. Generate a new token at https://github.com/settings/tokens", ""
+		// Detect fine-grained PAT (starts with github_pat_) vs classic (ghp_)
+		// to give more specific guidance
+		tokenType := "unknown"
+		if strings.HasPrefix(token, "ghp_") {
+			tokenType = "classic"
+		} else if strings.HasPrefix(token, "github_pat_") {
+			tokenType = "fine-grained"
+		} else if strings.HasPrefix(token, "gho_") {
+			tokenType = "OAuth"
+		}
+		guidance := fmt.Sprintf("Bad credentials (token type: %s).\n\n", tokenType)
+		if tokenType == "fine-grained" {
+			guidance += "Fine-grained tokens need:\n"
+			guidance += "  - Repository access: 'All repositories' OR specifically 'puniteswra-spec/PU'\n"
+			guidance += "  - Permissions: Contents = 'Read and write'\n"
+			guidance += "Go to https://github.com/settings/personal-access-tokens to check."
+		} else if tokenType == "classic" {
+			guidance += "Classic tokens need the 'repo' scope checked.\n"
+			guidance += "Go to https://github.com/settings/tokens and click 'Generate new token (classic)'."
+		} else {
+			guidance += "Generate a new Classic token with 'repo' scope at https://github.com/settings/tokens"
+		}
+		return false, guidance, ""
 	}
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	return false, fmt.Sprintf("GitHub API %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes))[:minInt(200, len(bodyBytes))]), ""

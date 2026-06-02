@@ -329,19 +329,43 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 
 <!-- GitHub Re-auth Modal -->
 <div id="github-reauth-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2000;align-items:center;justify-content:center">
-  <div style="background:#1e1e1e;color:#fff;border-radius:8px;padding:20px;width:480px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,.5)">
+  <div style="background:#1e1e1e;color:#fff;border-radius:8px;padding:20px;width:540px;max-width:92vw;box-shadow:0 8px 32px rgba(0,0,0,.5);max-height:90vh;overflow-y:auto">
     <h3 style="margin:0 0 12px;font-size:16px">🔑 Re-authenticate GitHub</h3>
-    <div id="github-reauth-err" style="display:none;background:rgba(255,80,80,.15);border-left:3px solid #f44;padding:8px 10px;border-radius:4px;margin-bottom:12px;font-size:12px;font-family:monospace;color:#fcc"></div>
-    <div id="github-reauth-ok" style="display:none;background:rgba(80,255,80,.15);border-left:3px solid #4f4;padding:8px 10px;border-radius:4px;margin-bottom:12px;font-size:12px;color:#cfc"></div>
-    <p style="font-size:12px;color:#aaa;margin:0 0 8px">Your GitHub token was rejected. Generate a new one at <a href="https://github.com/settings/tokens" target="_blank" style="color:#7cf">github.com/settings/tokens</a> with the <code style="background:rgba(255,255,255,.1);padding:1px 4px;border-radius:3px">repo</code> scope.</p>
+
+    <!-- Step-by-step guide (always visible) -->
+    <details open style="background:rgba(255,255,255,.04);border-radius:5px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:#aaa">
+      <summary style="cursor:pointer;font-weight:600;color:#7cf;user-select:none">📋 Step-by-step: generate a new token (click to collapse)</summary>
+      <ol style="margin:8px 0;padding-left:20px;line-height:1.6">
+        <li>Click <a href="https://github.com/settings/tokens" target="_blank" style="color:#7cf">github.com/settings/tokens</a> in a new tab</li>
+        <li>Click <b>Generate new token</b> → choose <b>Generate new token (classic)</b> (recommended)</li>
+        <li>Note: <code style="background:rgba(255,255,255,.1);padding:1px 4px">PunMonitor</code></li>
+        <li>Expiration: <b>No expiration</b> (so it doesn't break in a year)</li>
+        <li>Scopes: check ☑ <b>repo</b> (Full control of private repositories) — <span style="color:#f99">REQUIRED</span></li>
+        <li>Scroll down, click <b>Generate token</b></li>
+        <li><b>Copy the token immediately</b> (GitHub won't show it again)</li>
+        <li>Come back here and paste it below</li>
+      </ol>
+      <div style="background:rgba(255,193,7,.1);border-left:3px solid #fc3;padding:6px 8px;border-radius:3px;margin-top:6px;font-size:10px;line-height:1.4">
+        ⚠ <b>Don't use fine-grained tokens</b> for PunMonitor — they have stricter scope rules. Classic tokens with <code style="background:rgba(0,0,0,.3);padding:1px 3px">repo</code> scope work reliably.
+      </div>
+    </details>
+
+    <div id="github-reauth-err" style="display:none;background:rgba(255,80,80,.15);border-left:3px solid #f44;padding:10px 12px;border-radius:4px;margin-bottom:12px;font-size:12px;color:#fcc;white-space:pre-wrap;line-height:1.5;max-height:200px;overflow-y:auto"></div>
+    <div id="github-reauth-ok" style="display:none;background:rgba(80,255,80,.15);border-left:3px solid #4f4;padding:10px 12px;border-radius:4px;margin-bottom:12px;font-size:12px;color:#cfc;white-space:pre-wrap"></div>
+
     <label style="display:block;font-size:12px;color:#aaa;margin:10px 0 4px">Repository (owner/repo)</label>
     <input type="text" id="reauth-repo" placeholder="puniteswra-spec/PU" style="width:100%;background:#2a2a2a;border:1px solid #444;color:#fff;padding:8px 10px;border-radius:5px;font-size:13px;font-family:monospace">
-    <label style="display:block;font-size:12px;color:#aaa;margin:10px 0 4px">New token</label>
+    <label style="display:block;font-size:12px;color:#aaa;margin:10px 0 4px">New token (paste here)</label>
     <input type="password" id="reauth-token" placeholder="ghp_..." style="width:100%;background:#2a2a2a;border:1px solid #444;color:#fff;padding:8px 10px;border-radius:5px;font-size:13px;font-family:monospace">
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
-      <button onclick="closeGitHubReauthModal()" style="background:transparent;color:#aaa;border:1px solid #555;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer">Cancel</button>
-      <button onclick="testGitHubTokenFromModal()" style="background:rgba(255,255,255,.1);color:#fff;border:1px solid #555;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer">Test token</button>
-      <button onclick="saveGitHubTokenFromModal()" style="background:#4a9eff;color:#fff;border:none;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600">Save &amp; retest</button>
+    <div id="reauth-token-hint" style="font-size:10px;color:#888;margin:4px 0 0">Token should start with <code>ghp_</code> (classic) or <code>github_pat_</code> (fine-grained)</div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:8px;flex-wrap:wrap">
+      <div style="font-size:10px;color:#666">v10.0.30 · <a href="https://github.com/settings/tokens" target="_blank" style="color:#7cf">Generate token</a></div>
+      <div style="display:flex;gap:8px">
+        <button onclick="closeGitHubReauthModal()" style="background:transparent;color:#aaa;border:1px solid #555;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer">Cancel</button>
+        <button onclick="testGitHubTokenFromModal()" style="background:rgba(255,255,255,.1);color:#fff;border:1px solid #555;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer">🧪 Test</button>
+        <button onclick="saveGitHubTokenFromModal()" style="background:#4a9eff;color:#fff;border:none;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600">💾 Save &amp; retest</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1608,11 +1632,18 @@ async function testGitHubTokenFromModal() {
   errBox.style.display = 'none';
   okBox.style.display = 'none';
   if (!token) {
-    errBox.textContent = 'Enter a token first.';
+    errBox.textContent = 'Enter a token first. (Click the link above to generate one at GitHub.)';
+    errBox.style.display = 'block';
+    document.getElementById('reauth-token').focus();
+    return;
+  }
+  // Basic format check
+  if (token.length < 20) {
+    errBox.textContent = 'That token is too short (' + token.length + ' chars). A valid GitHub token is 40+ characters. Did you paste the full token?';
     errBox.style.display = 'block';
     return;
   }
-  errBox.textContent = 'Testing…';
+  errBox.textContent = 'Testing… (calling GitHub /user endpoint)';
   errBox.style.color = '#aaa';
   errBox.style.display = 'block';
   try {
@@ -1625,14 +1656,17 @@ async function testGitHubTokenFromModal() {
     errBox.style.color = '#fcc';
     if (data.ok || data.token_ok) {
       errBox.style.display = 'none';
-      okBox.textContent = '✓ Token works' + (data.user ? ' (user: ' + data.user + ')' : '') + (data.hint ? ' — ' + data.hint : '');
+      let msg = '✓ Token works';
+      if (data.user) msg += ' — authenticated as: ' + data.user;
+      if (data.hint) msg += '\n' + data.hint;
+      okBox.textContent = msg;
       okBox.style.display = 'block';
     } else {
-      errBox.textContent = '✗ ' + (data.error || 'Unknown error');
+      errBox.textContent = '✗ Token rejected by GitHub:\n\n' + (data.error || 'Unknown error') + '\n\nFollow the step-by-step guide above to generate a working token.';
       errBox.style.display = 'block';
     }
   } catch (e) {
-    errBox.textContent = 'Network error: ' + e;
+    errBox.textContent = 'Network error: ' + e + '\n(Is the PunMonitor service running?)';
     errBox.style.display = 'block';
   }
 }
@@ -1646,9 +1680,15 @@ async function saveGitHubTokenFromModal() {
   if (!token) {
     errBox.textContent = 'Enter a token first.';
     errBox.style.display = 'block';
+    document.getElementById('reauth-token').focus();
     return;
   }
-  errBox.textContent = 'Saving and retesting…';
+  if (token.length < 20) {
+    errBox.textContent = 'That token is too short (' + token.length + ' chars). Paste the full token from GitHub.';
+    errBox.style.display = 'block';
+    return;
+  }
+  errBox.textContent = 'Saving token and re-testing against GitHub…';
   errBox.style.color = '#aaa';
   errBox.style.display = 'block';
   try {
@@ -1661,16 +1701,19 @@ async function saveGitHubTokenFromModal() {
     errBox.style.color = '#fcc';
     if (data.github_auth && data.github_auth.ok) {
       errBox.style.display = 'none';
-      okBox.textContent = '✓ Saved. Auth OK as ' + (data.github_auth.user || 'user') + '. Banner dismissed.';
+      let msg = '✓ Saved and verified. Auth OK';
+      if (data.github_auth.user) msg += ' as: ' + data.github_auth.user;
+      msg += '.\n\nElection will resume on the next tick. Daily report will be re-pushed to GitHub at the next scheduled time.';
+      okBox.textContent = msg;
       okBox.style.display = 'block';
       githubAuthBannerDismissed = true;
       hideGitHubAuthBanner();
       setTimeout(() => {
         closeGitHubReauthModal();
         refreshElectionStatus();
-      }, 1200);
+      }, 2500);
     } else {
-      errBox.textContent = '✗ Saved but auth still fails: ' + (data.github_auth ? data.github_auth.error : 'unknown');
+      errBox.textContent = '✗ Token saved to disk but GitHub still rejects it:\n\n' + (data.github_auth ? data.github_auth.error : 'unknown') + '\n\nThis means the token is invalid. Generate a NEW token at https://github.com/settings/tokens (use the step-by-step guide above).';
       errBox.style.display = 'block';
     }
   } catch (e) {
