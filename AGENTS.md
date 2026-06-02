@@ -3,9 +3,17 @@
 ## Goal
 Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard. Multi-machine leader election via GitHub. SSH server for command-line access. Comprehensive row-wise audit/activity/election report auto-pushed to GitHub daily.
 
+## Current State (v10.0.33)
+- **Live on** this machine: PID running v10.0.33 (commit 3190866)
+- **GitHub auth**: working — token `ghp_…Rae` (user `puniteswra-spec`) verified after restart
+- **Daily report**: `report-2026-06-02.xlsx` on GitHub
+- **Historical reports endpoint**: `/api/reports/list` and `/api/reports/merged` working
+- **Election history**: persisted to disk (`election_history.jsonl`), loaded on restart
+- **All transports**: WebRTC (priority 1), QUIC (UDP 4444), GitHub fallback, Cloudflare tunnel at `relay.recruitedge.us`
+
 ## Architecture
 - **Go files** (package main):
-  - `main.go` (~5800 lines): core — Config, SettingsFile, all HTTP handlers, `runAgentClient`, `startScreenCapture`, `safeWriteMessage`, `connWriteMu`, `broadcastFrame`, `selfUpdate`, `cleanOldFiles`, `runWatchdog`, `startWatchdogProcess`, `monitorWatchdogProcess`, `addHeartbeat`, `/api/assist-close`, `/api/settings`, `saveSettings`/`loadSettings` (with SSH defaults restoration `if !s.SSHEnabled && s.SSHHostKeyPEM == ""`), `/api/check-update`, `ElectionStatus` struct, `setElectionStatus` (also calls `appendElectionEvent`), `tryClaimLeadership`/`renewLeadership` (with SHA fix), `maskToken`, `compareVersions`, `runServerComponents` (calls `setupSSHServer` + `startElectionHistoryPusher`), `/api/election-history` (JSON), `/api/election-history.xlsx` (download), `/api/report.xlsx` (3-tab report: Activity + Audit Log + Election), `var binaryVersion = "10.0.27"`, AgentID generation with `getStableMachineID` + `isLegacyRandomAgentID`, `getHostname`, `randomString`, `/api/system-info` (with `agent_id` field), `/api/ssh-info`, native CPU/memory/boot on Windows, autostart + watchdog setup.
+  - `main.go` (~6374 lines, v10.0.33): core — Config, SettingsFile, all HTTP handlers, `runAgentClient`, `startScreenCapture`, `safeWriteMessage`, `connWriteMu`, `broadcastFrame`, `selfUpdate`, `cleanOldFiles`, `runWatchdog`, `startWatchdogProcess`, `monitorWatchdogProcess`, `addHeartbeat`, `/api/assist-close`, `/api/settings` (POST re-tests auth + updates cached flag), `saveSettings`/`loadSettings` (with debug logging + defensive decrypt check), `pushCredsToGitHub()` (always attempts push, even on bad auth), `syncFromGitHub()` (no longer pulls encrypted secrets like token/AuthPass from remote), `/api/check-update`, `ElectionStatus` struct, `setElectionStatus`, `tryClaimLeadership`/`renewLeadership`, `maskToken`, `compareVersions`, `runServerComponents`, `/api/election-history`, `/api/reports/list`, `/api/reports/merged`, `/api/report.xlsx`, `/api/election-status`, `/api/github/auth-test`, `/api/github/auth-status`, `var binaryVersion = "10.0.33"`, AgentID generation, `/api/system-info`, `/api/ssh-info`, native CPU/memory/boot, autostart + watchdog.
   - `ssh_server.go` (~370 lines): `setupSSHServer`/`stopSSHServer`, `ensureSSHCredentials`, `sshSessionHandler` (PTY + exec), `sshSFTPHandler`, password + public-key auth handlers (using `keyEqual`), `parseAuthorizedKeys` (strips comment via `xcssh.ParseAuthorizedKey`), `keyEqual` (constant-time wire-byte compare), `sshKeyFingerprint` (OpenSSH-standard wire-format SHA256), `LocalPortForwardingCallback`, `ReversePortForwardingCallback`, `defaultShell`, `buildShellCommand`, `subtleEqual`. Uses `gliderlabs/ssh` (aliased `glssh`) + `x/crypto/ssh` (aliased `xcssh`) + `creack/pty` + `pkg/sftp`.
   - `election_history.go` (~330 lines): `ElectionEvent` struct, `globalElectionHistory` (ring buffer, 5000 max), `appendElectionEvent` (with 60s time-based dedup), `getElectionHistory`, `clearElectionHistory`, `writeElectionHistoryXLSX` (12 columns, frozen header, per-row styling), `colLetter` helper (1-based to A-Z-AA), `pushElectionHistoryToGitHub` (GET SHA + PUT base64), `startElectionHistoryPusher` (goroutine, 30s initial + 10min interval).
   - `report_xlsx.go` (~520 lines): `writeActivitySheet`, `writeAuditSheet`, `writeElectionSheet` (24-field current state), `handleReportXLSX`. **3 sheets: Activity + Audit Log + Election (current state)**.
@@ -26,7 +34,7 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 - **GitHub repo** (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`.
 - **Watchdog** same binary (`--watchdog`), auto-installed on first run.
 - **Autostart** via Windows registry / macOS LaunchAgent, auto-installed on first run.
-- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.27 -H windowsgui" -o PunMonitor.exe .`
+- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.33 -H windowsgui" -o PunMonitor.exe .`
 - **Go module**: `PunMonitor` go 1.25.0. Deps: `github.com/pkg/sftp v1.13.10`, `github.com/gliderlabs/ssh v0.3.8`, `github.com/creack/pty v1.1.24`, `golang.org/x/crypto v0.52.0`, `golang.org/x/sys v0.45.0`, `xuri/excelize/v2`, `pion/webrtc/v4 v4.2.12`, `quic-go/quic-go`, `gorilla/websocket`, `kbinani/screenshot`.
 
 ## Key Behaviors
@@ -108,19 +116,20 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 | `/ws/webrtc` | WS | WebRTC signaling |
 
 ## Next Steps
+- **v10.0.33 done**: fixed GitHub token reverting to stale value on restart (commit 3190866)
+  - pushCredsToGitHub() always attempts the push (no auth-ok skip)
+  - syncFromGitHub() no longer pulls encrypted secrets from remote
+  - loadSettings() logs decrypt result + clears token if decrypt returns unchanged
 - **Format all Go files**: `gofmt -w .`
 - **Remove dead code**: `var lanElectionDone = make(chan chan struct{})` at `main.go:445`
 - **Fix `go vet` warning**: change `NewQuicTransport` to take `*quic.Conn` + `*quic.Stream` pointers
 - **Add SSH section to admin settings page**: toggle enabled, change port, regenerate password, view/rotate host key, manage authorized_keys
-- **Wire update flow**: `fetch('/api/check-update')` → if newer, prompt user → `POST /api/update` with `url` from response → existing `selfUpdate` + broadcast to agents
-- **Add reverse SSH tunnel** (agent → central SSH server) as alternative to Cloudflare tunnel
-- **Optimize election**: only leader should renew; agents should only check on demand
+- **Wire update flow**: `fetch('/api/check-update')` → if newer, prompt user → `POST /api/update`
+- **Add reverse SSH tunnel** as alternative to Cloudflare tunnel
 - **Multiple GitHub accounts** for distributed rate limiting at 50+ machines
-- **Server switch** (Oracle, Azure, AWS): extend `tunnelProvider` to support more backends; currently only `cloudflare` and `direct` (local IP) are supported. `cfg.ServerURL` is the override field for any HTTPS URL
-- **WebRTC for screen sharing**: pion/webrtc/v4 v4.2.12 used; verify the WebRTC transport path is being taken for screen frames to offload server
+- **Server switch** (Oracle, Azure, AWS): extend `tunnelProvider` for more backends
 - **Test binary recovery**: delete `C:\Program Files\PunMonitor\PunMonitor.exe`, verify watchdog re-downloads
-- **Test Task Manager kill**: verify watchdog restarts main process within ~3s with no CMD flash
-- **User: revoke the GitHub token that was exposed in earlier chat** (referenced in conversation, NOT in repo). Visit https://github.com/settings/tokens
+- **User: rotate both GitHub tokens previously in chat history** (treat as semi-public) via https://github.com/settings/tokens
 
 ## Reports
 - **v10.0.10**: `/api/report.xlsx` — Excel file with 3 sheets: Activity, Audit Log, Election (current state)
