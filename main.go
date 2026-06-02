@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -27,6 +28,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"crypto/sha1"
 
 	"github.com/gorilla/websocket"
 	"github.com/kbinani/screenshot"
@@ -539,6 +542,57 @@ func getHostname() string {
 	h, err := os.Hostname()
 	if err != nil { return "unknown" }
 	return h
+}
+
+// getStableMachineID returns a hardware/OS-level identifier that is unique
+// per machine and stable across reboots, reinstalls, and config wipes. Used
+// for AgentID so admins can identify "which system was this" in past logs.
+//
+// Windows: MachineGuid from HKLM\SOFTWARE\Microsoft\Cryptography (unique
+//
+//	per Windows install; persists across reboots and config wipes;
+//	survives the user clearing their PunMonitor settings).
+//
+// macOS / Linux: SHA-1 of the first non-loopback MAC address (stable per
+//
+//	hardware; identical across reboots and re-installs).
+//
+// Returns "" if no identifier can be obtained (caller falls back to
+// hostname).
+func getStableMachineID() string {
+	if id := platformStableMachineID(); id != "" {
+		return id
+	}
+	// Generic fallback: SHA-1 of hostname. Not perfect (hostnames can
+	// change) but at least deterministic per machine.
+	h := getHostname()
+	if h == "" || h == "unknown" {
+		return ""
+	}
+	sum := sha1.Sum([]byte(h))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+// isLegacyRandomAgentID returns true if id looks like the old
+// "hostname-XXXX" pattern where XXXX is 4 random alphanumeric characters.
+// Used to detect settings that were generated with the previous
+// (unstable) random-suffix AgentID format so we can migrate them to
+// the new stable format on next run.
+func isLegacyRandomAgentID(id string) bool {
+	i := strings.LastIndex(id, "-")
+	if i < 0 || i == len(id)-1 {
+		return false
+	}
+	suffix := id[i+1:]
+	if len(suffix) != 4 {
+		return false
+	}
+	for _, r := range suffix {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func randomString(n int) string {
@@ -1734,6 +1788,7 @@ func startHTTPServer() {
 			"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
 			"version":  binaryVersion,
 			"mode":     mode,
+			"agent_id": cfg.AgentID,
 		})
 	})
 
@@ -3456,10 +3511,28 @@ func main() {
 
 	myHostname = getHostname()
     if cfg.AgentID == "" {
-        cfg.AgentID = fmt.Sprintf("%s-%s", myHostname, randomString(4))
+        // Use a stable machine identifier so the same physical machine
+        // keeps the same AgentID across reboots and reinstalls. Format:
+        //   <hostname>-<8-char-machine-id>
+        // machine-id comes from Windows MachineGuid (registry), MAC address
+        // (macOS), or SHA-1 of hostname (Linux fallback).
+        machineID := getStableMachineID()
+        cfg.AgentID = fmt.Sprintf("%s-%s", myHostname, machineID)
         saveSettings()
+        llog("info", "Generated stable AgentID: %s (machine-id=%s)", cfg.AgentID, machineID)
+    } else if isLegacyRandomAgentID(cfg.AgentID) {
+        // Migrate old hostname-XXXX format to the new stable
+        // hostname-machineID format. The 4-char random suffix changed on
+        // every install, making it impossible to identify "this system
+        // was the same one yesterday" — replace it with a stable ID.
+        oldID := cfg.AgentID
+        machineID := getStableMachineID()
+        cfg.AgentID = fmt.Sprintf("%s-%s", myHostname, machineID)
+        saveSettings()
+        llog("info", "Migrated AgentID: %s -> %s (stable)", oldID, cfg.AgentID)
+    } else {
+        llog("info", "AgentID: %s (stable)", cfg.AgentID)
     }
-	llog("info", "AgentID: %s", cfg.AgentID)
 
 	// One-time self-heal: remove legacy autostart entries from prior project
 	// iterations that point to .bat / .vbs / old binary locations and cause

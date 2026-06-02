@@ -159,11 +159,9 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 .view-toggle-btn{background:rgba(255,255,255,.12);border:none;color:#fff;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600}
 .view-toggle-btn.active{background:rgba(255,255,255,.35)}
 #main.single-mode #dashboard-page{display:none}
-#main.single-mode #audit-page{display:none}
 #main.single-mode #cctv-grid{display:none}
 #main.single-mode #screen-container{display:flex}
 #main.grid-mode #dashboard-page{display:block}
-#main.grid-mode #audit-page{display:none}
 #main.grid-mode #cctv-grid{display:grid}
 #main.grid-mode #screen-container{display:none}
 
@@ -297,6 +295,10 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <span id="status-dot"></span>
     <span class="badge" id="mode-badge">AGENT</span>
     <span class="badge" id="election-badge" style="background:rgba(255,255,255,.18);font-size:9px" title="Leader election status">⚙ …</span>
+    <span id="my-agent-id-wrap" title="Stable machine identifier (survives reboots and reinstalls)" style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:rgba(255,255,255,.7);margin-left:8px">
+      <span style="opacity:.7">🆔</span>
+      <span id="my-agent-id" style="font-family:monospace;cursor:pointer" onclick="navigator.clipboard&&navigator.clipboard.writeText(myAgentId||'');this.style.color='#9eff9e';setTimeout(()=>this.style.color='',800)">…</span>
+    </span>
   </div>
   <div id="agent-selector-container" style="flex:1;display:flex;justify-content:center;align-items:center;padding:0 10px"></div>
   <div class="right">
@@ -305,7 +307,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <button onclick="toggleAgentsPanel()" title="Connected agents" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">🖥️ Agents</button>
     <span id="version-badge" class="badge" style="font-weight:400;background:rgba(255,255,255,.1);font-size:10px">v—</span>
     <button id="btn-grid-view" class="view-toggle-btn active" onclick="setViewMode('grid')" title="Grid view" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">▦ Grid</button>
-    <button id="btn-single-view" class="view-toggle-btn" onclick="setViewMode('single')" title="Focus view" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">⛶ Focus</button>
+    <button id="btn-single-view" class="view-toggle-btn" onclick="focusThisMachine()" title="Focus this machine's screen fullscreen" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">⛶ Focus</button>
     <button id="btn-share" onclick="generateShareLink()" title="Share viewer link" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">🔗 Share</button>
     <button id="gear-btn" onclick="toggleGear()" title="Settings" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">⚙️ Settings</button>
   </div>
@@ -327,16 +329,13 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
   <button onclick="toggleMetricsPanel()" title="Live Metrics"><span>📊</span><span class="sb-label">Metrics</span></button>
   <button class="auth-gated sidebar-btn" onclick="openTerminal(controlledAgentId||Object.keys(agentCells)[0])" title="Terminal"><span>💻</span><span class="sb-label">Terminal</span></button>
   <button class="auth-gated sidebar-btn" onclick="openFileManager(controlledAgentId||Object.keys(agentCells)[0])" title="Files"><span>📁</span><span class="sb-label">Files</span></button>
-  <button class="auth-gated sidebar-btn" onclick="openAuditLog()" title="Audit Log"><span>📋</span><span class="sb-label">Audit</span></button>
   <button class="auth-gated sidebar-btn" onclick="openMigration()" title="Migrate"><span>🔄</span><span class="sb-label">Migrate</span></button>
 </div>
 
-<!-- Tab Bar -->
+<!-- Tab Bar (single Dashboard tab — Audit Log and Report live elsewhere) -->
 <div id="tab-bar" style="display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 12px 0 50px;gap:0;position:fixed;top:44px;left:0;right:0;z-index:150;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
   <button id="tab-dashboard" class="tab-btn active" onclick="switchTab('dashboard')" style="background:none;border:none;color:var(--primary);padding:10px 18px;font-size:12px;font-weight:600;cursor:pointer;border-bottom:2px solid var(--primary)">▦ Dashboard</button>
-  <button id="tab-audit" class="tab-btn auth-gated" onclick="switchTab('audit')" style="background:none;border:none;color:var(--text2);padding:10px 18px;font-size:12px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent">📋 Audit Log <span id="audit-count" style="background:rgba(45,140,240,.2);color:var(--primary);padding:1px 6px;border-radius:8px;font-size:10px;margin-left:4px">0</span></button>
   <div style="flex:1"></div>
-  <button id="tab-report" class="tab-btn auth-gated" onclick="downloadReportCSV()" title="Download XLSX report with Activity + Audit Log sheets" style="background:none;border:none;color:var(--text2);padding:10px 14px;font-size:11px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent">📊 Download Report (.xlsx)</button>
 </div>
 
 <!-- Quality Panel -->
@@ -425,46 +424,6 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
           <div>Waiting for agents…</div>
           <div class="sub" style="font-size:10px;margin-top:4px">Agents appear here in grid view when connected</div>
         </div>
-      </div>
-    </div>
-    <div id="audit-page" class="tab-page auth-gated" style="display:none;padding:18px;background:var(--bg1);min-height:calc(100vh - 84px)">
-      <div style="max-width:1400px;margin:0 auto">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
-          <div style="font-size:16px;font-weight:600;color:var(--text1)">📋 Audit Log</div>
-          <div style="flex:1"></div>
-          <input id="audit-search" type="text" placeholder="🔍 Search action, agent, user, detail…" oninput="renderAuditPage()" style="background:var(--surface);border:1px solid var(--border);color:var(--text1);padding:6px 12px;border-radius:5px;font-size:12px;width:280px">
-          <select id="audit-action-filter" onchange="renderAuditPage()" style="background:var(--surface);border:1px solid var(--border);color:var(--text1);padding:6px 10px;border-radius:5px;font-size:12px">
-            <option value="">All actions</option>
-            <option value="terminal_exec">terminal_exec</option>
-            <option value="file_browse">file_browse</option>
-            <option value="file_download">file_download</option>
-            <option value="promote_to_server">promote_to_server</option>
-            <option value="setup_complete">setup_complete</option>
-            <option value="server_migrate">server_migrate</option>
-            <option value="assist_created">assist_created</option>
-            <option value="assist_closed">assist_closed</option>
-            <option value="assist_view">assist_view</option>
-          </select>
-          <select id="audit-time-filter" onchange="renderAuditPage()" style="background:var(--surface);border:1px solid var(--border);color:var(--text1);padding:6px 10px;border-radius:5px;font-size:12px">
-            <option value="0">All time</option>
-            <option value="1">Last hour</option>
-            <option value="24">Last 24 hours</option>
-            <option value="168">Last week</option>
-          </select>
-          <button onclick="refreshAuditLog();renderAuditPage()" style="background:var(--primary);border:none;color:#fff;padding:6px 12px;border-radius:5px;cursor:pointer;font-size:12px">🔄 Refresh</button>
-          <button onclick="downloadReportCSV()" style="background:rgba(45,140,240,.15);border:1px solid var(--primary);color:var(--primary);padding:6px 12px;border-radius:5px;cursor:pointer;font-size:12px">📊 Export XLSX</button>
-        </div>
-        <div id="audit-table-wrap" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)">
-          <div id="audit-table-header" style="display:grid;grid-template-columns:160px 200px 200px 100px 1fr;gap:0;background:linear-gradient(135deg,var(--primary),var(--primary-light));color:#fff;font-size:11px;font-weight:600;padding:10px 14px">
-            <div>Date / Time</div>
-            <div>Action</div>
-            <div>Agent ID</div>
-            <div>User</div>
-            <div>Detail</div>
-          </div>
-          <div id="audit-table-body" style="max-height:calc(100vh - 220px);overflow-y:auto"></div>
-        </div>
-        <div id="audit-stats" style="margin-top:10px;font-size:11px;color:var(--text3);text-align:right"></div>
       </div>
     </div>
     <div id="screen-container">
@@ -576,7 +535,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
       <button class="btn btn-sm btn-outline" onclick="pushUpdateToAgents()">📦 Push update (.exe) to agents</button>
       <button class="btn btn-sm btn-outline" onclick="restartAllAgents()">🔄 Restart all agents</button>
       <button class="btn btn-sm btn-outline" onclick="promoteToServer()">👑 Promote to Server</button>
-      <button class="btn btn-sm btn-outline" onclick="downloadReportCSV()">📊 Download CSV now</button>
+      <button class="btn btn-sm btn-outline" onclick="downloadReportCSV()">📊 Download Report (.xlsx)</button>
     </div>
     <div class="btn-row">
       <button class="btn btn-primary btn-sm" onclick="saveSettings()">Save</button>
@@ -704,7 +663,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
           <button class="btn btn-sm btn-outline" onclick="pushUpdateToAgents()">📦 Push update (.exe) to agents</button>
           <button class="btn btn-sm btn-outline" onclick="restartAllAgents()">🔄 Restart all agents</button>
           <button class="btn btn-sm btn-outline" onclick="promoteToServer()">👑 Promote to Server</button>
-          <button class="btn btn-sm btn-outline" onclick="downloadReportCSV()">📊 Download CSV now</button>
+          <button class="btn btn-sm btn-outline" onclick="downloadReportCSV()">📊 Download Report (.xlsx)</button>
         </div>
         <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
           <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:4px">📁 File Transfer</div>
@@ -754,6 +713,7 @@ let remoteControlEnabled = false;
 const agentCells = {};
 let knownAgentIds = new Set();
 let hiddenAgents = new Set();
+let allAuditEntries = []; // populated by background /api/audit poll; used by XLSX report
 let selectedAgents = new Set();
 let gridThrottle = {};
 
@@ -923,6 +883,55 @@ function handleMessage(d) {
 
 
 // ── View modes ──
+
+// Focus the dashboard on THIS machine (the one running PunMonitor that the
+// dashboard is connected to). Uses myAgentId captured from /api/system-info.
+// Falls back to fetching it on demand if myAgentId isn't set yet.
+function focusThisMachine() {
+  if (!myAgentId) {
+    // myAgentId not loaded yet — fetch it and retry
+    fetch('/api/system-info').then(r=>r.json()).then(info => {
+      if (info.agent_id) {
+        myAgentId = info.agent_id;
+        const idEl = document.getElementById('my-agent-id');
+        if (idEl) idEl.textContent = myAgentId;
+        doFocusThisMachine();
+      }
+    }).catch(()=>{
+      // Couldn't reach the server — fall back to whatever the first agent is
+      const target = controlledAgentId || activeAgentId || [...knownAgentIds][0];
+      if (target) {
+        setControlledAgent(target);
+        setViewMode('single');
+      }
+    });
+    return;
+  }
+  doFocusThisMachine();
+}
+function doFocusThisMachine() {
+  if (!myAgentId) return;
+  // Ensure the cell exists in the agents list so the placeholder can show
+  if (!knownAgentIds.has(myAgentId)) {
+    knownAgentIds.add(myAgentId);
+    if (typeof refreshAgents === 'function') refreshAgents();
+  }
+  setControlledAgent(myAgentId);
+  setViewMode('single');
+  // If we already have a frame for this machine, render it immediately
+  if (agentCells[myAgentId] && agentCells[myAgentId].lastB64) {
+    renderToMainCanvas(myAgentId, agentCells[myAgentId].lastB64);
+  } else {
+    // No frame yet — show the placeholder
+    const placeholder = document.getElementById('screen-placeholder');
+    if (placeholder) {
+      placeholder.style.display = 'flex';
+      const txt = placeholder.querySelector('div:nth-child(2)');
+      if (txt) txt.textContent = 'Waiting for first frame from this machine (' + myAgentId + ')...';
+    }
+  }
+}
+
 function setViewMode(mode) {
   viewMode = mode;
   try { localStorage.setItem('pm_viewMode', mode); } catch(_){}
@@ -1281,10 +1290,26 @@ function updateMetrics(d) {
 }
 
 // ── Agents ──
+let myAgentId = null; // this machine's own AgentID (stable across reboots)
+
 function refreshAgents() {
    fetch('/api/system-info').then(r=>r.json()).then(info => {
      serverMode = info.mode === 'server' || info.mode === 'standalone' || info.mode === 'server+agent';
      document.getElementById('mode-badge').textContent = info.mode === 'server+agent' ? 'SERVER+AGENT' : (serverMode ? 'SERVER' : 'AGENT');
+     if (info.agent_id) {
+       const changed = myAgentId !== info.agent_id;
+       myAgentId = info.agent_id;
+       const fb = document.getElementById('focus-self-btn');
+       if (fb) {
+         fb.style.display = '';
+         fb.title = 'Focus this machine (' + myAgentId + ')';
+         if (changed) { /* ID updated */ }
+       }
+       // Show the stable machine ID in the topbar (only when not in server-mode
+       // agent list to avoid duplication)
+       const idEl = document.getElementById('my-agent-id');
+       if (idEl) idEl.textContent = myAgentId;
+     }
    }).catch(()=>{});
    // Single call to /api/agents/full – gets IDs + hidden status in one shot
    fetch('/api/agents/full').then(r=>r.json()).then(list => {
@@ -2144,23 +2169,16 @@ document.addEventListener('DOMContentLoaded', () => {
   if (savedAgent) {
     setTimeout(function() { setControlledAgent(savedAgent, false); }, 1000);
   }
-  // Restore active tab
-  var savedTab = localStorage.getItem('pm_active_tab');
-  if (savedTab === 'audit' && authenticated) {
-    switchTab('audit');
-  }
-  // Auto-refresh audit count badge every 30s
+  // Restore active tab (only "dashboard" is now exposed; stored value is
+  // ignored so legacy 'audit' values don't break anything).
+  try { localStorage.removeItem('pm_active_tab'); } catch (e) {}
+  // Audit data is still available via /api/audit and the XLSX report.
+  // Background refresh keeps /api/audit warm and the XLSX report current.
   setInterval(function() {
-    if (document.getElementById('tab-audit').classList.contains('active')) {
-      refreshAuditLog();
-    } else {
-      fetch('/api/audit').then(r=>r.json()).then(entries => {
-        const c = document.getElementById('audit-count');
-        if (c) c.textContent = (entries && entries.length) || 0;
-        allAuditEntries = (entries || []).slice().reverse();
-      }).catch(()=>{});
-    }
-  }, 30000);
+    fetch('/api/audit').then(r=>r.json()).then(entries => {
+      allAuditEntries = (entries || []).slice().reverse();
+    }).catch(()=>{});
+  }, 60000);
   refreshElectionStatus();
   setInterval(refreshElectionStatus, 15000);
   if (location.pathname === '/admin') {
@@ -2409,34 +2427,17 @@ function handleFileDownloadDash(d) {
   }
 }
 
-// ── Audit Log ──
-let allAuditEntries = [];
-function openAuditLog() {
-  switchTab('audit');
-}
-function closeAuditLog() {
-  switchTab('dashboard');
-}
 function switchTab(name) {
-  if (name === 'audit' && !authenticated) {
-    alert('Admin login required to view Audit Log');
-    return;
-  }
+  // Only one tab ("dashboard") is now exposed in the UI. Audit data is
+  // available via the XLSX report (header button) and /api/audit endpoint.
   document.querySelectorAll('.tab-page').forEach(p => {
     p.classList.remove('active');
     p.style.display = 'none';
   });
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  if (name === 'audit') {
-    document.getElementById('audit-page').classList.add('active');
-    document.getElementById('audit-page').style.display = 'block';
-    document.getElementById('tab-audit').classList.add('active');
-    refreshAuditLog();
-  } else {
-    document.getElementById('dashboard-page').classList.add('active');
-    document.getElementById('dashboard-page').style.display = 'block';
-    document.getElementById('tab-dashboard').classList.add('active');
-  }
+  document.getElementById('dashboard-page').classList.add('active');
+  document.getElementById('dashboard-page').style.display = 'block';
+  document.getElementById('tab-dashboard').classList.add('active');
   try { localStorage.setItem('pm_active_tab', name); } catch (e) {}
 }
 function refreshAuditLog() {

@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,6 +25,55 @@ func newHiddenCmd(cmd *exec.Cmd) {
 		HideWindow:    true,
 		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
 	}
+}
+
+// platformStableMachineID returns the Windows MachineGuid, a unique
+// per-install identifier that persists across reboots and survives clearing
+// the PunMonitor settings file. Implemented via direct registry read so
+// there's no external process spawn.
+func platformStableMachineID() string {
+	k32 := windows.NewLazyDLL("advapi32.dll")
+	advOpen := k32.NewProc("RegOpenKeyExW")
+	advQuery := k32.NewProc("RegQueryValueExW")
+	advClose := k32.NewProc("RegCloseKey")
+
+	subKey := `SOFTWARE\Microsoft\Cryptography`
+	var hKey uintptr
+	ret, _, _ := advOpen.Call(
+		uintptr(0x80000002), // HKEY_LOCAL_MACHINE
+		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(subKey))),
+		0, 0,
+		uintptr(unsafe.Pointer(&hKey)),
+	)
+	if ret != 0 {
+		return ""
+	}
+	defer advClose.Call(hKey)
+
+	name := "MachineGuid"
+	var dataBuf [256]uint16
+	dataLen := uint32(len(dataBuf)) * 2
+	var dtype uint32
+	ret, _, _ = advQuery.Call(
+		hKey,
+		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(name))),
+		uintptr(0),
+		uintptr(unsafe.Pointer(&dtype)),
+		uintptr(unsafe.Pointer(&dataBuf[0])),
+		uintptr(unsafe.Pointer(&dataLen)),
+	)
+	if ret != 0 || (dtype != 1 /*REG_SZ*/ && dtype != 2 /*REG_EXPAND_SZ*/) {
+		return ""
+	}
+	// Trim trailing null + any padding
+	guid := windows.UTF16ToString(dataBuf[:dataLen/2])
+	guid = strings.TrimSpace(guid)
+	if guid == "" {
+		return ""
+	}
+	// 8-char prefix of SHA-1 keeps the ID short and human-readable
+	sum := sha1.Sum([]byte(guid))
+	return hex.EncodeToString(sum[:])[:8]
 }
 
 func hideConsole() {

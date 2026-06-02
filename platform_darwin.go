@@ -4,7 +4,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -319,6 +322,28 @@ func removeAutostart() {
 }
 
 func cleanDuplicateAutostartEntries() {}
+
+// platformStableMachineID returns the SHA-1 prefix of the first non-loopback
+// MAC address. Stable per hardware, deterministic across reboots.
+func platformStableMachineID() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		// Skip loopback, virtual, and zero-MAC interfaces
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if len(iface.HardwareAddr) < 6 {
+			continue
+		}
+		mac := iface.HardwareAddr.String()
+		sum := sha1.Sum([]byte(mac))
+		return hex.EncodeToString(sum[:])[:8]
+	}
+	return ""
+}
 
 func ensureSingleInstance(replaceExisting bool) bool { return true }
 func killAllPunMonitorImages()                       {}

@@ -58,6 +58,12 @@ func monitorAlreadyRunning() bool { return false }
 
 func cleanDuplicateAutostartEntries() {}
 
+// platformStableMachineID returns "" on non-Windows, non-Darwin (Linux).
+// Caller falls back to SHA-1 of hostname.
+func platformStableMachineID() string {
+	return ""
+}
+
 func ensureSingleInstance(replaceExisting bool) bool { return true }
 func killAllPunMonitorImages()                       {}
 func tryAcquireSingletonMutex() bool                 { return true }
