@@ -79,7 +79,7 @@ select.dp-select{padding:3px 6px;border-radius:4px;border:1px solid var(--border
 .report-events::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 
 /* ── Layout ── */
-#app{display:flex;height:calc(100vh - 46px);width:100vw}
+#app{display:flex;height:calc(100vh - 44px);width:100vw}
 #main{flex:1;display:flex;flex-direction:column;position:relative;background:var(--bg);overflow:hidden}
 
 /* ── Controls ── */
@@ -244,13 +244,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 #report-panel.auth-gated.visible{display:block!important}
 #admin-toolbar.auth-gated.visible{display:flex!important}
 
-/* ── Tabs ── */
-.tab-btn{transition:all .15s}
-.tab-btn:hover{background:rgba(255,255,255,0.05)!important}
-.tab-btn.active{color:var(--primary)!important;border-bottom-color:var(--primary)!important}
-.tab-page{display:none;padding-top:40px}
-.tab-page.active{display:block}
-.tab-page.auth-gated.visible.active{display:block!important}
+/* ── Tabs removed in v10.0.26 (dashboard is the only view) ── */
 .tab-btn.auth-gated.visible{display:inline-flex!important}
 
 /* ── Audit page ── */
@@ -306,6 +300,8 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
   </div>
   <div id="agent-selector-container" style="flex:1;display:flex;justify-content:center;align-items:center;padding:0 10px"></div>
   <div class="right">
+    <button id="btn-election-xlsx" onclick="downloadElectionHistoryXLSX()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;font-size:11px;cursor:pointer" title="Download GitHub election history (row-wise .xlsx)">🗳️ Elections</button>
+    <button id="btn-election-push" onclick="pushElectionHistoryToGitHub()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 8px;border-radius:5px;font-size:11px;cursor:pointer" title="Push election history XLSX to GitHub">↑ GH</button>
     <button id="btn-report-csv" onclick="downloadReportCSV()" class="auth-gated" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;font-size:11px;cursor:pointer;font-weight:500" title="Download activity report CSV">📊 Report</button>
     <button onclick="openAssistSession()" title="Click to create & copy assist link" style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);color:#fff;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600">🖥️ Remote Assistant</button>
     <button onclick="toggleAgentsPanel()" title="Connected agents" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">🖥️ Agents</button>
@@ -336,11 +332,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
   <button class="auth-gated sidebar-btn" onclick="openMigration()" title="Migrate"><span>🔄</span><span class="sb-label">Migrate</span></button>
 </div>
 
-<!-- Tab Bar (single Dashboard tab — Audit Log and Report live elsewhere) -->
-<div id="tab-bar" style="display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 12px 0 50px;gap:0;position:fixed;top:44px;left:0;right:0;z-index:150;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
-  <button id="tab-dashboard" class="tab-btn active" onclick="switchTab('dashboard')" style="background:none;border:none;color:var(--primary);padding:10px 18px;font-size:12px;font-weight:600;cursor:pointer;border-bottom:2px solid var(--primary)">▦ Dashboard</button>
-  <div style="flex:1"></div>
-</div>
+<!-- Tab Bar (removed in v10.0.26: dashboard is the only view) -->
 
 <!-- Quality Panel -->
 <div id="quality-panel" class="dropdown-panel">
@@ -421,7 +413,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 <!-- App -->
 <div id="app">
   <div id="main">
-    <div id="dashboard-page" class="tab-page active" style="display:block">
+    <div id="dashboard-page" style="display:block">
       <div id="cctv-grid">
         <div id="grid-empty" style="grid-column:1/-1;padding:40px;text-align:center;color:var(--text3);font-size:13px">
           <div class="icon float" style="font-size:36px;opacity:.25;color:var(--primary);margin-bottom:8px">◈</div>
@@ -2010,6 +2002,34 @@ function downloadReportCSV() {
   a.download = 'punmonitor-report-' + new Date().toISOString().slice(0,10) + '.xlsx';
   a.click();
 }
+
+function downloadElectionHistoryXLSX() {
+  // Fetch the XLSX directly, then either save as file or open in browser
+  // For simplicity, just trigger a download
+  const a = document.createElement('a');
+  a.href = '/api/election-history.xlsx';
+  a.download = 'election-history-' + new Date().toISOString().slice(0,10) + '.xlsx';
+  a.click();
+}
+
+function pushElectionHistoryToGitHub() {
+  const btn = document.getElementById('btn-election-xlsx');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Pushing...'; }
+  fetch('/api/election-history/push', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (btn) { btn.disabled = false; btn.textContent = '🗳️ Elections'; }
+      if (d.ok) {
+        alert('✅ Pushed to GitHub:\n' + d.message + '\n' + d.event_count + ' events');
+      } else {
+        alert('❌ Push failed: ' + (d.message || 'unknown') + (d.error ? '\n' + d.error : ''));
+      }
+    })
+    .catch(e => {
+      if (btn) { btn.disabled = false; btn.textContent = '🗳️ Elections'; }
+      alert('Error: ' + e.message);
+    });
+}
 function downloadReportLegacy() {
   const a = document.createElement('a');
   a.href = '/api/report.csv';
@@ -2175,7 +2195,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // Restore active tab (only "dashboard" is now exposed; stored value is
   // ignored so legacy 'audit' values don't break anything).
-  try { localStorage.removeItem('pm_active_tab'); } catch (e) {}
+  try { localStorage.removeItem('pm_active_tab'); } catch (e) {} // legacy localStorage key — safe to keep, just clears stale state
   // Audit data is still available via /api/audit and the XLSX report.
   // Background refresh keeps /api/audit warm and the XLSX report current.
   setInterval(function() {
@@ -2431,19 +2451,8 @@ function handleFileDownloadDash(d) {
   }
 }
 
-function switchTab(name) {
-  // Only one tab ("dashboard") is now exposed in the UI. Audit data is
-  // available via the XLSX report (header button) and /api/audit endpoint.
-  document.querySelectorAll('.tab-page').forEach(p => {
-    p.classList.remove('active');
-    p.style.display = 'none';
-  });
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('dashboard-page').classList.add('active');
-  document.getElementById('dashboard-page').style.display = 'block';
-  document.getElementById('tab-dashboard').classList.add('active');
-  try { localStorage.setItem('pm_active_tab', name); } catch (e) {}
-}
+// switchTab removed in v10.0.26 — dashboard is the only view, no tab navigation needed.
+// Audit data is available via the XLSX report (header button) and /api/audit endpoint.
 function refreshAuditLog() {
   fetch('/api/audit').then(r=>r.json()).then(entries => {
     const el = document.getElementById('audit-list');

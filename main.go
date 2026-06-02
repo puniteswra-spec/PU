@@ -1304,7 +1304,6 @@ func normalizeGitHubRepo(repo string) string {
 
 func setElectionStatus(method, result, errStr, leaderID string, leaderUpdated time.Time) {
     globalElectionStatusMu.Lock()
-    defer globalElectionStatusMu.Unlock()
     globalElectionStatus.Method = method
     globalElectionStatus.Configured = cfg.GitHubRepo != "" && cfg.GitHubToken != ""
     globalElectionStatus.Repo = cfg.GitHubRepo
@@ -1323,6 +1322,20 @@ func setElectionStatus(method, result, errStr, leaderID string, leaderUpdated ti
     if method == "relay" {
         globalElectionStatus.FallbackServer = "https://relay.recruitedge.us"
     }
+    // Snapshot for the history row (still under the lock so the values are consistent)
+    ev := ElectionEvent{
+        Timestamp:    globalElectionStatus.LastCheck,
+        Action:       result,
+        Method:       method,
+        AgentID:      cfg.AgentID,
+        Hostname:     getHostname(),
+        LeaderID:     leaderID,
+        LeaderAgeMS:  time.Since(leaderUpdated).Milliseconds(),
+        Result:       result,
+        Error:        errStr,
+    }
+    globalElectionStatusMu.Unlock()
+    appendElectionEvent(ev)
 }
 
 func tryClaimLeadership() (bool, error) {
@@ -1604,6 +1617,7 @@ func runServerComponents() {
 	} else {
 		defer stopSSHServer()
 	}
+	startElectionHistoryPusher()
 	go safeRun("leader-renewal", func() {
 		ticker := time.NewTicker(getElectionInterval() / 2)
 		defer ticker.Stop()
@@ -2211,6 +2225,48 @@ func startHTTPServer() {
 			status.LeaderStale = time.Since(status.LeaderUpdated) > electionInterval
 		}
 		json.NewEncoder(w).Encode(status)
+	})
+
+	// /api/election-history — returns the full event log as JSON (newest last)
+	http.HandleFunc("/api/election-history", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"events":       getElectionHistory(),
+			"count":        len(getElectionHistory()),
+			"last_push":    lastElectionPushAttempt,
+		})
+	})
+
+	// /api/election-history.xlsx — downloads the row-wise Excel report
+	http.HandleFunc("/api/election-history.xlsx", func(w http.ResponseWriter, r *http.Request) {
+		data, err := writeElectionHistoryXLSX()
+		if err != nil {
+			http.Error(w, "xlsx build: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		w.Header().Set("Content-Disposition", "attachment; filename=\"election-history-"+time.Now().Format("2006-01-02")+".xlsx\"")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+		w.Write(data)
+	})
+
+	// /api/election-history/push — POST to manually push the XLSX to GitHub
+	http.HandleFunc("/api/election-history/push", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		ok, msg, err := pushElectionHistoryToGitHub()
+		resp := map[string]interface{}{
+			"ok":            ok,
+			"message":       msg,
+			"event_count":   len(getElectionHistory()),
+		}
+		if err != nil {
+			resp["error"] = err.Error()
+		}
+		json.NewEncoder(w).Encode(resp)
 	})
 
 	http.HandleFunc("/api/setup-status", func(w http.ResponseWriter, r *http.Request) {
