@@ -17,14 +17,14 @@ var (
 	pdh   = syscall.NewLazyDLL("pdh.dll")
 	psapi = syscall.NewLazyDLL("psapi.dll")
 
-	procGlobalMemoryStatusEx         = kernel32.NewProc("GlobalMemoryStatusEx")
-	procGetTickCount64               = kernel32.NewProc("GetTickCount64")
-	procPdhOpenQuery                 = pdh.NewProc("PdhOpenQuery")
-	procPdhAddCounter                = pdh.NewProc("PdhAddCounterW")
-	procPdhCollectQueryData          = pdh.NewProc("PdhCollectQueryData")
-	procPdhGetFormattedCounterValue  = pdh.NewProc("PdhGetFormattedCounterValue")
-	procPdhCloseQuery                = pdh.NewProc("PdhCloseQuery")
-	procPdhRemoveCounter             = pdh.NewProc("PdhRemoveCounter")
+	procGlobalMemoryStatusEx        = kernel32.NewProc("GlobalMemoryStatusEx")
+	procGetTickCount64              = kernel32.NewProc("GetTickCount64")
+	procPdhOpenQuery                = pdh.NewProc("PdhOpenQuery")
+	procPdhAddCounter               = pdh.NewProc("PdhAddCounterW")
+	procPdhCollectQueryData         = pdh.NewProc("PdhCollectQueryData")
+	procPdhGetFormattedCounterValue = pdh.NewProc("PdhGetFormattedCounterValue")
+	procPdhCloseQuery               = pdh.NewProc("PdhCloseQuery")
+	procPdhRemoveCounter            = pdh.NewProc("PdhRemoveCounter")
 )
 
 type memoryStatusEx struct {

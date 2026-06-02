@@ -39,8 +39,8 @@ var globalDiscovery *PeerDiscovery
 
 func NewPeerDiscovery(self *PeerInfo) *PeerDiscovery {
 	return &PeerDiscovery{
-		peers: make(map[string]*PeerInfo),
-		self:  self,
+		peers:  make(map[string]*PeerInfo),
+		self:   self,
 		stopCh: make(chan struct{}),
 	}
 }

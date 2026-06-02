@@ -127,9 +127,7 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
   - `🔄 Update` button + modal + background check every 6h + auto-reload after apply
   - `enforceWindowsMinimumVersion()` in main() — MessageBoxW + sleep-forever on Win7/8/8.1
   - Agent-side auto-update already wired in v10.0.29 (server broadcasts `{"type":"update","url":...}` over WS, agents call `selfUpdate()`)
-- **Format all Go files**: `gofmt -w .`
-- **Remove dead code**: `var lanElectionDone = make(chan chan struct{})` at `main.go:445`
-- **Fix `go vet` warning**: change `NewQuicTransport` to take `*quic.Conn` + `*quic.Stream` pointers
+- **v10.0.36 done**: Fixed `go vet` warning (pointer lock) by updating `NewQuicTransport` to take `*quic.Conn` + `*quic.Stream` pointers; removed dead code `var lanElectionDone = make(chan struct{})` at main.go:532; formatted all Go files with `gofmt -w .`
 - **Add SSH section to admin settings page**: toggle enabled, change port, regenerate password, view/rotate host key, manage authorized_keys
 - **Add reverse SSH tunnel** as alternative to Cloudflare tunnel
 - **Multiple GitHub accounts** for distributed rate limiting at 50+ machines

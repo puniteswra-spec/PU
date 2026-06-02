@@ -12,18 +12,18 @@ import (
 
 type ServerLoad struct {
 	mu            sync.Mutex
-	CPUPercent    float64 `json:"cpu_percent"`
-	MemUsedMB     float64 `json:"mem_used_mb"`
-	MemTotalMB    float64 `json:"mem_total_mb"`
-	MemPercent    float64 `json:"mem_percent"`
-	NetSentBytes  int64   `json:"net_sent_bytes"`
-	NetRecvBytes  int64   `json:"net_recv_bytes"`
-	NetSentRate   float64 `json:"net_sent_rate_kbps"`
-	NetRecvRate   float64 `json:"net_recv_rate_kbps"`
-	WSConnections int     `json:"ws_connections"`
-	AgentCount    int     `json:"agent_count"`
-	AssistCount   int     `json:"assist_count"`
-	UptimeSeconds float64 `json:"uptime_seconds"`
+	CPUPercent    float64   `json:"cpu_percent"`
+	MemUsedMB     float64   `json:"mem_used_mb"`
+	MemTotalMB    float64   `json:"mem_total_mb"`
+	MemPercent    float64   `json:"mem_percent"`
+	NetSentBytes  int64     `json:"net_sent_bytes"`
+	NetRecvBytes  int64     `json:"net_recv_bytes"`
+	NetSentRate   float64   `json:"net_sent_rate_kbps"`
+	NetRecvRate   float64   `json:"net_recv_rate_kbps"`
+	WSConnections int       `json:"ws_connections"`
+	AgentCount    int       `json:"agent_count"`
+	AssistCount   int       `json:"assist_count"`
+	UptimeSeconds float64   `json:"uptime_seconds"`
 	LastCheck     time.Time `json:"last_check"`
 	prevSent      int64
 	prevRecv      int64
@@ -89,21 +89,21 @@ func (sl *ServerLoad) Snapshot() map[string]interface{} {
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
 	return map[string]interface{}{
-		"cpu_percent":     fmt.Sprintf("%.1f", sl.CPUPercent),
-		"mem_used_mb":     fmt.Sprintf("%.0f", sl.MemUsedMB),
-		"mem_total_mb":    fmt.Sprintf("%.0f", sl.MemTotalMB),
-		"mem_percent":     fmt.Sprintf("%.1f", sl.MemPercent),
-		"net_sent_rate":   fmt.Sprintf("%.0f", sl.NetSentRate),
-		"net_recv_rate":   fmt.Sprintf("%.0f", sl.NetRecvRate),
-		"ws_connections":  sl.WSConnections,
-		"agent_count":     sl.AgentCount,
-		"assist_count":    sl.AssistCount,
-		"uptime_seconds":  fmt.Sprintf("%.0f", sl.UptimeSeconds),
-		"tunnel_type":     cfg.TunnelProvider,
-		"tunnel_active":   tunnelCmd != nil || cfg.CloudflareTunnelID != "",
-		"version":         binaryVersion,
-		"os":              runtime.GOOS,
-		"arch":            runtime.GOARCH,
+		"cpu_percent":    fmt.Sprintf("%.1f", sl.CPUPercent),
+		"mem_used_mb":    fmt.Sprintf("%.0f", sl.MemUsedMB),
+		"mem_total_mb":   fmt.Sprintf("%.0f", sl.MemTotalMB),
+		"mem_percent":    fmt.Sprintf("%.1f", sl.MemPercent),
+		"net_sent_rate":  fmt.Sprintf("%.0f", sl.NetSentRate),
+		"net_recv_rate":  fmt.Sprintf("%.0f", sl.NetRecvRate),
+		"ws_connections": sl.WSConnections,
+		"agent_count":    sl.AgentCount,
+		"assist_count":   sl.AssistCount,
+		"uptime_seconds": fmt.Sprintf("%.0f", sl.UptimeSeconds),
+		"tunnel_type":    cfg.TunnelProvider,
+		"tunnel_active":  tunnelCmd != nil || cfg.CloudflareTunnelID != "",
+		"version":        binaryVersion,
+		"os":             runtime.GOOS,
+		"arch":           runtime.GOARCH,
 	}
 }
 

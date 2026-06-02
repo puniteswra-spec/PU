@@ -11,8 +11,8 @@ import (
 )
 
 func newHiddenCmd(cmd *exec.Cmd) {}
-func hideConsole()                  {}
-func addDefenderExclusion()         {}
+func hideConsole()               {}
+func addDefenderExclusion()      {}
 
 func watchdogSingleton() bool {
 	lockFile := filepath.Join(os.TempDir(), "PunMonitorWatchdog.lock")
@@ -46,12 +46,12 @@ func (id *IdleDetector) Start(ctx context.Context) {}
 func (id *IdleDetector) Stop()                     {}
 func (id *IdleDetector) loop(ctx context.Context)  {}
 
-func winMouseMove(x, y int)          {}
+func winMouseMove(x, y int)             {}
 func winMouseClick(x, y int, left bool) {}
-func winKeyPress(vk uint16)          {}
-func winTypeText(text string)        {}
+func winKeyPress(vk uint16)             {}
+func winTypeText(text string)           {}
 
-func setupAutostart() {}
+func setupAutostart()  {}
 func removeAutostart() {}
 
 func monitorAlreadyRunning() bool { return false }
@@ -64,14 +64,14 @@ func platformStableMachineID() string {
 	return ""
 }
 
-func ensureSingleInstance(replaceExisting bool) bool { return true }
-func killAllPunMonitorImages()                       {}
-func tryAcquireSingletonMutex() bool                 { return true }
-func releaseSingleton()                              {}
-func killOtherPunMonitorProcesses(selfPID int)        {}
-func writePIDFile()                                   {}
-func removePIDFile()                                  {}
-func isPortInUse(port int) bool                       { return false }
+func ensureSingleInstance(replaceExisting bool) bool      { return true }
+func killAllPunMonitorImages()                            {}
+func tryAcquireSingletonMutex() bool                      { return true }
+func releaseSingleton()                                   {}
+func killOtherPunMonitorProcesses(selfPID int)            {}
+func writePIDFile()                                       {}
+func removePIDFile()                                      {}
+func isPortInUse(port int) bool                           { return false }
 func updateSystemInfoFromActivity(info map[string]string) {}
 
 func getIdleDuration() time.Duration { return 0 }

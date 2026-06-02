@@ -34,7 +34,7 @@ type ConnectionQuality struct {
 
 func NewConnectionQuality() *ConnectionQuality {
 	return &ConnectionQuality{
-		ConnectedAt:    time.Now().UnixMilli(),
+		ConnectedAt:     time.Now().UnixMilli(),
 		recentLatencies: make([]float64, 0, 20),
 		recentSent:      make([]bool, 0, 30),
 	}

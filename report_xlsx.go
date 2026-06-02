@@ -400,8 +400,8 @@ func boolPtr(b bool) *bool { return &b }
 
 func writeElectionSheet(f *excelize.File, sheetName string) error {
 	headerStyle, _ := f.NewStyle(&excelize.Style{
-		Font: &excelize.Font{Bold: true, Color: "FFFFFF", Size: 11},
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"1F4E78"}, Pattern: 1},
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF", Size: 11},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"1F4E78"}, Pattern: 1},
 		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
 		Border: []excelize.Border{
 			{Type: "left", Color: "BFBFBF", Style: 1},
@@ -431,13 +431,13 @@ func writeElectionSheet(f *excelize.File, sheetName string) error {
 		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
 	})
 	sectionStyle, _ := f.NewStyle(&excelize.Style{
-		Font: &excelize.Font{Bold: true, Color: "FFFFFF", Size: 10},
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"4F81BD"}, Pattern: 1},
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF", Size: 10},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"4F81BD"}, Pattern: 1},
 		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
 	})
 	labelStyle, _ := f.NewStyle(&excelize.Style{
-		Font: &excelize.Font{Bold: true, Size: 10, Color: "333333"},
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"F2F2F2"}, Pattern: 1},
+		Font:      &excelize.Font{Bold: true, Size: 10, Color: "333333"},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"F2F2F2"}, Pattern: 1},
 		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
 	})
 

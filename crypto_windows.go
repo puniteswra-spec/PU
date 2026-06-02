@@ -23,10 +23,10 @@ import (
 )
 
 var (
-	crypt32                  = windows.NewLazySystemDLL("Crypt32.dll")
-	procCryptProtectData     = crypt32.NewProc("CryptProtectData")
-	procCryptUnprotectData   = crypt32.NewProc("CryptUnprotectData")
-	procLocalFree            = windows.NewLazySystemDLL("kernel32.dll").NewProc("LocalFree")
+	crypt32                = windows.NewLazySystemDLL("Crypt32.dll")
+	procCryptProtectData   = crypt32.NewProc("CryptProtectData")
+	procCryptUnprotectData = crypt32.NewProc("CryptUnprotectData")
+	procLocalFree          = windows.NewLazySystemDLL("kernel32.dll").NewProc("LocalFree")
 )
 
 // dataBlob mirrors the Win32 DATA_BLOB struct.

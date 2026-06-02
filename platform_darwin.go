@@ -345,14 +345,14 @@ func platformStableMachineID() string {
 	return ""
 }
 
-func ensureSingleInstance(replaceExisting bool) bool { return true }
-func killAllPunMonitorImages()                       {}
-func tryAcquireSingletonMutex() bool                 { return true }
-func releaseSingleton()                              {}
-func killOtherPunMonitorProcesses(selfPID int)        {}
-func writePIDFile()                                   {}
-func removePIDFile()                                  {}
-func isPortInUse(port int) bool                       { return false }
+func ensureSingleInstance(replaceExisting bool) bool      { return true }
+func killAllPunMonitorImages()                            {}
+func tryAcquireSingletonMutex() bool                      { return true }
+func releaseSingleton()                                   {}
+func killOtherPunMonitorProcesses(selfPID int)            {}
+func writePIDFile()                                       {}
+func removePIDFile()                                      {}
+func isPortInUse(port int) bool                           { return false }
 func updateSystemInfoFromActivity(info map[string]string) {}
 
 func hideFile(path string) string {

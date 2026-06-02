@@ -30,11 +30,11 @@ import (
 type ElectionEvent struct {
 	Timestamp    time.Time `json:"timestamp"`
 	TimestampISO string    `json:"timestamp_iso"`
-	Action       string    `json:"action"`     // claimed | renewed | stale-takeover | active | error | no-github | check
-	Method       string    `json:"method"`     // github | lan | relay | none
-	AgentID      string    `json:"agent_id"`   // self (the instance writing this row)
+	Action       string    `json:"action"`   // claimed | renewed | stale-takeover | active | error | no-github | check
+	Method       string    `json:"method"`   // github | lan | relay | none
+	AgentID      string    `json:"agent_id"` // self (the instance writing this row)
 	Hostname     string    `json:"hostname"`
-	LeaderID     string    `json:"leader_id"`  // current leader after the event
+	LeaderID     string    `json:"leader_id"` // current leader after the event
 	LeaderAgeMS  int64     `json:"leader_age_ms"`
 	Result       string    `json:"result"`
 	Error        string    `json:"error"`

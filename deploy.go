@@ -14,11 +14,11 @@ import (
 )
 
 type DeployTarget struct {
-	IP       string
-	Hostname string
-	OS       string
-	Arch     string
-	HasAgent bool
+	IP          string
+	Hostname    string
+	OS          string
+	Arch        string
+	HasAgent    bool
 	HasPort8080 bool
 }
 
