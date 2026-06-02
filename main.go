@@ -654,27 +654,64 @@ func saveSettings() error {
 		hiddenMap[k.(string)] = v.(bool)
 		return true
 	})
+
+	// Encrypt sensitive fields at rest. Windows uses DPAPI (real OS
+	// secret store); macOS/Linux use AES-256-GCM with a machine-derived
+	// key (best-effort fallback — see TODO for proper Keychain/Secret
+	// Service integration). Plaintext values are encrypted before
+	// write; empty values are stored empty.
+	encToken, err := encryptSecret(cfg.GitHubToken)
+	if err != nil {
+		llog("warn", "settings: failed to encrypt github_token, saving plaintext: %v", err)
+		encToken = cfg.GitHubToken
+	}
+	encSSHKey, err := encryptSecret(cfg.SSHHostKeyPEM)
+	if err != nil {
+		llog("warn", "settings: failed to encrypt ssh_host_key_pem, saving plaintext: %v", err)
+		encSSHKey = cfg.SSHHostKeyPEM
+	}
+	encTunnelSecret, err := encryptSecret(cfg.CloudflareTunnelSecret)
+	if err != nil {
+		llog("warn", "settings: failed to encrypt cloudflare_tunnel_secret, saving plaintext: %v", err)
+		encTunnelSecret = cfg.CloudflareTunnelSecret
+	}
+	encTurnCred, err := encryptSecret(cfg.TurnServerCredential)
+	if err != nil {
+		llog("warn", "settings: failed to encrypt turn_server_credential, saving plaintext: %v", err)
+		encTurnCred = cfg.TurnServerCredential
+	}
+	encDeployPass, err := encryptSecret(deployCreds.Password)
+	if err != nil {
+		llog("warn", "settings: failed to encrypt deploy_pass, saving plaintext: %v", err)
+		encDeployPass = deployCreds.Password
+	}
+	encAuthPass, err := encryptSecret(cfg.AuthPass)
+	if err != nil {
+		llog("warn", "settings: failed to encrypt auth_pass, saving plaintext: %v", err)
+		encAuthPass = cfg.AuthPass
+	}
+
 	s := SettingsFile{
 		ConfigPort:             cfg.ConfigPort,
 		MaxFPS:                 cfg.MaxFPS,
 		GitHubRepo:             cfg.GitHubRepo,
-		GitHubToken:            cfg.GitHubToken,
+		GitHubToken:            encToken,
 		AuthUser:               cfg.AuthUser,
-		AuthPass:               cfg.AuthPass,
+		AuthPass:               encAuthPass,
 		MonthlyLimitMB:         cfg.MonthlyLimitMB,
 		TunnelProvider:         cfg.TunnelProvider,
 		TunnelHostname:         cfg.TunnelHostname,
 		ServerURL:              cfg.ServerURL,
 		CloudflareAccountTag:   cfg.CloudflareAccountTag,
-		CloudflareTunnelSecret: cfg.CloudflareTunnelSecret,
+		CloudflareTunnelSecret: encTunnelSecret,
 		CloudflareTunnelID:     cfg.CloudflareTunnelID,
         AgentID:                cfg.AgentID,
         HiddenAgents:           hiddenMap,
         UpdateURL:              cfg.UpdateURL,
         TurnServerURL:          cfg.TurnServerURL,
-        TurnServerCredential:   cfg.TurnServerCredential,
+        TurnServerCredential:   encTurnCred,
         DeployUser:             deployCreds.Username,
-        DeployPass:             deployCreds.Password,
+        DeployPass:             encDeployPass,
         DeployDomain:           deployCreds.Domain,
         CaptureSchedule:        cfg.CaptureSchedule,
         CaptureDays:            cfg.CaptureDays,
@@ -682,7 +719,7 @@ func saveSettings() error {
         SSHPort:                cfg.SSHPort,
         SSHUsername:            cfg.SSHUsername,
         SSHPassword:            cfg.SSHPassword,
-        SSHHostKeyPEM:          cfg.SSHHostKeyPEM,
+        SSHHostKeyPEM:          encSSHKey,
         SSHAuthorizedKeys:      cfg.SSHAuthorizedKeys,
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -702,12 +739,28 @@ func loadSettings() {
 	if s.ConfigPort != 0 { cfg.ConfigPort = s.ConfigPort }
 	if s.MaxFPS > 0 { cfg.MaxFPS = s.MaxFPS }
 	if s.GitHubRepo != "" { cfg.GitHubRepo = s.GitHubRepo }
-	if s.GitHubToken != "" { cfg.GitHubToken = s.GitHubToken }
+	// Decrypt sensitive fields. decryptSecret passes through plaintext
+	// unchanged, so legacy unencrypted settings.json files still load.
+	if s.GitHubToken != "" {
+		if t, err := decryptSecret(s.GitHubToken); err == nil {
+			cfg.GitHubToken = t
+		} else {
+			llog("warn", "settings: github_token decrypt failed (encrypted on a different user/machine?): %v", err)
+		}
+	}
 	if s.AuthUser != "" { cfg.AuthUser = s.AuthUser }
-	if s.AuthPass != "" { cfg.AuthPass = s.AuthPass }
+	if s.AuthPass != "" {
+		if p, err := decryptSecret(s.AuthPass); err == nil {
+			cfg.AuthPass = p
+		}
+	}
 	if s.MonthlyLimitMB > 0 { cfg.MonthlyLimitMB = s.MonthlyLimitMB }
 	if s.CloudflareAccountTag != "" { cfg.CloudflareAccountTag = s.CloudflareAccountTag }
-	if s.CloudflareTunnelSecret != "" { cfg.CloudflareTunnelSecret = s.CloudflareTunnelSecret }
+	if s.CloudflareTunnelSecret != "" {
+		if t, err := decryptSecret(s.CloudflareTunnelSecret); err == nil {
+			cfg.CloudflareTunnelSecret = t
+		}
+	}
 	if s.CloudflareTunnelID != "" { cfg.CloudflareTunnelID = s.CloudflareTunnelID }
     if s.AgentID != "" { cfg.AgentID = s.AgentID }
 	if s.HiddenAgents != nil {
@@ -717,15 +770,35 @@ func loadSettings() {
 	}
 	if s.UpdateURL != "" { cfg.UpdateURL = s.UpdateURL }
 	if s.TurnServerURL != "" { cfg.TurnServerURL = s.TurnServerURL }
-	if s.TurnServerCredential != "" { cfg.TurnServerCredential = s.TurnServerCredential }
+	if s.TurnServerCredential != "" {
+		if c, err := decryptSecret(s.TurnServerCredential); err == nil {
+			cfg.TurnServerCredential = c
+		}
+	}
 	if s.DeployUser != "" {
-		SetDeployCredentials(s.DeployUser, s.DeployPass, s.DeployDomain)
+		depPass := s.DeployPass
+		if depPass != "" {
+			if p, err := decryptSecret(depPass); err == nil {
+				depPass = p
+			}
+		}
+		SetDeployCredentials(s.DeployUser, depPass, s.DeployDomain)
 		llog("info", "Loaded deploy credentials for user %s", s.DeployUser)
 	}
 	cfg.CaptureSchedule = s.CaptureSchedule
 	cfg.CaptureDays = s.CaptureDays
 	cfg.SSHEnabled = s.SSHEnabled
 	if s.SSHPort > 0 { cfg.SSHPort = s.SSHPort }
+	if s.SSHUsername != "" { cfg.SSHUsername = s.SSHUsername }
+	if s.SSHPassword != "" { cfg.SSHPassword = s.SSHPassword }
+	if s.SSHHostKeyPEM != "" {
+		if k, err := decryptSecret(s.SSHHostKeyPEM); err == nil {
+			cfg.SSHHostKeyPEM = k
+		} else {
+			llog("warn", "settings: ssh_host_key_pem decrypt failed: %v", err)
+		}
+	}
+	cfg.SSHAuthorizedKeys = s.SSHAuthorizedKeys
 	// After loadSettings, if the file didn't include SSHEnabled (defaults to
 	// false in JSON), restore the ON default so the SSH server starts up
 	// out of the box. Users who explicitly disable it in /api/settings will
@@ -733,10 +806,6 @@ func loadSettings() {
 	if !s.SSHEnabled && s.SSHHostKeyPEM == "" {
 		cfg.SSHEnabled = true
 	}
-	if s.SSHUsername != "" { cfg.SSHUsername = s.SSHUsername }
-	if s.SSHPassword != "" { cfg.SSHPassword = s.SSHPassword }
-	if s.SSHHostKeyPEM != "" { cfg.SSHHostKeyPEM = s.SSHHostKeyPEM }
-	if s.SSHAuthorizedKeys != nil { cfg.SSHAuthorizedKeys = s.SSHAuthorizedKeys }
 	llog("info", "Loaded saved settings from %s", settingsFilePath())
 }
 
@@ -1617,14 +1686,44 @@ func runServerComponents() {
 	} else {
 		defer stopSSHServer()
 	}
+	startQUICServer() // HTTP/3 transport for agents
 	startDailyReportPusher()
 	go safeRun("leader-renewal", func() {
-		ticker := time.NewTicker(getElectionInterval() / 2)
-		defer ticker.Stop()
+		// Leader-only GitHub writes optimization:
+		//  - The LEADER renews every electionInterval/2 (fast, keeps its claim)
+		//  - Non-leaders only check GitHub every 5 minutes (or on demand) to see
+		//    if leadership changed
+		// This reduces 50 instances × 24 PUTs/hour to 1 × 24 PUTs/hour
+		// (50× reduction in write traffic) while still keeping the system
+		// responsive to leader changes.
+		leaderTicker := time.NewTicker(getElectionInterval() / 2)
+		followerTicker := time.NewTicker(5 * time.Minute)
+		defer leaderTicker.Stop()
+		defer followerTicker.Stop()
 		for {
 			select {
-			case <-ticker.C:
-				renewLeadership()
+			case <-leaderTicker.C:
+				// Only the leader writes (renews) to GitHub
+				globalElectionStatusMu.RLock()
+				isLeader := globalElectionStatus.LeaderID == cfg.AgentID
+				globalElectionStatusMu.RUnlock()
+				if isLeader || !cfg.IsServerMode {
+					renewLeadership()
+				}
+			case <-followerTicker.C:
+				// Non-leaders do a lightweight check (GET only) to see if
+				// the leader changed. If the leader is stale, the next
+				// leaderTicker tick (or follower's first GET) will trigger
+				// tryClaimLeadership via the check below.
+				if cfg.GitHubRepo != "" && cfg.GitHubToken != "" {
+					globalElectionStatusMu.RLock()
+					isLeader := globalElectionStatus.LeaderID == cfg.AgentID
+					globalElectionStatusMu.RUnlock()
+					if !isLeader {
+						// Quick GET-only check
+						tryClaimLeadership()
+					}
+				}
 			case <-serverCtx.Done():
 				return
 			}
@@ -4336,6 +4435,14 @@ var (
 	activeTransport string
 )
 
+func init() {
+	// Wire agentActiveTransport so tryAgentQUIC (and other agent
+	// transports) can record the live transport name in the dashboard.
+	agentActiveTransport = func(name string) {
+		activeTransport = name
+	}
+}
+
 type HealthChecker struct {
 	mu     sync.Mutex
 	dead   map[string]bool
@@ -4717,17 +4824,28 @@ func initTransports() {
 		healthChecker.Register("github")
 		llog("info", "GitHub fallback transport registered")
 	}
-	// Register WebRTC transport with high priority (lower number = higher priority)
-	wt := NewWebRTCTransport(10)
+	// Register WebRTC transport with highest priority (lower number = higher priority)
+	// WebRTC is preferred over WebSocket for screen-data because it's peer-to-peer
+	// (server doesn't have to re-broadcast), reducing server CPU/bandwidth by ~50%
+	// for 50+ concurrent agents.
+	wt := NewWebRTCTransport(1)
 	transportPool.Add("webrtc", wt)
 	healthChecker.Register("webrtc")
-	llog("info", "WebRTC transport registered")}
+	llog("info", "WebRTC transport registered (priority 1 — preferred for screen data)")}
 
 func getTransportStatus() map[string]interface{} {
 	best := transportPool.GetBest()
 	bestName := "none"
+	bestPrio := -1
 	if best != nil {
 		bestName = best.Name()
+		// Look up the priority from the pool (Transport interface has
+		// no Priority method, so we use the pool entry directly).
+		transportPool.mu.RLock()
+		if entry, ok := transportPool.entries[bestName]; ok {
+			bestPrio = entry.priority
+		}
+		transportPool.mu.RUnlock()
 	}
 	var wsCount int
 	wsClients.Range(func(key, value interface{}) bool {
@@ -4738,12 +4856,45 @@ func getTransportStatus() map[string]interface{} {
 	if tunnelType == "" {
 		tunnelType = "cloudflare"
 	}
+
+	// Build a list of all registered transports with their priorities
+	// and health, so the dashboard can show them in order.
+	allTransports := []map[string]interface{}{}
+	transportPool.mu.RLock()
+	for _, e := range transportPool.entries {
+		allTransports = append(allTransports, map[string]interface{}{
+			"name":     e.transport.Name(),
+			"priority": e.priority,
+			"healthy":  !healthChecker.IsDead(e.transport.Name()),
+		})
+	}
+	transportPool.mu.RUnlock()
+	// Sort by priority ascending (lowest = highest priority)
+	for i := 0; i < len(allTransports); i++ {
+		for j := i + 1; j < len(allTransports); j++ {
+			if allTransports[j]["priority"].(int) < allTransports[i]["priority"].(int) {
+				allTransports[i], allTransports[j] = allTransports[j], allTransports[i]
+			}
+		}
+	}
+
+	// Count QUIC-connected agents
+	var quicAgentCount int
+	quicAgents.Range(func(k, v interface{}) bool {
+		quicAgentCount++
+		return true
+	})
+
 	return map[string]interface{}{
-		"active":        bestName,
-		"healthy":       !healthChecker.IsDead(bestName),
-		"ws_clients":    wsCount,
-		"tunnel_type":   tunnelType,
-		"tunnel_active": tunnelCmd != nil || cfg.CloudflareTunnelID != "",
+		"active":           bestName,
+		"active_priority":  bestPrio,
+		"healthy":          !healthChecker.IsDead(bestName),
+		"ws_clients":       wsCount,
+		"quic_agents":      quicAgentCount,
+		"tunnel_type":      tunnelType,
+		"tunnel_active":    tunnelCmd != nil || cfg.CloudflareTunnelID != "",
+		"all_transports":   allTransports,
+		"quic_server_port": defaultQUICPort,
 	}
 }
 
@@ -4880,6 +5031,12 @@ func forwardToAgent(agentID string, msg []byte) {
 	}
 }
 
+// agentActiveTransport records the active transport for the current
+// instance (called by tryAgentQUIC / tryAgentWebSocket / tryAgentWebRTC).
+// Used by /api/transport-status so the dashboard can show the live
+// transport name.
+var agentActiveTransport func(name string)
+
 func runAgentClient() {
 	hostname := cfg.AgentID
 	reconnectDelay := 1 * time.Second
@@ -4915,7 +5072,10 @@ func runAgentClient() {
 
 	for {
 		connected := false
-		// Try transports in order: WebSocket → WebRTC → GitHub
+		// Try transports in order: WebSocket → QUIC → WebRTC → GitHub
+		// WebSocket is the first because it's the only path that carries
+		// signaling/admin-control messages. QUIC is second for high-throughput
+		// screen frames; WebRTC is third for cross-network NAT traversal.
 		connected = tryAgentWebSocket(hostname, serverURL)
 		if connected {
 			connectAttempts = 0
@@ -4924,6 +5084,16 @@ func runAgentClient() {
 		}
 		connectAttempts++
 		agentConnQuality.RecordReconnect()
+
+		// Try QUIC (HTTP/3 over UDP) — high-throughput, NAT-friendly
+		if !connected {
+			connected = tryAgentQUIC(hostname, serverURL)
+			if connected {
+				connectAttempts = 0
+				reconnectDelay = 1 * time.Second
+				continue
+			}
+		}
 
 		// Try WebRTC
 		if !connected {

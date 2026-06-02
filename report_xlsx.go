@@ -168,6 +168,51 @@ func writeActivitySheet(f *excelize.File, sheetName string) error {
 		return true
 	})
 
+	// Append a "Latest Election Event" row at the bottom of the Activity
+	// sheet so users see the most recent GitHub election state without
+	// having to switch to the Election tab. The row uses the same column
+	// layout as the table (22 columns) for consistency.
+	events := getElectionHistory()
+	if len(events) > 0 {
+		latest := events[len(events)-1]
+		// Section header row (sentinel value in the first cell to mark "this is a meta-row")
+		headerRow := row
+		if err := sw.SetRow(fmt.Sprintf("A%d", headerRow), []interface{}{
+			"── LATEST GITHUB ELECTION EVENT ──", "", "", "", "", "", "", "", "", "", "",
+			"", "", "", "", "", "", "", "", "", "",
+		}); err != nil {
+			llog("warn", "xlsx: SetRow activity election header: %v", err)
+		}
+		row++
+
+		// Data row: same 22 columns, with the latest event squashed into
+		// the first few cells. Remaining cells are filled with the leader
+		// age, action, method, etc.
+		leaderAgeSec := latest.LeaderAgeMS / 1000
+		if leaderAgeSec < 0 {
+			leaderAgeSec = 0
+		}
+		dataRow := row
+		if err := sw.SetRow(fmt.Sprintf("A%d", dataRow), []interface{}{
+			fmt.Sprintf("[%s]", latest.Action),
+			latest.TimestampISO,
+			latest.Timestamp.Format("2006-01-02"),
+			latest.Timestamp.Format("15:04:05.000"),
+			latest.Action,
+			latest.Method,
+			latest.AgentID,
+			latest.Hostname,
+			latest.LeaderID,
+			leaderAgeSec,
+			latest.Result,
+			latest.Error,
+			"", "", "", "", "", "", "", "", "",
+		}); err != nil {
+			llog("warn", "xlsx: SetRow activity election event: %v", err)
+		}
+		row++
+	}
+
 	return sw.Flush()
 }
 
@@ -381,17 +426,112 @@ func writeElectionSheet(f *excelize.File, sheetName string) error {
 		Fill:      excelize.Fill{Type: "pattern", Color: []string{"E2F0D9"}, Pattern: 1},
 		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
 	})
+	sectionStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true, Color: "FFFFFF", Size: 10},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"4F81BD"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
+	})
+	labelStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true, Size: 10, Color: "333333"},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"F2F2F2"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Vertical: "center", Horizontal: "left"},
+	})
 
+	// ── CURRENT STATE HEADER (rows 1-12) ──
+	// Show the current election state at the top of the sheet so users
+	// see it immediately when they open the Election tab, without having
+	// to scroll past the history table.
+	globalElectionStatusMu.RLock()
+	s := globalElectionStatus
+	globalElectionStatusMu.RUnlock()
+	s.Configured = cfg.GitHubRepo != "" && cfg.GitHubToken != ""
+	s.Repo = cfg.GitHubRepo
+	s.SelfIsLeader = s.LeaderID != "" && s.LeaderID == cfg.AgentID
+	if !s.LeaderUpdated.IsZero() {
+		s.LeaderStale = time.Since(s.LeaderUpdated) > electionInterval
+	}
+
+	method := s.Method
+	if method == "" {
+		method = "none"
+	}
+	if !s.Configured {
+		method = "no-github"
+	}
+	selfIsLeader := "No"
+	if s.SelfIsLeader {
+		selfIsLeader = "YES — this instance is the primary server"
+	}
+	leaderDisplay := s.LeaderID
+	if leaderDisplay == "" {
+		leaderDisplay = "(no leader recorded)"
+	}
+	updatedDisplay := "(never)"
+	if !s.LeaderUpdated.IsZero() {
+		updatedDisplay = s.LeaderUpdated.Format(time.RFC3339) + " (" + time.Since(s.LeaderUpdated).Truncate(time.Second).String() + " ago)"
+	}
+	lastCheckDisplay := "(never)"
+	if !s.LastCheck.IsZero() {
+		lastCheckDisplay = s.LastCheck.Format(time.RFC3339) + " (" + time.Since(s.LastCheck).Truncate(time.Second).String() + " ago)"
+	}
+	leaderStaleDisplay := "No"
+	if s.LeaderStale {
+		leaderStaleDisplay = "YES — leader hasn't renewed in " + electionInterval.String()
+	}
+	role := "AGENT (connects to leader)"
+	if cfg.IsServerMode {
+		role = "SERVER (primary)"
+	}
+	if s.SelfIsLeader {
+		role = "SERVER+LEADER (this instance is the GitHub primary)"
+	}
+
+	// Row 1: title banner
+	f.SetCellValue(sheetName, "A1", "PunMonitor Leader Election — Current State")
+	f.SetCellValue(sheetName, "B1", "Generated "+time.Now().Format(time.RFC3339))
+	f.SetCellStyle(sheetName, "A1", "B1", sectionStyle)
+
+	// Rows 2-10: current state key-value pairs
+	currentRows := [][2]string{
+		{"Election method", method},
+		{"GitHub configured", boolStr(s.Configured)},
+		{"GitHub repo", firstNonEmpty(s.Repo, "(not configured)")},
+		{"Self AgentID", cfg.AgentID},
+		{"Self hostname", getHostname()},
+		{"Mode / Role", role},
+		{"Self is leader", selfIsLeader},
+		{"Current leader", leaderDisplay},
+		{"Leader last update", updatedDisplay},
+		{"Leader stale?", leaderStaleDisplay},
+		{"Last check", lastCheckDisplay},
+		{"Check count", fmt.Sprintf("%d", s.CheckCount)},
+		{"Last error", firstNonEmpty(s.LastError, "(none)")},
+	}
+	for i, r := range currentRows {
+		row := 2 + i
+		f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), r[0])
+		f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), r[1])
+		f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("A%d", row), labelStyle)
+		f.SetCellStyle(sheetName, fmt.Sprintf("B%d", row), fmt.Sprintf("B%d", row), cellStyle)
+	}
+
+	// Row 16: section banner for the history table
+	historyHeaderRow := 16
+	f.SetCellValue(sheetName, fmt.Sprintf("A%d", historyHeaderRow), "Election History (row-wise — latest first)")
+	f.SetCellStyle(sheetName, fmt.Sprintf("A%d", historyHeaderRow), fmt.Sprintf("L%d", historyHeaderRow), sectionStyle)
+
+	// Row 17: column headers
+	tableHeaderRow := historyHeaderRow + 1
 	headers := []string{
 		"#", "Timestamp", "Date", "Time", "Action", "Method",
 		"Agent ID (self)", "Hostname", "Leader ID", "Leader Age (sec)",
 		"Result", "Error",
 	}
 	for i, h := range headers {
-		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		cell, _ := excelize.CoordinatesToCellName(i+1, tableHeaderRow)
 		f.SetCellValue(sheetName, cell, h)
 	}
-	f.SetCellStyle(sheetName, "A1", fmt.Sprintf("%s1", colLetter(len(headers))), headerStyle)
+	f.SetCellStyle(sheetName, fmt.Sprintf("A%d", tableHeaderRow), fmt.Sprintf("%s%d", colLetter(len(headers)), tableHeaderRow), headerStyle)
 
 	// Column widths
 	f.SetColWidth(sheetName, "A", "A", 5)
@@ -406,7 +546,7 @@ func writeElectionSheet(f *excelize.File, sheetName string) error {
 
 	events := getElectionHistory()
 	for i, ev := range events {
-		row := i + 2
+		row := tableHeaderRow + 1 + i
 		dateStr := ev.Timestamp.Format("2006-01-02")
 		timeStr := ev.Timestamp.Format("15:04:05.000")
 		leaderAgeSec := ev.LeaderAgeMS / 1000
@@ -442,7 +582,7 @@ func writeElectionSheet(f *excelize.File, sheetName string) error {
 		}
 	}
 
-	footerRow := len(events) + 3
+	footerRow := tableHeaderRow + 1 + len(events) + 1
 	f.SetCellValue(sheetName, fmt.Sprintf("A%d", footerRow), "Generated")
 	f.SetCellValue(sheetName, fmt.Sprintf("B%d", footerRow), time.Now().Format(time.RFC3339))
 	f.SetCellValue(sheetName, fmt.Sprintf("D%d", footerRow), "Total events")
@@ -452,11 +592,11 @@ func writeElectionSheet(f *excelize.File, sheetName string) error {
 		Freeze:      true,
 		Split:       false,
 		XSplit:      0,
-		YSplit:      1,
-		TopLeftCell: "A2",
+		YSplit:      tableHeaderRow,
+		TopLeftCell: fmt.Sprintf("A%d", tableHeaderRow+1),
 		ActivePane:  "bottomLeft",
 		Selection: []excelize.Selection{
-			{SQRef: "A2", ActiveCell: "A2", Pane: "bottomLeft"},
+			{SQRef: fmt.Sprintf("A%d", tableHeaderRow+1), ActiveCell: fmt.Sprintf("A%d", tableHeaderRow+1), Pane: "bottomLeft"},
 		},
 	})
 	return nil

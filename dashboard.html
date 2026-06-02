@@ -297,6 +297,10 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
       <span style="opacity:.7">🔐</span>
       <span id="ssh-badge" style="font-family:monospace">ssh:…</span>
     </span>
+    <span id="transport-badge-wrap" title="Active transport (WebRTC=peer-to-peer, QUIC=UDP, WS=WebSocket, GitHub=API polling). Click for details." style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:rgba(255,255,255,.7);margin-left:8px;cursor:pointer" onclick="openTransportModal()">
+      <span style="opacity:.7">📡</span>
+      <span id="transport-badge" style="font-family:monospace">transport:…</span>
+    </span>
   </div>
   <div id="agent-selector-container" style="flex:1;display:flex;justify-content:center;align-items:center;padding:0 10px"></div>
   <div class="right">
@@ -2777,5 +2781,74 @@ function showSshModal() {
 // Refresh SSH info on load + every 30s
 setTimeout(refreshSshInfo, 1500);
 setInterval(refreshSshInfo, 30000);
+
+// ── Transport status badge (WebRTC / QUIC / WS / GitHub) ──
+let transportCache = null;
+async function refreshTransportInfo() {
+  try {
+    const r = await fetch('/api/transport-status');
+    if (!r.ok) return;
+    const d = await r.json();
+    transportCache = d;
+    const el = document.getElementById('transport-badge');
+    if (!el) return;
+    // Map priority to a "preferred" label
+    let label = d.active || 'none';
+    if (d.active_priority === 1) label = 'webrtc ⭐'; // ⭐ = preferred for screen data
+    if (d.active === 'quic') label = 'quic';
+    if (d.active === 'github') label = 'github';
+    if (d.active === 'websocket' || d.active === 'ws') label = 'ws';
+    el.textContent = `transport: ${label}`;
+    // Color: green if healthy, yellow if degraded, red if dead
+    if (d.healthy) {
+      el.style.color = '#9eff9e';
+    } else {
+      el.style.color = '#ff9e9e';
+    }
+  } catch(e) { /* ignore */ }
+}
+function openTransportModal() {
+  if (!transportCache) { refreshTransportInfo().then(showTransportModal); return; }
+  showTransportModal();
+}
+function showTransportModal() {
+  if (!transportCache) return;
+  const d = transportCache;
+  const allTransports = (d.all_transports || []).map(t => {
+    const star = t.priority === 1 ? ' ⭐ preferred for screen data' : '';
+    const color = t.healthy ? '#9eff9e' : '#ff9e9e';
+    return `<li><b style="color:${color}">${t.name}</b> &nbsp; priority ${t.priority}${star} &nbsp; ${t.healthy ? 'healthy' : 'DOWN'}</li>`;
+  }).join('');
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `
+    <div style="background:#1a1d23;color:#e0e0e0;padding:24px;border-radius:12px;width:560px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.6);font-family:system-ui">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h2 style="margin:0;font-size:18px">📡 Transport Status</h2>
+        <button onclick="this.closest('div[style*=\"position:fixed\"]').remove()" style="background:transparent;border:none;color:#fff;font-size:22px;cursor:pointer">×</button>
+      </div>
+      <div style="background:rgba(255,255,255,.05);padding:12px;border-radius:8px;margin-bottom:12px">
+        <p style="margin:6px 0"><b>Active:</b> <span style="font-family:monospace;color:${d.healthy?'#9eff9e':'#ff9e9e'}">${d.active || 'none'}</span> (priority ${d.active_priority})</p>
+        <p style="margin:6px 0"><b>WebSocket clients:</b> ${d.ws_clients}</p>
+        <p style="margin:6px 0"><b>QUIC agents connected:</b> ${d.quic_agents}</p>
+        <p style="margin:6px 0"><b>QUIC server port:</b> ${d.quic_server_port} (UDP)</p>
+        <p style="margin:6px 0"><b>Tunnel:</b> ${d.tunnel_type} (${d.tunnel_active ? 'active' : 'inactive'})</p>
+      </div>
+      <h3 style="margin:14px 0 8px">All registered transports</h3>
+      <ul style="margin:0;padding-left:20px;line-height:1.7">${allTransports || '<li>none</li>'}</ul>
+      <hr style="margin:14px 0;border:0;border-top:1px solid #444">
+      <p style="margin:6px 0;font-size:12px;color:#888;line-height:1.5">
+        <b>WebRTC</b> (priority 1) is preferred for screen data because it's peer-to-peer — the server doesn't have to re-broadcast frames to viewers, cutting CPU/bandwidth by ~50% for 50+ concurrent agents.<br><br>
+        <b>QUIC</b> (UDP/443) is the second choice — works through most NATs without port forwarding.<br><br>
+        <b>WebSocket</b> is the fallback for control messages and signaling.<br><br>
+        <b>GitHub</b> is the last-resort transport (polling the API, very slow but works anywhere).
+      </p>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+setTimeout(refreshTransportInfo, 2000);
+setInterval(refreshTransportInfo, 10000);
 </script>
 
