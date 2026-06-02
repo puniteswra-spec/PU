@@ -138,6 +138,10 @@ func pushDailyReportToGitHub() (string, string, error) {
 	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
 		return "", "github not configured", nil
 	}
+	// Back off if we already know the token is bad
+	if ok, errStr := isGitHubAuthOK(); !ok && errStr != "" {
+		return "", "auth failed: " + errStr, fmt.Errorf("github auth failed: %s", errStr)
+	}
 	data, err := buildReportXLSX()
 	if err != nil {
 		return "", "", fmt.Errorf("xlsx build: %w", err)
@@ -152,6 +156,11 @@ func pushDailyReportToGitHub() (string, string, error) {
 	resp, err := httpFastClient.Do(req)
 	if err != nil {
 		return filename, "", fmt.Errorf("github GET: %w", err)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		resp.Body.Close()
+		setGitHubAuth(false, fmt.Sprintf("GitHub API %d — token revoked or missing scopes", resp.StatusCode))
+		return filename, "auth failed", fmt.Errorf("github auth failed (%d) — update token in settings", resp.StatusCode)
 	}
 	var existingSHA string
 	if resp.StatusCode == http.StatusOK {
@@ -188,6 +197,10 @@ func pushDailyReportToGitHub() (string, string, error) {
 		return filename, "", fmt.Errorf("github PUT: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		setGitHubAuth(false, fmt.Sprintf("GitHub API %d — token revoked or missing scopes", resp.StatusCode))
+		return filename, "auth failed", fmt.Errorf("github auth failed (%d) — update token in settings", resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		bodyStr := strings.TrimSpace(string(body))
@@ -196,6 +209,7 @@ func pushDailyReportToGitHub() (string, string, error) {
 		}
 		return filename, fmt.Sprintf("github returned %d", resp.StatusCode), fmt.Errorf("body: %s", bodyStr)
 	}
+	setGitHubAuth(true, "")
 	return filename, "pushed to " + normalizeGitHubRepo(cfg.GitHubRepo) + "/" + filename, nil
 }
 

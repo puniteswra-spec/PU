@@ -183,10 +183,44 @@ var webrtcAgentDataChannels sync.Map
 var dashboardContent string
 
 var (
-    electionInterval  = 5 * time.Minute
-    electionIntervalMu sync.RWMutex
-    electionRetries   int
+	electionInterval  = 5 * time.Minute
+	electionIntervalMu sync.RWMutex
+	electionRetries   int
 )
+
+// githubAuthOK is true when we have a working GitHub token. Flips to false on
+// the first 401/403 we see, which means the token was revoked or is missing
+// scopes. We back off all GitHub writes (election renewal + report push) until
+// the user updates the token via /api/settings. This stops the log from
+// filling up with "GitHub API 401" spam and avoids the daily report push
+// failing forever.
+var (
+	githubAuthOK    bool
+	githubAuthMu    sync.RWMutex
+	githubAuthError string
+	githubAuthAt    time.Time
+)
+
+func setGitHubAuth(ok bool, errStr string) {
+	githubAuthMu.Lock()
+	if githubAuthOK != ok || githubAuthError != errStr {
+		githubAuthOK = ok
+		githubAuthError = errStr
+		githubAuthAt = time.Now()
+		if !ok {
+			llog("error", "GitHub auth FAILED: %s — backing off all GitHub writes (update token via dashboard /api/settings)", errStr)
+		} else {
+			llog("info", "GitHub auth OK: %s", errStr)
+		}
+	}
+	githubAuthMu.Unlock()
+}
+
+func isGitHubAuthOK() (bool, string) {
+	githubAuthMu.RLock()
+	defer githubAuthMu.RUnlock()
+	return githubAuthOK, githubAuthError
+}
 
 // ElectionStatus is the live snapshot of leader election state — written by
 // startGitHubLeaderElection / tryClaimLeadership, read by /api/election-status
@@ -1408,6 +1442,11 @@ func setElectionStatus(method, result, errStr, leaderID string, leaderUpdated ti
 }
 
 func tryClaimLeadership() (bool, error) {
+    // Back off if we already know the token is bad
+    if ok, errStr := isGitHubAuthOK(); !ok && errStr != "" {
+        setElectionStatus("github", "error", "auth failed: "+errStr, "", time.Time{})
+        return false, fmt.Errorf("GitHub auth failed: %s (update token in settings)", errStr)
+    }
     // Use GitHub API (not raw) to get the SHA for potential takeover
     apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", normalizeGitHubRepo(cfg.GitHubRepo))
     req, _ := http.NewRequest("GET", apiURL, nil)
@@ -1421,6 +1460,12 @@ func tryClaimLeadership() (bool, error) {
     defer resp.Body.Close()
 
     llog("debug", "Election: GET %s returned %d", apiURL, resp.StatusCode)
+
+    if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+        setGitHubAuth(false, fmt.Sprintf("GitHub API %d — token revoked or missing scopes", resp.StatusCode))
+        setElectionStatus("github", "error", "auth failed: GitHub API "+http.StatusText(resp.StatusCode), "", time.Time{})
+        return false, fmt.Errorf("GitHub auth failed (%d)", resp.StatusCode)
+    }
 
     if resp.StatusCode == http.StatusNotFound {
         llog("info", "No primary_server.json found, attempting to claim leadership")
@@ -1519,10 +1564,15 @@ func writePrimaryServerFile(hostname, sha string) (bool, error) {
     defer resp.Body.Close()
 
     if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
+        setGitHubAuth(true, "")
         return true, nil
     }
-    if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusConflict {
-        return false, nil // Failed to claim (no token or already claimed), act as agent
+    if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+        setGitHubAuth(false, fmt.Sprintf("GitHub API %d — token revoked or missing scopes", resp.StatusCode))
+        return false, nil // Failed to claim, act as agent
+    }
+    if resp.StatusCode == http.StatusConflict {
+        return false, nil // Failed to claim (already claimed), act as agent
     }
     // Read response body for diagnostic detail
     bodyBytes, _ := io.ReadAll(resp.Body)
@@ -1534,6 +1584,10 @@ func writePrimaryServerFile(hostname, sha string) (bool, error) {
 }
 
 func renewLeadership() (bool, error) {
+    // Back off if we already know the token is bad
+    if ok, errStr := isGitHubAuthOK(); !ok && errStr != "" {
+        return false, nil
+    }
     apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/primary_server.json", normalizeGitHubRepo(cfg.GitHubRepo))
     req, _ := http.NewRequest("GET", apiURL, nil)
     req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
@@ -1544,6 +1598,11 @@ func renewLeadership() (bool, error) {
         return false, err
     }
     defer resp.Body.Close()
+    if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+        setGitHubAuth(false, fmt.Sprintf("GitHub API %d — token revoked or missing scopes", resp.StatusCode))
+        setElectionStatus("github", "error", "auth failed: GitHub API "+http.StatusText(resp.StatusCode), "", time.Time{})
+        return false, nil
+    }
     if resp.StatusCode == http.StatusNotFound {
         llog("info", "No primary_server.json found, claiming leadership")
         ok, werr := writePrimaryServerFile(cfg.AgentID, "")
@@ -1911,8 +1970,95 @@ func startHTTPServer() {
 			cfg.CaptureDays = s.CaptureDays
 			saveSettings()
 			pushCredsToGitHub()
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			// Re-test GitHub auth if the token just changed. We do this BEFORE
+			// returning so the dashboard can show the result immediately
+			// ("token works" vs "still bad").
+			authResult := map[string]interface{}{"status": "ok"}
+			if s.GitHubToken != "" {
+				ok, errStr, user := testGitHubToken(cfg.GitHubToken)
+				authResult["github_auth"] = map[string]interface{}{
+					"ok":       ok,
+					"error":    errStr,
+					"user":     user,
+				}
+				if ok {
+					setGitHubAuth(true, "")
+				} else {
+					setGitHubAuth(false, errStr)
+				}
+			} else {
+				ok, errStr := isGitHubAuthOK()
+				authResult["github_auth"] = map[string]interface{}{
+					"ok":    ok,
+					"error": errStr,
+				}
+			}
+			json.NewEncoder(w).Encode(authResult)
 		}
+	})
+
+	// /api/github/auth-test — POST to test the current (or provided) GitHub
+	// token without going through the full election cycle. Used by the
+	// dashboard "re-enter token" flow so the user sees a clear OK/FAIL
+	// without waiting for the next election tick.
+	http.HandleFunc("/api/github/auth-test", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		token := cfg.GitHubToken
+		if r.Method == http.MethodPost {
+			var req struct {
+				Token string `json:"token"`
+				Repo  string `json:"repo"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+				if req.Token != "" {
+					token = req.Token
+				}
+				if req.Repo != "" {
+					// Temporarily test the requested repo too
+					testRepo := normalizeGitHubRepo(req.Repo)
+					ok2, errStr2 := testGitHubRepo(token, testRepo)
+					resp := map[string]interface{}{
+						"token_ok": ok2,
+						"error":    errStr2,
+					}
+					if !ok2 {
+						resp["hint"] = "Token can't read this repo. Generate a new token at https://github.com/settings/tokens with 'repo' scope."
+					} else {
+						resp["hint"] = "Token has access to the repo."
+					}
+					json.NewEncoder(w).Encode(resp)
+					return
+				}
+			}
+		}
+		ok, errStr, user := testGitHubToken(token)
+		if ok {
+			setGitHubAuth(true, "")
+		} else {
+			setGitHubAuth(false, errStr)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":    ok,
+			"error": errStr,
+			"user":  user,
+		})
+	})
+
+	// /api/github/auth-status — GET the cached auth state. Used by the
+	// dashboard to decide whether to show the "GitHub auth failed" banner.
+	http.HandleFunc("/api/github/auth-status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		ok, errStr := isGitHubAuthOK()
+		githubAuthMu.RLock()
+		at := githubAuthAt
+		githubAuthMu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":        ok,
+			"error":     errStr,
+			"checked_at": at,
+			"repo":      cfg.GitHubRepo,
+			"token_set": cfg.GitHubToken != "",
+		})
 	})
 
 	http.HandleFunc("/api/system-info", func(w http.ResponseWriter, r *http.Request) {
@@ -2323,16 +2469,40 @@ func startHTTPServer() {
 		if !status.LeaderUpdated.IsZero() {
 			status.LeaderStale = time.Since(status.LeaderUpdated) > electionInterval
 		}
-		json.NewEncoder(w).Encode(status)
+		// Attach GitHub auth state so the dashboard can show a clear banner
+		// when the token is revoked. The field name `GithubAuthOK` matches
+		// the JSON tag the dashboard expects.
+		authOK, authErr := isGitHubAuthOK()
+		statusMap := map[string]interface{}{
+			"method":           status.Method,
+			"configured":       status.Configured,
+			"repo":             status.Repo,
+			"leader_id":        status.LeaderID,
+			"leader_updated":   status.LeaderUpdated,
+			"leader_stale":     status.LeaderStale,
+			"self_is_leader":   status.SelfIsLeader,
+			"last_check":       status.LastCheck,
+			"last_result":      status.LastResult,
+			"last_error":       status.LastError,
+			"check_count":      status.CheckCount,
+			"fallback_server":  status.FallbackServer,
+			"github_auth_ok":   authOK,
+			"github_auth_err":  authErr,
+			"token_masked":     maskToken(cfg.GitHubToken),
+		}
+		json.NewEncoder(w).Encode(statusMap)
 	})
 
 	// /api/election-history — returns the full event log as JSON (newest last)
 	http.HandleFunc("/api/election-history", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		authOK, authErr := isGitHubAuthOK()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"events":    getElectionHistory(),
-			"count":     len(getElectionHistory()),
-			"last_push": lastDailyReportStatus(),
+			"events":          getElectionHistory(),
+			"count":           len(getElectionHistory()),
+			"last_push":       lastDailyReportStatus(),
+			"github_auth_ok":  authOK,
+			"github_auth_err": authErr,
 		})
 	})
 
@@ -3099,8 +3269,89 @@ func startHTTPServer() {
 	}
 }
 
+// testGitHubToken validates a GitHub token by calling /user. Returns
+// (ok, error_message, username). Used by /api/github/auth-test and after
+// /api/settings save so the dashboard can immediately show whether the new
+// token works.
+func testGitHubToken(token string) (bool, string, string) {
+	if token == "" {
+		return false, "no token", ""
+	}
+	req, _ := http.NewRequest("GET", "https://api.github.com/user", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	httpClient := &http.Client{Timeout: 8 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, err.Error(), ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		var u struct {
+			Login string `json:"login"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&u); err == nil {
+			return true, "", u.Login
+		}
+		return true, "", ""
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return false, "Bad credentials — token revoked or missing 'repo' scope. Generate a new token at https://github.com/settings/tokens", ""
+	}
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	return false, fmt.Sprintf("GitHub API %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes))[:minInt(200, len(bodyBytes))]), ""
+}
+
+// testGitHubRepo validates that the token has read+write access to the repo
+// (e.g. for the daily report push). Returns (ok, error_message).
+func testGitHubRepo(token, repo string) (bool, string) {
+	if token == "" || repo == "" {
+		return false, "missing token or repo"
+	}
+	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.github.com/repos/%s", repo), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	httpClient := &http.Client{Timeout: 8 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, err.Error()
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		// Also test write access by checking permissions
+		var p struct {
+			Permissions struct {
+				Push bool `json:"push"`
+			} `json:"permissions"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&p); err == nil && !p.Permissions.Push {
+			return false, "token has read-only access — needs 'repo' scope for write"
+		}
+		return true, ""
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return false, "repo not found or token has no access to it"
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return false, "Bad credentials — token revoked or missing scope"
+	}
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	return false, fmt.Sprintf("GitHub API %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes))[:minInt(200, len(bodyBytes))])
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func pushCredsToGitHub() {
 	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+		return
+	}
+	// Skip if we already know the token is bad — saves the log spam
+	if ok, _ := isGitHubAuthOK(); !ok {
 		return
 	}
 	// Push punmonitor-credentials.json

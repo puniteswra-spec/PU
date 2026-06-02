@@ -288,7 +288,7 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <small id="header-version"></small>
     <span id="status-dot"></span>
     <span class="badge" id="mode-badge">AGENT</span>
-    <span class="badge" id="election-badge" style="background:rgba(255,255,255,.18);font-size:9px" title="Leader election status">⚙ …</span>
+    <span class="badge" id="election-badge" style="background:rgba(255,255,255,.18);font-size:9px;cursor:pointer" title="Click for live election events" onclick="openElectionEventsModal()">⚙ …</span>
     <span id="my-agent-id-wrap" title="Stable machine identifier (survives reboots and reinstalls)" style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:rgba(255,255,255,.7);margin-left:8px">
       <span style="opacity:.7">🆔</span>
       <span id="my-agent-id" style="font-family:monospace;cursor:pointer" onclick="navigator.clipboard&&navigator.clipboard.writeText(myAgentId||'');this.style.color='#9eff9e';setTimeout(()=>this.style.color='',800)">…</span>
@@ -312,6 +312,68 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
     <button id="btn-single-view" class="view-toggle-btn" onclick="focusThisMachine()" title="Focus this machine's screen fullscreen" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">⛶ Focus</button>
     <button id="btn-share" onclick="generateShareLink()" title="Share viewer link" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">🔗 Share</button>
     <button id="gear-btn" onclick="toggleGear()" title="Settings" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px">⚙️ Settings</button>
+  </div>
+</div>
+
+<!-- GitHub Auth Error Banner (shown only when token is revoked) -->
+<div id="github-auth-banner" style="display:none;background:linear-gradient(135deg,#7a1a1a,#a02525);color:#fff;padding:10px 16px;font-size:13px;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,.3)">
+  <span style="font-size:18px">⚠️</span>
+  <div style="flex:1">
+    <div style="font-weight:600">GitHub authentication failed</div>
+    <div id="github-auth-err" style="font-size:11px;opacity:.9;margin-top:2px;font-family:monospace">—</div>
+    <div style="font-size:11px;opacity:.85;margin-top:4px">Election and daily report push are paused. Click "Update token" to enter a new token.</div>
+  </div>
+  <button onclick="openGitHubReauthModal()" style="background:#fff;color:#a02525;border:none;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600">🔑 Update token</button>
+  <button onclick="dismissGitHubAuthBanner()" title="Dismiss for this session" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4);padding:8px 10px;border-radius:5px;font-size:12px;cursor:pointer">✕</button>
+</div>
+
+<!-- GitHub Re-auth Modal -->
+<div id="github-reauth-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2000;align-items:center;justify-content:center">
+  <div style="background:#1e1e1e;color:#fff;border-radius:8px;padding:20px;width:480px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,.5)">
+    <h3 style="margin:0 0 12px;font-size:16px">🔑 Re-authenticate GitHub</h3>
+    <div id="github-reauth-err" style="display:none;background:rgba(255,80,80,.15);border-left:3px solid #f44;padding:8px 10px;border-radius:4px;margin-bottom:12px;font-size:12px;font-family:monospace;color:#fcc"></div>
+    <div id="github-reauth-ok" style="display:none;background:rgba(80,255,80,.15);border-left:3px solid #4f4;padding:8px 10px;border-radius:4px;margin-bottom:12px;font-size:12px;color:#cfc"></div>
+    <p style="font-size:12px;color:#aaa;margin:0 0 8px">Your GitHub token was rejected. Generate a new one at <a href="https://github.com/settings/tokens" target="_blank" style="color:#7cf">github.com/settings/tokens</a> with the <code style="background:rgba(255,255,255,.1);padding:1px 4px;border-radius:3px">repo</code> scope.</p>
+    <label style="display:block;font-size:12px;color:#aaa;margin:10px 0 4px">Repository (owner/repo)</label>
+    <input type="text" id="reauth-repo" placeholder="puniteswra-spec/PU" style="width:100%;background:#2a2a2a;border:1px solid #444;color:#fff;padding:8px 10px;border-radius:5px;font-size:13px;font-family:monospace">
+    <label style="display:block;font-size:12px;color:#aaa;margin:10px 0 4px">New token</label>
+    <input type="password" id="reauth-token" placeholder="ghp_..." style="width:100%;background:#2a2a2a;border:1px solid #444;color:#fff;padding:8px 10px;border-radius:5px;font-size:13px;font-family:monospace">
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button onclick="closeGitHubReauthModal()" style="background:transparent;color:#aaa;border:1px solid #555;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer">Cancel</button>
+      <button onclick="testGitHubTokenFromModal()" style="background:rgba(255,255,255,.1);color:#fff;border:1px solid #555;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer">Test token</button>
+      <button onclick="saveGitHubTokenFromModal()" style="background:#4a9eff;color:#fff;border:none;padding:8px 14px;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600">Save &amp; retest</button>
+    </div>
+  </div>
+</div>
+
+<!-- Live Election Events Modal (real-time row-wise view) -->
+<div id="election-events-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1900;align-items:center;justify-content:center">
+  <div style="background:#1e1e1e;color:#fff;border-radius:8px;padding:16px;width:920px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.5)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <h3 style="margin:0;font-size:15px">📜 Live Election Events <span id="election-events-count" style="font-size:11px;color:#888;font-weight:400;margin-left:6px">0 events</span></h3>
+      <div style="display:flex;gap:6px">
+        <button onclick="refreshElectionEventsModal()" style="background:rgba(255,255,255,.1);color:#fff;border:none;padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer">↻ Refresh</button>
+        <button onclick="closeElectionEventsModal()" style="background:transparent;color:#aaa;border:1px solid #555;padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer">Close</button>
+      </div>
+    </div>
+    <div id="election-events-status" style="background:rgba(255,255,255,.04);padding:8px 10px;border-radius:4px;font-size:11px;margin-bottom:8px;font-family:monospace"></div>
+    <div style="flex:1;overflow:auto;border:1px solid #333;border-radius:4px">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:monospace">
+        <thead style="position:sticky;top:0;background:#2a2a2a">
+          <tr>
+            <th style="padding:6px;text-align:left;border-bottom:1px solid #444">Time</th>
+            <th style="padding:6px;text-align:left;border-bottom:1px solid #444">Action</th>
+            <th style="padding:6px;text-align:left;border-bottom:1px solid #444">Method</th>
+            <th style="padding:6px;text-align:left;border-bottom:1px solid #444">Agent ID</th>
+            <th style="padding:6px;text-align:left;border-bottom:1px solid #444">Leader</th>
+            <th style="padding:6px;text-align:right;border-bottom:1px solid #444">Age (ms)</th>
+            <th style="padding:6px;text-align:left;border-bottom:1px solid #444">Result</th>
+            <th style="padding:6px;text-align:left;border-bottom:1px solid #444">Error</th>
+          </tr>
+        </thead>
+        <tbody id="election-events-tbody"></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -1448,6 +1510,19 @@ function refreshElectionStatus() {
     let icon = '⚙';
     let label = '';
     let color = 'rgba(255,255,255,.18)';
+    // Show GitHub auth failure prominently
+    if (d.configured && d.github_auth_ok === false) {
+      icon = '🔑';
+      label = 'GH AUTH FAIL';
+      color = 'rgba(244,67,54,.7)';
+      el.textContent = icon + ' ' + label;
+      el.style.background = color;
+      el.title = 'GitHub authentication failed: ' + (d.github_auth_err || 'unknown') + '\nClick → live events | Update token in Settings';
+      showGitHubAuthBanner(d.github_auth_err || 'Authentication failed', d.token_masked);
+      return;
+    } else {
+      hideGitHubAuthBanner();
+    }
     if (d.method === 'github') {
       if (d.self_is_leader) {
         icon = '👑';
@@ -1490,10 +1565,169 @@ function refreshElectionStatus() {
     el.textContent = icon + ' ' + label;
     el.style.background = color;
     el.title = d.configured
-      ? ('GitHub configured: ' + (d.repo || '(none)') + ' | Method: ' + d.method + ' | Leader: ' + (d.leader_id || '(none)') + ' | Result: ' + (d.last_result || '(none)') + (d.last_error ? ' | Error: ' + d.last_error : ''))
-      : 'GitHub NOT configured — using relay/LAN fallback';
+      ? ('GitHub configured: ' + (d.repo || '(none)') + ' | Token: ' + (d.token_masked || '(none)') + ' | Method: ' + d.method + ' | Leader: ' + (d.leader_id || '(none)') + ' | Result: ' + (d.last_result || '(none)') + (d.last_error ? ' | Error: ' + d.last_error : '') + '\nClick → live election events')
+      : 'GitHub NOT configured — using relay/LAN fallback\nClick → live election events';
   }).catch(()=>{});
 }
+
+let githubAuthBannerDismissed = false;
+function showGitHubAuthBanner(errStr, tokenMasked) {
+  if (githubAuthBannerDismissed) return;
+  const banner = document.getElementById('github-auth-banner');
+  if (!banner) return;
+  document.getElementById('github-auth-err').textContent = errStr + (tokenMasked ? '   (token: ' + tokenMasked + ')' : '');
+  banner.style.display = 'flex';
+}
+function hideGitHubAuthBanner() {
+  const banner = document.getElementById('github-auth-banner');
+  if (banner) banner.style.display = 'none';
+}
+function dismissGitHubAuthBanner() {
+  githubAuthBannerDismissed = true;
+  hideGitHubAuthBanner();
+}
+
+function openGitHubReauthModal() {
+  document.getElementById('github-reauth-err').style.display = 'none';
+  document.getElementById('github-reauth-ok').style.display = 'none';
+  // Pre-fill the current repo
+  fetch('/api/settings').then(r=>r.json()).then(s => {
+    if (s.github_repo) document.getElementById('reauth-repo').value = s.github_repo;
+  }).catch(()=>{});
+  document.getElementById('github-reauth-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('reauth-token').focus(), 100);
+}
+function closeGitHubReauthModal() {
+  document.getElementById('github-reauth-modal').style.display = 'none';
+}
+async function testGitHubTokenFromModal() {
+  const token = document.getElementById('reauth-token').value.trim();
+  const repo = document.getElementById('reauth-repo').value.trim();
+  const errBox = document.getElementById('github-reauth-err');
+  const okBox = document.getElementById('github-reauth-ok');
+  errBox.style.display = 'none';
+  okBox.style.display = 'none';
+  if (!token) {
+    errBox.textContent = 'Enter a token first.';
+    errBox.style.display = 'block';
+    return;
+  }
+  errBox.textContent = 'Testing…';
+  errBox.style.color = '#aaa';
+  errBox.style.display = 'block';
+  try {
+    const resp = await fetch('/api/github/auth-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, repo })
+    });
+    const data = await resp.json();
+    errBox.style.color = '#fcc';
+    if (data.ok || data.token_ok) {
+      errBox.style.display = 'none';
+      okBox.textContent = '✓ Token works' + (data.user ? ' (user: ' + data.user + ')' : '') + (data.hint ? ' — ' + data.hint : '');
+      okBox.style.display = 'block';
+    } else {
+      errBox.textContent = '✗ ' + (data.error || 'Unknown error');
+      errBox.style.display = 'block';
+    }
+  } catch (e) {
+    errBox.textContent = 'Network error: ' + e;
+    errBox.style.display = 'block';
+  }
+}
+async function saveGitHubTokenFromModal() {
+  const token = document.getElementById('reauth-token').value.trim();
+  const repo = document.getElementById('reauth-repo').value.trim();
+  const errBox = document.getElementById('github-reauth-err');
+  const okBox = document.getElementById('github-reauth-ok');
+  errBox.style.display = 'none';
+  okBox.style.display = 'none';
+  if (!token) {
+    errBox.textContent = 'Enter a token first.';
+    errBox.style.display = 'block';
+    return;
+  }
+  errBox.textContent = 'Saving and retesting…';
+  errBox.style.color = '#aaa';
+  errBox.style.display = 'block';
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ github_token: token, github_repo: repo || undefined })
+    });
+    const data = await resp.json();
+    errBox.style.color = '#fcc';
+    if (data.github_auth && data.github_auth.ok) {
+      errBox.style.display = 'none';
+      okBox.textContent = '✓ Saved. Auth OK as ' + (data.github_auth.user || 'user') + '. Banner dismissed.';
+      okBox.style.display = 'block';
+      githubAuthBannerDismissed = true;
+      hideGitHubAuthBanner();
+      setTimeout(() => {
+        closeGitHubReauthModal();
+        refreshElectionStatus();
+      }, 1200);
+    } else {
+      errBox.textContent = '✗ Saved but auth still fails: ' + (data.github_auth ? data.github_auth.error : 'unknown');
+      errBox.style.display = 'block';
+    }
+  } catch (e) {
+    errBox.textContent = 'Network error: ' + e;
+    errBox.style.display = 'block';
+  }
+}
+
+// === Live Election Events Modal ===
+function openElectionEventsModal() {
+  document.getElementById('election-events-modal').style.display = 'flex';
+  refreshElectionEventsModal();
+}
+function closeElectionEventsModal() {
+  document.getElementById('election-events-modal').style.display = 'none';
+}
+async function refreshElectionEventsModal() {
+  try {
+    const resp = await fetch('/api/election-history');
+    const data = await resp.json();
+    const events = (data.events || []).slice().reverse(); // newest first
+    document.getElementById('election-events-count').textContent = events.length + ' events';
+    const statusDiv = document.getElementById('election-events-status');
+    if (data.github_auth_ok === false) {
+      statusDiv.innerHTML = '<span style="color:#fcc">⚠ GitHub auth FAILED:</span> ' + (data.github_auth_err || 'unknown') + ' &nbsp; <button onclick="openGitHubReauthModal()" style="background:#4a9eff;color:#fff;border:none;padding:3px 8px;border-radius:3px;font-size:10px;cursor:pointer">🔑 Update token</button>';
+    } else if (data.github_auth_ok === true) {
+      statusDiv.innerHTML = '<span style="color:#9f9">✓ GitHub auth OK</span> &nbsp; Last push: ' + (data.last_push || '(none)');
+    } else {
+      statusDiv.textContent = 'Last push: ' + (data.last_push || '(none)');
+    }
+    const tbody = document.getElementById('election-events-tbody');
+    tbody.innerHTML = events.map(ev => {
+      const t = new Date(ev.timestamp).toLocaleTimeString();
+      const actionColor = ev.action === 'error' ? '#fcc' : (ev.action === 'renewed' ? '#9f9' : (ev.action === 'claimed' ? '#9ff' : (ev.action === 'stale-takeover' ? '#fc9' : '#ccc')));
+      const agentShort = (ev.agent_id || '').length > 22 ? (ev.agent_id.slice(0, 20) + '…') : ev.agent_id;
+      const leaderShort = (ev.leader_id || '').length > 22 ? (ev.leader_id.slice(0, 20) + '…') : (ev.leader_id || '—');
+      const ageStr = ev.leader_age_ms > 0 && ev.leader_age_ms < 9223372036854 ? Math.round(ev.leader_age_ms/1000) + 's' : '—';
+      return '<tr style="border-bottom:1px solid #2a2a2a">' +
+        '<td style="padding:4px 6px;color:#888">' + t + '</td>' +
+        '<td style="padding:4px 6px;color:' + actionColor + ';font-weight:600">' + ev.action + '</td>' +
+        '<td style="padding:4px 6px;color:#aaa">' + ev.method + '</td>' +
+        '<td style="padding:4px 6px;color:#7cf">' + agentShort + '</td>' +
+        '<td style="padding:4px 6px;color:#cf9">' + leaderShort + '</td>' +
+        '<td style="padding:4px 6px;text-align:right;color:#888">' + ageStr + '</td>' +
+        '<td style="padding:4px 6px;color:' + actionColor + '">' + (ev.result || '—') + '</td>' +
+        '<td style="padding:4px 6px;color:#f88;font-size:10px">' + (ev.error || '') + '</td>' +
+      '</tr>';
+    }).join('');
+  } catch (e) {
+    document.getElementById('election-events-tbody').innerHTML = '<tr><td colspan="8" style="padding:12px;color:#fcc">Error: ' + e + '</td></tr>';
+  }
+}
+// Auto-refresh election events modal when open
+setInterval(() => {
+  const m = document.getElementById('election-events-modal');
+  if (m && m.style.display === 'flex') refreshElectionEventsModal();
+}, 3000);
 
 function updateCellVisibility() {
   const hasFilter = selectedAgents.size > 0;
