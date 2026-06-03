@@ -829,6 +829,7 @@ func loadSettings() {
 		cfg.ConfigPort = s.ConfigPort
 	}
 	if s.MaxFPS > 0 {
+		llog("info", "loadSettings: loading max_fps=%v", s.MaxFPS)
 		cfg.MaxFPS = s.MaxFPS
 	}
 	if s.GitHubRepo != "" {
@@ -2906,8 +2907,6 @@ func startHTTPServer() {
 		}
 		if req.MaxFPS > 0 {
 			cfg.MaxFPS = req.MaxFPS
-		} else {
-			cfg.MaxFPS = 1.0
 		}
 		if req.TunnelHostname != "" {
 			cfg.TunnelHostname = req.TunnelHostname
@@ -3936,7 +3935,7 @@ func syncFromGitHub() {
 				cfg.ElectionInterval = remoteSettings.ElectionInterval
 				changed = true
 			}
-			if remoteSettings.MaxFPS > 0 {
+			if remoteSettings.MaxFPS > 1 {
 				cfg.MaxFPS = remoteSettings.MaxFPS
 				if serverCancel != nil {
 					serverCancel()

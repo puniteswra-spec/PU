@@ -1404,15 +1404,20 @@ function doRenderToCell(agentId, payload) {
   const img = new Image();
   img.onload = () => {
     if (_renderVersion[agentId] !== version) return;
-    rec.emptyEl.style.display = 'none';
-    rec.canvas.style.display = 'block';
-    const body = rec.cell.querySelector('.cell-body');
-    const cw = rec._bodyW || body.clientWidth;
-    const ch = rec._bodyH || body.clientHeight;
-    if (body.clientWidth !== rec._bodyW || body.clientHeight !== rec._bodyH) {
-      rec._bodyW = body.clientWidth;
-      rec._bodyH = body.clientHeight;
+    placeholder.style.display = 'none';
+    canvas.style.display = 'block';
+    const dims = drawToCanvas(canvas, img, container.clientWidth - 28, container.clientHeight - 60);
+    if (agentCells[agentId]) {
+      agentCells[agentId].imgW = dims.w;
+      agentCells[agentId].imgH = dims.h;
     }
+  };
+  img.onerror = () => {
+    if (_renderVersion[agentId] !== version) return;
+    placeholder.querySelector('div:nth-child(2)').textContent = 'Failed to decode frame';
+  };
+  img.src = 'data:image/jpeg;base64,' + b64data;
+}
     const dims = drawToCanvas(rec.canvas, img, cw, ch);
     rec.imgW = dims.w;
     rec.imgH = dims.h;
