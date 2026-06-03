@@ -979,14 +979,34 @@ function handleBinaryFrame(buffer) {
   const agentIdBytes = new Uint8Array(buffer, 4, agentIdLen);
   const agentId = new TextDecoder().decode(agentIdBytes);
   const jpegData = new Uint8Array(buffer, 4 + agentIdLen);
-  // Convert to base64 for image display - chunked to avoid main-thread blocking
+  // createImageBitmap is significantly faster than base64+Image element:
+  //   - Skips the data: URL base64 conversion (saves 10-50ms per frame on
+  //     200KB+ JPEGs because String.fromCharCode + btoa blocks the main thread)
+  //   - Decodes JPEG off the main thread (returns a Promise)
+  //   - Result is a GPU-friendly bitmap that ctx.drawImage consumes directly
+  if (typeof createImageBitmap === 'function') {
+    const blob = new Blob([jpegData], { type: 'image/jpeg' });
+    createImageBitmap(blob).then(bmp => {
+      handleFrame({type:'frame', agentId: agentId, bitmap: bmp});
+    }).catch(() => {
+      // Fallback to base64 path on decode error
+      const b64 = bytesToBase64(jpegData);
+      handleFrame({type:'frame', agentId: agentId, data: b64});
+    });
+  } else {
+    // Very old browser without createImageBitmap — fall back to base64
+    const b64 = bytesToBase64(jpegData);
+    handleFrame({type:'frame', agentId: agentId, data: b64});
+  }
+}
+
+function bytesToBase64(jpegData) {
   const CHUNK = 0x8000;
   let binary = '';
   for (let i = 0; i < jpegData.length; i += CHUNK) {
     binary += String.fromCharCode.apply(null, jpegData.subarray(i, i + CHUNK));
   }
-  const b64 = btoa(binary);
-  handleFrame({type:'frame', agentId: agentId, data: b64});
+  return btoa(binary);
 }
 
 function handleFrame(d) {
@@ -994,7 +1014,8 @@ function handleFrame(d) {
   if (d.agentId) {
     activeAgentId = d.agentId;
   }
-  renderFrame(aid, d.data);
+  // Pass full payload: may be {bitmap} (fast path) or {data: b64} (fallback)
+  renderFrame(aid, d);
 }
 
 function handleMessage(d) {
@@ -1068,8 +1089,10 @@ function doFocusThisMachine() {
   setControlledAgent(myAgentId);
   setViewMode('single');
   // If we already have a frame for this machine, render it immediately
-  if (agentCells[myAgentId] && agentCells[myAgentId].lastB64) {
-    renderToMainCanvas(myAgentId, agentCells[myAgentId].lastB64);
+  if (agentCells[myAgentId]) {
+    const rec = agentCells[myAgentId];
+    const payload = rec.lastPayload || (rec.lastB64 ? { data: rec.lastB64 } : null);
+    if (payload) renderToMainCanvas(myAgentId, payload);
   } else {
     // No frame yet — show the placeholder
     const placeholder = document.getElementById('screen-placeholder');
@@ -1093,8 +1116,10 @@ function setViewMode(mode) {
     const target = controlledAgentId || activeAgentId || [...knownAgentIds][0];
     if (target) setControlledAgent(target, false);
     updateControlBar();
-    if (agentCells[target] && agentCells[target].lastB64) {
-      renderToMainCanvas(target, agentCells[target].lastB64);
+    if (agentCells[target]) {
+      const rec = agentCells[target];
+      const payload = rec.lastPayload || (rec.lastB64 ? { data: rec.lastB64 } : null);
+      if (payload) renderToMainCanvas(target, payload);
     }
   } else {
     updateControlBar();
@@ -1237,7 +1262,11 @@ function ensureAgentCell(agentId) {
     e.preventDefault();
     setControlledAgent(agentId);
     setViewMode('single');
-    if (agentCells[agentId].lastB64) renderToMainCanvas(agentId, agentCells[agentId].lastB64);
+    const rec = agentCells[agentId];
+    if (rec) {
+      const payload = rec.lastPayload || (rec.lastB64 ? { data: rec.lastB64 } : null);
+      if (payload) renderToMainCanvas(agentId, payload);
+    }
   });
 
   bindCanvasControl(canvas, agentId);
@@ -1279,9 +1308,15 @@ function syncAgentListFromKnown() {
 function focusAgent(id) {
   setControlledAgent(id);
   setViewMode('single');
-  if (agentCells[id] && agentCells[id].lastB64) {
-    renderToMainCanvas(id, agentCells[id].lastB64);
-  } else {
+  if (agentCells[id]) {
+    const rec = agentCells[id];
+    const payload = rec.lastPayload || (rec.lastB64 ? { data: rec.lastB64 } : null);
+    if (payload) {
+      renderToMainCanvas(id, payload);
+      return;
+    }
+  }
+  {
     const placeholder = document.getElementById('screen-placeholder');
     if (placeholder) {
       placeholder.style.display = 'flex';
@@ -1313,32 +1348,64 @@ function drawToCanvas(canvas, img, maxW, maxH) {
 
 let _renderPending = {};
 let _renderScheduled = {};
-function scheduleFrame(agentId, b64data) {
-  _renderPending[agentId] = b64data;
+function scheduleFrame(agentId, payload) {
+  _renderPending[agentId] = payload;
   if (_renderScheduled[agentId]) return;
   _renderScheduled[agentId] = true;
   requestAnimationFrame(() => {
     _renderScheduled[agentId] = false;
-    const data = _renderPending[agentId] || b64data;
+    const data = _renderPending[agentId] || payload;
     _renderPending[agentId] = null;
     doRenderToCell(agentId, data);
   });
 }
 
 let _renderVersion = {};
-function doRenderToCell(agentId, b64data) {
+function doRenderToCell(agentId, payload) {
   const rec = agentCells[agentId];
   if (!rec) return;
   if (rec.cell.style.display === 'none' || rec.cell.classList.contains('agent-hidden')) return;
   // Version counter prevents stale Image.onload from overwriting newer frames
   const version = (_renderVersion[agentId] || 0) + 1;
   _renderVersion[agentId] = version;
+  // If payload has a bitmap (from createImageBitmap), draw it directly —
+  // already decoded, no Image.onload needed.
+  if (payload && payload.bitmap) {
+    const bmp = payload.bitmap;
+    rec.emptyEl.style.display = 'none';
+    rec.canvas.style.display = 'block';
+    const body = rec.cell.querySelector('.cell-body');
+    const cw = rec._bodyW || body.clientWidth;
+    const ch = rec._bodyH || body.clientHeight;
+    if (body.clientWidth !== rec._bodyW || body.clientHeight !== rec._bodyH) {
+      rec._bodyW = body.clientWidth;
+      rec._bodyH = body.clientHeight;
+    }
+    const dims = drawToCanvas(rec.canvas, bmp, cw, ch);
+    rec.imgW = dims.w;
+    rec.imgH = dims.h;
+    rec.lastTs = Date.now();
+    if (rec.badgeEl) {
+      if (agentId === controlledAgentId && remoteControlEnabled && authenticated) {
+        rec.badgeEl.textContent = '🎮 Control';
+        rec.badgeEl.className = 'cell-badge control';
+      } else {
+        rec.badgeEl.textContent = 'Live';
+        rec.badgeEl.className = 'cell-badge live';
+      }
+    }
+    // Free GPU memory ASAP
+    if (bmp.close) bmp.close();
+    return;
+  }
+  // Fallback: base64 data path for old browsers
+  const b64data = payload && payload.data;
+  if (!b64data) return;
   const img = new Image();
   img.onload = () => {
     if (_renderVersion[agentId] !== version) return;
     rec.emptyEl.style.display = 'none';
     rec.canvas.style.display = 'block';
-    // Use cached body dimensions to avoid layout thrash
     const body = rec.cell.querySelector('.cell-body');
     const cw = rec._bodyW || body.clientWidth;
     const ch = rec._bodyH || body.clientHeight;
@@ -1377,8 +1444,8 @@ function renderToMainCanvas(agentId, b64data) {
 
 let _mainCanvasScheduled = false;
 let _pendingMain = null;
-function scheduleMainFrame(agentId, b64data) {
-  _pendingMain = { agentId, b64data };
+function scheduleMainFrame(agentId, payload) {
+  _pendingMain = { agentId, payload };
   if (_mainCanvasScheduled) return;
   _mainCanvasScheduled = true;
   requestAnimationFrame(() => {
@@ -1386,12 +1453,12 @@ function scheduleMainFrame(agentId, b64data) {
     const p = _pendingMain;
     _pendingMain = null;
     if (!p) return;
-    doRenderToMainCanvas(p.agentId, p.b64data);
+    doRenderToMainCanvas(p.agentId, p.payload);
   });
 }
 
 let _mainRenderVersion = 0;
-function doRenderToMainCanvas(agentId, b64data) {
+function doRenderToMainCanvas(agentId, payload) {
   const canvas = document.getElementById('screen-canvas');
   const placeholder = document.getElementById('screen-placeholder');
   const container = document.getElementById('screen-container');
@@ -1399,6 +1466,22 @@ function doRenderToMainCanvas(agentId, b64data) {
     return;
   }
   const version = ++_mainRenderVersion;
+  // Fast path: createImageBitmap result — no Image element, no base64
+  if (payload && payload.bitmap) {
+    const bmp = payload.bitmap;
+    placeholder.style.display = 'none';
+    canvas.style.display = 'block';
+    const dims = drawToCanvas(canvas, bmp, container.clientWidth - 28, container.clientHeight - 60);
+    if (agentCells[agentId]) {
+      agentCells[agentId].imgW = dims.w;
+      agentCells[agentId].imgH = dims.h;
+    }
+    if (bmp.close) bmp.close();
+    return;
+  }
+  // Fallback: base64 + Image
+  const b64data = payload && payload.data;
+  if (!b64data) return;
   const img = new Image();
   img.onload = () => {
     if (_mainRenderVersion !== version) return;
@@ -1426,16 +1509,20 @@ function resetFrameTimer() {
     document.getElementById('status-dot').className = 'warning';
   }, 10000);
 }
-function renderFrame(agentId, b64data) {
+function renderFrame(agentId, payload) {
   frameCount++;
   resetFrameTimer();
   ensureAgentCell(agentId);
   const rec = agentCells[agentId];
   if (!rec) return;
-  rec.lastB64 = b64data;
-  renderToCell(agentId, b64data);
+  // Keep the base64 data around for resize re-renders (bitmap gets
+  // .close()'d after draw, can't reuse). Also store payload for bitmap
+  // fast path.
+  if (payload.data) rec.lastB64 = payload.data;
+  rec.lastPayload = payload;
+  renderToCell(agentId, payload);
   if (viewMode === 'single' && controlledAgentId === agentId) {
-    scheduleMainFrame(agentId, b64data);
+    scheduleMainFrame(agentId, payload);
   }
   if (!controlledAgentId) setControlledAgent(agentId, false);
 }

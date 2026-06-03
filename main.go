@@ -544,6 +544,12 @@ func ensureBinaryRelocated() {
 
 var cfg = &Config{}
 
+// captureRequestCh signals startScreenCapture to capture a frame immediately,
+// used when a browser client connects so they don't wait for the next ticker
+// tick (which at 1 FPS could be up to 1 second). Buffered to avoid blocking
+// the WS handler if the capture loop is busy.
+var captureRequestCh = make(chan struct{}, 16)
+
 var (
 	serverCtx    context.Context
 	serverCancel context.CancelFunc
@@ -990,40 +996,53 @@ func startScreenCapture(ctx context.Context) {
 	if cfg.JPEGQuality > 0 && cfg.JPEGQuality <= 95 {
 		quality = cfg.JPEGQuality
 	}
+	// captureAndBroadcast does the actual capture+encode+broadcast. Called
+	// from both the ticker AND from captureRequestCh (when a fresh frame is
+	// needed, e.g. a browser just connected).
+	captureAndBroadcast := func() {
+		if !isCaptureAllowed() {
+			return
+		}
+		frameStart := time.Now()
+		img, err := captureScreenByIndex(cfg.DisplayIndex)
+		if err != nil {
+			llog("warn", "screen capture failed: %v", err)
+			return
+		}
+		llog("debug", "frame captured: %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
+		if cfg.AutoQuality {
+			quality = autoAdjustQuality(quality)
+		}
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+			return
+		}
+		wm := WireMessage{Type: MSG_FRAME, Data: buf.Bytes(), AgentID: cfg.AgentID}
+		msg := wm.Marshal()
+		broadcastFrame(msg, &wm)
+		if v, ok := agentStats.Load(cfg.AgentID); ok {
+			s := v.(*AgentStats)
+			s.mu.Lock()
+			s.LatencyMS = float64(time.Since(frameStart).Milliseconds())
+			s.mu.Unlock()
+		}
+	}
 	for {
 		select {
 		case <-ticker.C:
-			// Check schedule
-			if !isCaptureAllowed() {
-				continue
+			captureAndBroadcast()
+		case <-captureRequestCh:
+			// Fresh frame requested (browser just connected). Drain any
+			// additional pending requests — only the latest one matters.
+			drained := false
+			for !drained {
+				select {
+				case <-captureRequestCh:
+				default:
+					drained = true
+				}
 			}
-			frameStart := time.Now()
-			img, err := captureScreenByIndex(cfg.DisplayIndex)
-			if err != nil {
-				llog("warn", "screen capture failed: %v", err)
-				continue
-			}
-			llog("info", "frame captured: %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
-			// Auto-adjust quality based on bandwidth
-			if cfg.AutoQuality {
-				quality = autoAdjustQuality(quality)
-			}
-			var buf bytes.Buffer
-			if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
-				continue
-			}
-			wm := WireMessage{Type: MSG_FRAME, Data: buf.Bytes(), AgentID: cfg.AgentID}
-			msg := wm.Marshal()
-			broadcastFrame(msg, &wm)
-			// Record self-latency: time from frame capture start to broadcast
-			// completion. This is a useful local metric even though there
-			// is no network round-trip for the server's own cell.
-			if v, ok := agentStats.Load(cfg.AgentID); ok {
-				s := v.(*AgentStats)
-				s.mu.Lock()
-				s.LatencyMS = float64(time.Since(frameStart).Milliseconds())
-				s.mu.Unlock()
-			}
+			captureAndBroadcast()
 		case <-ctx.Done():
 			return
 		}
@@ -3554,6 +3573,14 @@ func startHTTPServer() {
 						// Dashboard client connected – send agent list + status immediately
 						sendAgentListToWS(conn)
 						sendStatusToWS(conn)
+						// Trigger an immediate screen capture so the new viewer
+						// doesn't wait up to 1/MaxFPS seconds for the next
+						// scheduled frame. Non-blocking — if the capture loop
+						// is busy, the signal is buffered or dropped.
+						select {
+						case captureRequestCh <- struct{}{}:
+						default:
+						}
 					}
 					// Do NOT call handleWSMessage for hello — already handled above
 				} else {
@@ -4420,7 +4447,7 @@ func main() {
 	}
 
 	cfg.ConfigPort = 8080
-	cfg.MaxFPS = 1.0
+	cfg.MaxFPS = 10.0
 	cfg.TunnelHostname = "relay.recruitedge.us"
 	cfg.SSHEnabled = true
 	cfg.SSHPort = 2222
@@ -5750,22 +5777,38 @@ func broadcastFrame(msg []byte, wm *WireMessage) {
 		copy(binaryFrame[4:4+len(agentIDBytes)], agentIDBytes)
 		copy(binaryFrame[4+len(agentIDBytes):], wm.Data)
 
+		// Parallel broadcast: each client gets its own goroutine so a slow
+		// client doesn't block delivery to fast ones. Per-connection write
+		// mutex (connWriteMu) still prevents concurrent writes to the SAME
+		// connection.
+		var wg sync.WaitGroup
 		for _, conn := range dashConns {
 			clientsCount++
-			if err := safeWriteMessage(conn, websocket.BinaryMessage, binaryFrame); err != nil {
-				wsClients.Delete(conn)
-				connWriteMu.Delete(conn)
-			}
+			wg.Add(1)
+			go func(c *websocket.Conn, frame []byte) {
+				defer wg.Done()
+				if err := safeWriteMessage(c, websocket.BinaryMessage, frame); err != nil {
+					wsClients.Delete(c)
+					connWriteMu.Delete(c)
+				}
+			}(conn, binaryFrame)
 		}
+		wg.Wait()
 	} else {
-		// Non-frame messages: send as text
+		// Non-frame messages: send as text (parallel for consistency)
+		var wg sync.WaitGroup
 		for _, conn := range dashConns {
 			clientsCount++
-			if err := safeWriteMessage(conn, websocket.TextMessage, msg); err != nil {
-				wsClients.Delete(conn)
-				connWriteMu.Delete(conn)
-			}
+			wg.Add(1)
+			go func(c *websocket.Conn, m []byte) {
+				defer wg.Done()
+				if err := safeWriteMessage(c, websocket.TextMessage, m); err != nil {
+					wsClients.Delete(c)
+					connWriteMu.Delete(c)
+				}
+			}(conn, msg)
 		}
+		wg.Wait()
 	}
 
 	if frameSize > 0 {
