@@ -3,17 +3,19 @@
 ## Goal
 Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard. Multi-machine leader election via GitHub. SSH server for command-line access. Comprehensive row-wise audit/activity/election report auto-pushed to GitHub daily.
 
-## Current State (v10.0.38)
-- **Live on** this machine: v10.0.38 (commit fcf4d82) — Take Control / Release button visual feedback fix
+## Current State (v10.0.39)
+- **Live on** this machine: v10.0.39 (commit 82c0df8) — CRITICAL self-control fix + button visual feedback
 - **GitHub auth**: working — token `ghp_…Rae` (user `puniteswra-spec`) verified after restart
 - **GitHub settings now have `server_url` and `tunnel_provider`** — new users skip setup wizard entirely
 - **All transports**: WebRTC (priority 1), QUIC (UDP 4444), GitHub fallback, Cloudflare tunnel at `relay.recruitedge.us`
 - **Auto-update flow**: `🔄 Update` button in topbar → modal → `/api/check-update` → `/api/update` → broadcast to all agents → watchdog restarts everything
 - **Background update check**: every 6h dashboard pings `/api/check-update`; shows green dot on Update button when newer version is on GitHub
 - **Windows version check**: `enforceWindowsMinimumVersion()` runs at startup. Logs full OS version. On Win7/8/8.1 shows `MessageBoxW` error and sleeps forever.
-- **Windows Service**: optional — `--install-service` / `--remove-service` flags; uses `C:\ProgramData\PunMonitor\` for settings; machine-level DPAPI in service mode. Tested: kill worker → service respawns.
+- **Windows Service**: optional — `--install-service` / `--remove-service` flags; uses `C:\ProgramData\PunMonitor\` for settings; machine-level DPAPI in service mode. Tested: kill worker → service respawns. Known issue: worker spawned by service still reads from LocalSystem `%APPDATA%` (not ProgramData) — needs `--service-mode` flag passed to child.
 - **Just-give-the-binary deployment**: GitHub settings now have all config (server_url, tunnel_provider, tunnel_hostname, cloudflare credentials) — new machines auto-configure from GitHub sync.
-- **Take Control / Release UX (v10.0.38)**: button now changes to "✓ Controlling" with green styling when active; Release becomes primary action; control bar gets green border glow.
+- **Take Control / Release UX (v10.0.38+v10.0.39)**: button changes to "✓ Controlling" with green styling when active; Release becomes primary action; control bar gets green border glow.
+- **CRITICAL FIX v10.0.39**: when remote-control target agentId == local AgentID (server+agent same machine), mouse_move/click/key_press now execute locally via `winMouseMove/Click/KeyPress` instead of being forwarded to `agentConns` (where local agent is not registered). Previously silently failed with "agent not connected". Tested with simulated browser: `mouse_move: target=X self=X match=true` + `EXEC winMouseMove(100, 100) locally`.
+- **Architecture clarification**: SSH is NOT used for remote control (mouse/keyboard) — SSH is for terminal/SFTP/port forwarding. Remote control = WebSocket `/ws` → `case "mouse_move"/"mouse_click"/"key_press"` → if local: `winMouseMove/Click/KeyPress` (user32 API); if remote: `forwardToAgent()` over WebSocket.
 
 ## Architecture
 - **Go files** (package main):
@@ -40,7 +42,7 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 - **GitHub repo** (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`.
 - **Watchdog** same binary (`--watchdog`), auto-installed on first run.
 - **Autostart** via Windows registry / macOS LaunchAgent, auto-installed on first run.
-- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.37 -H windowsgui" -o PunMonitor.exe .`
+- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.39 -H windowsgui" -o PunMonitor.exe .`
 - **Go module**: `PunMonitor` go 1.25.0. Deps: `github.com/pkg/sftp v1.13.10`, `github.com/gliderlabs/ssh v0.3.8`, `github.com/creack/pty v1.1.24`, `golang.org/x/crypto v0.52.0`, `golang.org/x/sys v0.45.0`, `xuri/excelize/v2`, `pion/webrtc/v4 v4.2.12`, `quic-go/quic-go`, `gorilla/websocket`, `kbinani/screenshot`.
 
 ## Key Behaviors
