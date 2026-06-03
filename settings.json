@@ -1,6 +1,6 @@
 {
   "config_port": 8080,
-  "max_fps": 1,
+  "max_fps": 10,
   "github_repo": "puniteswra-spec/PU",
   "github_token": "enc:dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAmIlClWM0RkKZqFXmBb/mmQAAAAACAAAAAAAQZgAAAAEAACAAAADVgu8KW93e1CQQBjP7qW6ftDyzRoDM+4rE4MzzdPeYXgAAAAAOgAAAAAIAACAAAACQys8TMrPB5TgBSoc6rj6RUSRQRPTWF1lT4C6M6KOqJTAAAABNXs86h8aQJl2M7IARhHpz0/sgcA+cvOOdhczwk4kBoO2nrvgl1wlwX+HM8TDpsttAAAAA2y1GDpIp5KVRxuHmAfH4aFk8cPRDkzQmKRTPsAzvFRxOGdJHpaJw3DOhyyfrgubAjDdSjWUzhFxSaKHVW3mlgg==",
   "auth_user": "puneet",
