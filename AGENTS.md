@@ -3,8 +3,8 @@
 ## Goal
 Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard. Multi-machine leader election via GitHub. SSH server for command-line access. Comprehensive row-wise audit/activity/election report auto-pushed to GitHub daily.
 
-## Current State (v10.0.37)
-- **Live on** this machine: v10.0.37 (commit pending)
+## Current State (v10.0.38)
+- **Live on** this machine: v10.0.38 (commit fcf4d82) — Take Control / Release button visual feedback fix
 - **GitHub auth**: working — token `ghp_…Rae` (user `puniteswra-spec`) verified after restart
 - **GitHub settings now have `server_url` and `tunnel_provider`** — new users skip setup wizard entirely
 - **All transports**: WebRTC (priority 1), QUIC (UDP 4444), GitHub fallback, Cloudflare tunnel at `relay.recruitedge.us`
@@ -13,6 +13,7 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 - **Windows version check**: `enforceWindowsMinimumVersion()` runs at startup. Logs full OS version. On Win7/8/8.1 shows `MessageBoxW` error and sleeps forever.
 - **Windows Service**: optional — `--install-service` / `--remove-service` flags; uses `C:\ProgramData\PunMonitor\` for settings; machine-level DPAPI in service mode. Tested: kill worker → service respawns.
 - **Just-give-the-binary deployment**: GitHub settings now have all config (server_url, tunnel_provider, tunnel_hostname, cloudflare credentials) — new machines auto-configure from GitHub sync.
+- **Take Control / Release UX (v10.0.38)**: button now changes to "✓ Controlling" with green styling when active; Release becomes primary action; control bar gets green border glow.
 
 ## Architecture
 - **Go files** (package main):
@@ -132,6 +133,7 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
   - GitHub settings.json now has `server_url` and `tunnel_provider` populated — new machines auto-configure from sync and skip the setup wizard entirely.
   - `/api/service/status` and `/api/service/sync-settings` endpoints added.
   - Cross-platform builds clean: Windows + macOS (arm64/amd64) + Linux amd64.
+- **v10.0.38 done** (commit fcf4d82): Take Control / Release button visual feedback. `updateControlBar()` now updates button states, not just hint text. Take Control button changes to "✓ Controlling" with green `.control-on` styling when active; Release button becomes the primary action; `#control-bar.control-active` gets a green border glow. CSS adds `.control-on` and `.control-active` rules.
 - **Add SSH section to admin settings page**: toggle enabled, change port, regenerate password, view/rotate host key, manage authorized_keys
 - **Add reverse SSH tunnel** as alternative to Cloudflare tunnel
 - **Multiple GitHub accounts** for distributed rate limiting at 50+ machines
