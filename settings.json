@@ -2,15 +2,15 @@
   "config_port": 8080,
   "max_fps": 10,
   "github_repo": "puniteswra-spec/PU",
-  "github_token": "enc:dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAmIlClWM0RkKZqFXmBb/mmQAAAAACAAAAAAAQZgAAAAEAACAAAADXbMnRpTok3HPzuQ6vzxD/MG/9t9f5HWwXevS3+FnakwAAAAAOgAAAAAIAACAAAACi2CUScD8tbgHqkgywN8YpuuUGOLGDP7dhmNRpubLjbjAAAAC89ZCbPgKvra6Waps3fIjgNPkuL/ALA+ZQr+BKdfIpusIXU4cdrqzq3aQe0KmWYeRAAAAAzytlAB5noPLS8EGerP4+Mo1WmcmmTp/1kiqEJm2ep1d8Jh4chfJ8Tavpnt4jVoriXU+G6nudWsw8ta+LocWb3g==",
+  "github_token": "enc:dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAmIlClWM0RkKZqFXmBb/mmQAAAAACAAAAAAAQZgAAAAEAACAAAACuHqtKdxZ7ZcYUb2QC7KEel+gKC5rbek1LJOT9PgYsRgAAAAAOgAAAAAIAACAAAABdz8WzFh00KuevkSneXFNiJfLbmVxQD0EtlCNEguE75jAAAADttie3Y5WadzF3BHeifroaCrHKQYc3zu/XEdnw5qnDxKGAB917TGhBh+86mF0vlPVAAAAAk6+p/bjgAyQypnLwBDO6b1Gq0cwAMCE5x3bemSNlO2gfdZwhDZuBH+lcy+w2526OKmYZfUgXoxT65aqbMnDi+g==",
   "auth_user": "puneet",
-  "auth_pass": "enc:dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAmIlClWM0RkKZqFXmBb/mmQAAAAACAAAAAAAQZgAAAAEAACAAAAA4fl5m02b4p6bKeKqPuY6eAQqiIsmwlSwgaOFsGqdsaQAAAAAOgAAAAAIAACAAAAAVwH6RJrQkUpQM619jtfoxj/cqnj7CBItYwHnSFA1wARAAAAA564jQ4NV2u1Ziwo6W5NyOQAAAAFFcxeezNqbUlfGfI7XPsrD6U0X+pHDkzWt2XubTvKXGiratImEbnIY0JZQWQUqyydCnkcrjBRKNHsi5qV/cHvo=",
+  "auth_pass": "enc:dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAmIlClWM0RkKZqFXmBb/mmQAAAAACAAAAAAAQZgAAAAEAACAAAADnFMAdIPMg8nQQ1VfvOmM8AjOIynuP+qpJ6Cm8UgzDaQAAAAAOgAAAAAIAACAAAAAJRmYwhq8G1qmC4qhDUofquB5Ps9XwckVSYbmqPObsEhAAAACOqfAeMPTAuY+azWoAeiHPQAAAACiK0KH60sGLHlV9Z9vmmMESPAD6BaF/itHIH8A/1nrUaBTVgovcS40uQBqL1LjmHKBlNDkBz50p/q7uMEiFMfk=",
   "monthly_limit_mb": 0,
   "tunnel_provider": "",
   "tunnel_hostname": "relay.recruitedge.us",
   "server_url": "",
   "cloudflare_account_tag": "2c5f58da54ef4986a0efc63285d2c73f",
-  "cloudflare_tunnel_secret": "enc:dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAmIlClWM0RkKZqFXmBb/mmQAAAAACAAAAAAAQZgAAAAEAACAAAAAAOMzDIUs5SOpulWxlYdHqs1u03t34p43gOSBEVTptzQAAAAAOgAAAAAIAACAAAADvzQEfLbYRJjMZNKetVBTE6jZbWb5l/swVmWJmhu5SpzAAAADL4IiMSmWvuS8JxwKPAlz4ZfQ9iyAjluH/uAFpL0wtByWlVvInEp6Gg08j6F3CgktAAAAAlryWA9I4+GoWIE+Ns6ABGKos+f8ATW3gMwAtfLBIgDKy7wnrcgfv1UaPFl1bVWSLtfdMEwD5g7b+Kx442N2p5A==",
+  "cloudflare_tunnel_secret": "enc:dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAmIlClWM0RkKZqFXmBb/mmQAAAAACAAAAAAAQZgAAAAEAACAAAAAzqQ1FFcW/YTgN2qnNHXEJio1J51sviT9RPC1lCI8dhQAAAAAOgAAAAAIAACAAAABMQTbQZfkaYRkWCaJfoJw+AvqskPhUmOUiPZyS8bFkFTAAAAD5KxRebqx6m//WyiSAvQ5I6FXMdgEEV6sRPd/9KnVSrdX+Yfrt7jELsOMRerpBlc1AAAAABBZgTfQuuFv/BcWPxUEFGwsQxkQku0BgJPk0UdcZZH+SiQYPmYUtZjwW7jMmiTe9JDvQAkWl6WlK0sjFlUVrVg==",
   "cloudflare_tunnel_id": "01a107d1-2759-449f-ab1f-d53a07da9afe",
   "agent_id": "PuneetU-EB6LMJD-cf4a9ce5",
   "hidden_agents": {
@@ -21,7 +21,7 @@
   "ssh_port": 2222,
   "ssh_username": "admin",
   "ssh_password": "zePR1g0aepQFbTjB",
-  "ssh_host_key_pem": "enc:dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAmIlClWM0RkKZqFXmBb/mmQAAAAACAAAAAAAQZgAAAAEAACAAAABD3gRBzHVeLid10dbrV9LYWhht2yqaQquFkdHsag8MewAAAAAOgAAAAAIAACAAAACKvIahCucIHhziJrsLn8gGTrWQCV5WbyraRtyhpJjMs4AAAAAzP4JnG+s9pt/b+6fr3GWx4NjKlpuENbKUa9EQ5Wc9m3jCwW0EuqH9KXc+xfN1B0BVLkEVHqo+OvDQwWpxHmplhWO3D6tBVFnaPxJdRkqzuzVQt7Q+spKHqa4Eu1CHvucBNUMfNQgNuvHXORi8pCS9+Z9b01W9/jl4+dwjfBsvoUAAAAAyMiw+ugiKvZS3loHpJogJVklTCogzwLIWMvnuPxYeZIceWwA6uj6QacDe95rBexz7ckMMO64SGofGRBlL4NwU",
+  "ssh_host_key_pem": "enc:dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAmIlClWM0RkKZqFXmBb/mmQAAAAACAAAAAAAQZgAAAAEAACAAAAB98s4gLWsckC/x/KqmOj7uy95JgJHvWtkjA/h+6gTQ2gAAAAAOgAAAAAIAACAAAAC6+Hm8l5kTQ4PBZ07ajrGenAiNwp64pOGvAwRuxVBStoAAAADUl1Fu50C3t/lTS2oxSWognndKbQwrn7ftDAD9srkPEJsYP1qk2c7VmNrxugcfhchRKqApv+Gqqpjbkh/EUDYxKn+jvVZQAzDFjF6y1fxa0TuHAkXcpqxCh7IXZ4AxCQKLGNu4AygDewefo0LdssN5sdpWh5CKAkubsrOfCLnDdEAAAACOsUNH5+eX/UrhHf3IdU0whoSDY/+KD7Qs/rP/9+tctUInAGaXbNZFkcChEukA+6eGsTMiuO7XsD0unLLb0mHS",
   "ssh_authorized_keys": [
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHb0qyC80JQk7yJ1WPXRJcPNnCvP36N0b0c/CSA0l7c/ win@PuneetU-EB6LMJD"
   ]
