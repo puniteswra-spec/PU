@@ -118,6 +118,9 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
 }
 #control-bar .ctrl-active{color:var(--primary);font-weight:700}
 #control-bar .ctrl-hint{color:var(--text3);margin-left:auto}
+#control-bar.control-active{border-color:#2ecc71;box-shadow:0 0 0 1px rgba(46,204,113,.4),var(--shadow);background:linear-gradient(var(--surface),var(--surface)) padding-box,linear-gradient(90deg,rgba(46,204,113,.25),rgba(46,204,113,.05)) border-box}
+#control-bar button.control-on{background:#2ecc71!important;color:#fff!important;border-color:#2ecc71!important;cursor:default!important;font-weight:600}
+#control-bar button.control-on:hover{background:#27ae60!important;border-color:#27ae60!important}
 
 /* ── Multi-agent grid (default) ── */
 #cctv-grid{
@@ -1132,11 +1135,35 @@ function disableRemoteControl() {
 function updateControlBar() {
   const label = document.getElementById('control-agent-label');
   const hint = document.getElementById('control-status');
+  const takeBtn = document.getElementById('btn-take-control');
+  const releaseBtn = document.getElementById('btn-release-control');
+  const bar = document.getElementById('control-bar');
   if (label) label.textContent = controlledAgentId || '—';
   if (hint) {
     if (!authenticated) hint.textContent = 'Login as admin, then Take Control';
     else if (!remoteControlEnabled) hint.textContent = 'View only — click Take Control to send mouse/keyboard';
     else hint.textContent = 'Control active for ' + (controlledAgentId || 'agent');
+  }
+  if (bar) bar.classList.toggle('control-active', !!remoteControlEnabled);
+  if (takeBtn) {
+    if (remoteControlEnabled) {
+      takeBtn.textContent = '✓ Controlling';
+      takeBtn.classList.add('control-on');
+      takeBtn.classList.remove('btn-primary');
+    } else {
+      takeBtn.textContent = 'Take Control';
+      takeBtn.classList.remove('control-on');
+      takeBtn.classList.add('btn-primary');
+    }
+  }
+  if (releaseBtn) {
+    if (remoteControlEnabled) {
+      releaseBtn.classList.add('btn-primary');
+      releaseBtn.classList.remove('btn-outline');
+    } else {
+      releaseBtn.classList.remove('btn-primary');
+      releaseBtn.classList.add('btn-outline');
+    }
   }
 }
 
