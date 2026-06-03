@@ -1098,9 +1098,11 @@ func autoAdjustQuality(current int) int {
 func handleWSMessage(conn *websocket.Conn, msg []byte) {
 	var msgMap map[string]interface{}
 	if err := json.Unmarshal(msg, &msgMap); err != nil {
+		llog("debug", "WS: JSON parse fail: %v msg=%s", err, string(msg))
 		return
 	}
 	msgType, _ := msgMap["type"].(string)
+	llog("debug", "WS: msgType=%s agentId=%v", msgType, msgMap["agentId"])
 	switch msgType {
 	case "hello":
 		// Hello is already handled by the WS upgrade handler
@@ -1190,6 +1192,16 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 		webrtcManager.HandleICE(connID, candidate)
 	case "mouse_move":
 		if target, ok := msgMap["agentId"].(string); ok && target != "" {
+			llog("debug", "mouse_move: target=%s self=%s match=%v", target, cfg.AgentID, target == cfg.AgentID)
+			if target == cfg.AgentID {
+				if x, ok := msgMap["x"].(float64); ok {
+					if y, ok := msgMap["y"].(float64); ok {
+						llog("info", "EXEC winMouseMove(%d, %d) locally", int(x), int(y))
+						winMouseMove(int(x), int(y))
+					}
+				}
+				return
+			}
 			forwardToAgent(target, msg)
 			return
 		}
@@ -1200,6 +1212,11 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 		}
 	case "mouse_click":
 		if target, ok := msgMap["agentId"].(string); ok && target != "" {
+			if target == cfg.AgentID {
+				btn, _ := msgMap["button"].(string)
+				winMouseClick(0, 0, btn != "right")
+				return
+			}
 			forwardToAgent(target, msg)
 			return
 		}
@@ -1207,6 +1224,12 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 		winMouseClick(0, 0, btn != "right")
 	case "key_press":
 		if target, ok := msgMap["agentId"].(string); ok && target != "" {
+			if target == cfg.AgentID {
+				if key, ok := msgMap["key"].(float64); ok {
+					winKeyPress(uint16(key))
+				}
+				return
+			}
 			forwardToAgent(target, msg)
 			return
 		}
@@ -4092,6 +4115,10 @@ func captureScreenByIndex(index int) (image.Image, error) {
 		return img, err
 	}
 	img, err := screenshot.CaptureRect(bounds)
+	if img == nil {
+		llog("info", "CaptureRect returned: err=%v (nil image, falling back)", err)
+		return captureScreen()
+	}
 	llog("info", "CaptureRect returned: err=%v bounds=%v", err, img.Bounds())
 	if err != nil {
 		return captureScreen()
