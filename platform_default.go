@@ -86,3 +86,15 @@ func hideFile(path string) string {
 	os.Rename(path, hidden)
 	return hidden
 }
+
+func detectAndRunService() bool { return false }
+
+var isServiceMode bool
+
+// Windows-specific stubs for non-Windows platforms
+func enforceWindowsMinimumVersion() {}
+
+// Service stubs for non-Windows platforms
+func installService() error         { return nil }
+func removeService() error          { return nil }
+func copySettingsToProgramData()    {}

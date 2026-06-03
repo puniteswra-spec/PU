@@ -447,6 +447,14 @@ func llog(level string, format string, args ...interface{}) {
 
 func dataDir() string {
 	if runtime.GOOS == "windows" {
+		// When running as a Windows Service (LocalSystem), %APPDATA% points to
+		// the SYSTEM profile which is empty. Use ProgramData instead so the
+		// service and the interactive user share the same settings.
+		if isServiceMode {
+			d := filepath.Join(os.Getenv("ProgramData"), "PunMonitor")
+			os.MkdirAll(d, 0755)
+			return d
+		}
 		if ad := os.Getenv("APPDATA"); ad != "" {
 			d := filepath.Join(ad, "PunMonitor")
 			os.MkdirAll(d, 0755)
@@ -3259,6 +3267,31 @@ func startHTTPServer() {
 		json.NewEncoder(w).Encode(list)
 	})
 
+	// /api/service/status — returns current Windows Service status.
+	http.HandleFunc("/api/service/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		out, err := exec.Command("sc", "query", "PunMonitor").CombinedOutput()
+		installed := err == nil && !strings.Contains(string(out), "does not exist")
+		running := err == nil && strings.Contains(string(out), "RUNNING")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"installed": installed,
+			"running":   running,
+		})
+	})
+
+	// /api/service/sync-settings — copies current user settings (DPAPI-decrypted)
+	// to C:\ProgramData\PunMonitor\ so the Windows Service can read them.
+	// This does NOT install/remove the service (that requires admin via --install-service).
+	http.HandleFunc("/api/service/sync-settings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		copySettingsToProgramData()
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	})
+
 	http.HandleFunc("/api/assist-close", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -3677,29 +3710,46 @@ func pushCredsToGitHub() {
 		defer resp.Body.Close()
 		llog("info", "Credentials pushed to GitHub")
 	}
-	// Push settings.json
+	// Push settings.json (GET SHA first if file exists, then PUT with SHA)
 	if settingsData, err := os.ReadFile(settingsFilePath()); err == nil {
 		encoded := base64.StdEncoding.EncodeToString(settingsData)
-		payload, _ := json.Marshal(map[string]interface{}{
+		settingsURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/settings.json", normalizeGitHubRepo(cfg.GitHubRepo))
+		// Fetch existing SHA
+		getReq, _ := http.NewRequest("GET", settingsURL, nil)
+		getReq.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+		sha := ""
+		if resp, err := http.DefaultClient.Do(getReq); err == nil {
+			var gr struct {
+				SHA string `json:"sha"`
+			}
+			json.NewDecoder(resp.Body).Decode(&gr)
+			resp.Body.Close()
+			sha = gr.SHA
+		}
+		payload := map[string]interface{}{
 			"message": "settings backup",
 			"content": encoded,
 			"branch":  "main",
-		})
-		url := fmt.Sprintf("https://api.github.com/repos/%s/contents/settings.json", normalizeGitHubRepo(cfg.GitHubRepo))
-		req, err := http.NewRequest("PUT", url, bytes.NewReader(payload))
-		if err != nil {
-			llog("error", "Failed to create request for settings: %v", err)
-			return
 		}
+		if sha != "" {
+			payload["sha"] = sha
+		}
+		body, _ := json.Marshal(payload)
+		req, _ := http.NewRequest("PUT", settingsURL, bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			llog("error", "Failed to push settings: %v", err)
-			return
+		} else {
+			defer resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				respBody, _ := io.ReadAll(resp.Body)
+				llog("error", "Settings push failed (status %d): %s", resp.StatusCode, string(respBody))
+			} else {
+				llog("info", "Settings pushed to GitHub (status %d)", resp.StatusCode)
+			}
 		}
-		defer resp.Body.Close()
-		llog("info", "Settings pushed to GitHub")
 	}
 }
 
@@ -4288,6 +4338,31 @@ func main() {
 			serverURL = os.Args[2]
 		}
 		runPull(serverURL)
+		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "--install-service" {
+		// Load current user settings and copy them to ProgramData
+		// so the service (running as LocalSystem) can read them.
+		copySettingsToProgramData()
+		if err := installService(); err != nil {
+			llog("error", "Failed to install service: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "--remove-service" {
+		if err := removeService(); err != nil {
+			llog("error", "Failed to remove service: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// If launched by the Windows Service Control Manager, run as a service
+	// (supervision loop that restarts the main process).
+	if detectAndRunService() {
 		return
 	}
 

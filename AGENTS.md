@@ -3,20 +3,20 @@
 ## Goal
 Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard. Multi-machine leader election via GitHub. SSH server for command-line access. Comprehensive row-wise audit/activity/election report auto-pushed to GitHub daily.
 
-## Current State (v10.0.34)
-- **Live on** this machine: PID running v10.0.34 (commit 47b8e7e)
+## Current State (v10.0.37)
+- **Live on** this machine: v10.0.37 (commit pending)
 - **GitHub auth**: working — token `ghp_…Rae` (user `puniteswra-spec`) verified after restart
-- **Daily report**: `report-2026-06-02.xlsx` on GitHub
-- **Historical reports endpoint**: `/api/reports/list` and `/api/reports/merged` working
-- **Election history**: persisted to disk (`election_history.jsonl`), loaded on restart
+- **GitHub settings now have `server_url` and `tunnel_provider`** — new users skip setup wizard entirely
 - **All transports**: WebRTC (priority 1), QUIC (UDP 4444), GitHub fallback, Cloudflare tunnel at `relay.recruitedge.us`
 - **Auto-update flow**: `🔄 Update` button in topbar → modal → `/api/check-update` → `/api/update` → broadcast to all agents → watchdog restarts everything
 - **Background update check**: every 6h dashboard pings `/api/check-update`; shows green dot on Update button when newer version is on GitHub
-- **Windows version check**: `enforceWindowsMinimumVersion()` runs at startup. Logs full OS version (e.g. `Windows 10 Pro 10.0 (build 26200)`). On Win7/8/8.1 shows `MessageBoxW` error and sleeps forever (no silent loop).
+- **Windows version check**: `enforceWindowsMinimumVersion()` runs at startup. Logs full OS version. On Win7/8/8.1 shows `MessageBoxW` error and sleeps forever.
+- **Windows Service**: optional — `--install-service` / `--remove-service` flags; uses `C:\ProgramData\PunMonitor\` for settings; machine-level DPAPI in service mode. Tested: kill worker → service respawns.
+- **Just-give-the-binary deployment**: GitHub settings now have all config (server_url, tunnel_provider, tunnel_hostname, cloudflare credentials) — new machines auto-configure from GitHub sync.
 
 ## Architecture
 - **Go files** (package main):
-  - `main.go` (~6400 lines, v10.0.34): core — Config, SettingsFile, all HTTP handlers, `runAgentClient`, `startScreenCapture`, `safeWriteMessage`, `connWriteMu`, `broadcastFrame`, `selfUpdate`, `cleanOldFiles`, `runWatchdog`, `startWatchdogProcess`, `monitorWatchdogProcess`, `addHeartbeat`, `/api/assist-close`, `/api/settings` (POST re-tests auth + updates cached flag), `saveSettings`/`loadSettings` (with debug logging + defensive decrypt check), `pushCredsToGitHub()` (always attempts push, even on bad auth), `syncFromGitHub()` (no longer pulls encrypted secrets), `/api/check-update`, `/api/update` (with confirmation + agent broadcast), `enforceWindowsMinimumVersion()` call in main(), `ElectionStatus` struct, `setElectionStatus`, `tryClaimLeadership`/`renewLeadership`, `maskToken`, `compareVersions`, `runServerComponents`, `/api/election-history`, `/api/reports/list`, `/api/reports/merged`, `/api/report.xlsx`, `/api/election-status`, `/api/github/auth-test`, `/api/github/auth-status`, `var binaryVersion = "10.0.34"`, AgentID generation, `/api/system-info`, `/api/ssh-info`, native CPU/memory/boot, autostart + watchdog.
+  - `main.go` (~6725 lines, v10.0.37): core — Config, SettingsFile, all HTTP handlers, `runAgentClient`, `startScreenCapture`, `safeWriteMessage`, `connWriteMu`, `broadcastFrame`, `selfUpdate`, `cleanOldFiles`, `runWatchdog`, `startWatchdogProcess`, `monitorWatchdogProcess`, `addHeartbeat`, `/api/assist-close`, `/api/settings` (POST re-tests auth + updates cached flag), `saveSettings`/`loadSettings`, `pushCredsToGitHub()` (v10.0.37: GETs existing SHA before PUT so updates to existing settings.json don't silently fail with 422), `syncFromGitHub()` (no longer pulls encrypted secrets), `/api/check-update`, `/api/update`, `enforceWindowsMinimumVersion()` call in main(), `ElectionStatus` struct, `setElectionStatus`, `tryClaimLeadership`/`renewLeadership`, `maskToken`, `compareVersions`, `runServerComponents`, `/api/election-history`, `/api/reports/list`, `/api/reports/merged`, `/api/report.xlsx`, `/api/election-status`, `/api/github/auth-test`, `/api/github/auth-status`, `/api/service/status`, `/api/service/sync-settings`, `var binaryVersion = "10.0.37"`, AgentID generation, `/api/system-info`, `/api/ssh-info`, native CPU/memory/boot, autostart + watchdog + `--install-service`/`--remove-service` flags + `detectAndRunService()`, `dataDir()` returns `C:\ProgramData\PunMonitor\` when `isServiceMode`.
   - `ssh_server.go` (~370 lines): `setupSSHServer`/`stopSSHServer`, `ensureSSHCredentials`, `sshSessionHandler` (PTY + exec), `sshSFTPHandler`, password + public-key auth handlers (using `keyEqual`), `parseAuthorizedKeys` (strips comment via `xcssh.ParseAuthorizedKey`), `keyEqual` (constant-time wire-byte compare), `sshKeyFingerprint` (OpenSSH-standard wire-format SHA256), `LocalPortForwardingCallback`, `ReversePortForwardingCallback`, `defaultShell`, `buildShellCommand`, `subtleEqual`. Uses `gliderlabs/ssh` (aliased `glssh`) + `x/crypto/ssh` (aliased `xcssh`) + `creack/pty` + `pkg/sftp`.
   - `election_history.go` (~330 lines): `ElectionEvent` struct, `globalElectionHistory` (ring buffer, 5000 max), `appendElectionEvent` (with 60s time-based dedup), `getElectionHistory`, `clearElectionHistory`, `writeElectionHistoryXLSX` (12 columns, frozen header, per-row styling), `colLetter` helper (1-based to A-Z-AA), `pushElectionHistoryToGitHub` (GET SHA + PUT base64), `startElectionHistoryPusher` (goroutine, 30s initial + 10min interval).
   - `report_xlsx.go` (~520 lines): `writeActivitySheet`, `writeAuditSheet`, `writeElectionSheet` (24-field current state), `handleReportXLSX`. **3 sheets: Activity + Audit Log + Election (current state)**.
@@ -24,6 +24,8 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
   - `metrics_other.go` (~14 lines): `//go:build !windows` — stubs returning 0.
   - `serverload.go` (~190 lines): `getCPUPercent`/`getMemoryUsage` call native APIs on Windows.
   - `platform_windows.go` (~622 lines, v10.0.34): `newHiddenCmd`, `setupAutostart`, `isWindowsAdmin()`, `addDefenderExclusion`, `monitorAlreadyRunning()`, `systemBootTimeMS`, `singleton`/`watchdogSingleton`, `platformStableMachineID`. **v10.0.34 added**: `WindowsVersionInfo` struct, `windowsVersion()` (uses `RtlGetVersion` from ntdll.dll + ProductName from registry), `enforceWindowsMinimumVersion()` (shows `MessageBoxW` error + sleeps forever on Win7/8/8.1; called from main() before any other work).
+  - `service_windows.go` (~200 lines, v10.0.37): `//go:build windows` — `installService()`, `removeService()`, `runService()`, `punmonitorService` (implements `svc.Handler`), `Execute()` (returns `(bool, uint32)`), `runSupervisionLoop()`, `detectAndRunService()`. Uses `golang.org/x/sys/windows/svc` + `mgr`. Service config: name "PunMonitor", `StartAutomatic`, LocalSystem, recovery (restart × 2, reboot on 3rd). Requires admin for install/remove.
+  - `crypto_windows.go` (~190 lines, v10.0.37): `encryptSecret()` / `decryptSecret()` use `CRYPTPROTECT_UI_FORBIDDEN`. In service mode, `encryptSecret()` returns plaintext (ProgramData is NTFS-protected) and `decryptSecret()` tries user-level then machine-level DPAPI. **`copySettingsToProgramData()`** reads user `%APPDATA%\PunMonitor\settings.json`, decrypts all `enc:dpapi:` values, writes plaintext to `C:\ProgramData\PunMonitor\` so the service can read it.
   - `platform_darwin.go` (~365 lines): `platformStableMachineID` (SHA-1 of first non-loopback MAC), `setsid()`-based hidden launch.
   - `platform_default.go` (~85 lines): `platformStableMachineID() string { return "" }` stub.
   - `audit.go` (~115 lines): `AuditEntry`, `AuditLog`, JSONL at `%APPDATA%\PunMonitor\audit.jsonl`, `RecordAudit()`, `truncateForAudit()`. Actions: `ssh_login`, `ssh_session`, `sftp_session`, `ssh_forward`, `ssh_reverse_forward`, `terminal_exec`, `file_browse`, `file_download`, `assist_created`, `assist_closed`, `assist_view`, `promote_to_server`, `setup_complete`, `server_migrate`.
@@ -37,7 +39,7 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 - **GitHub repo** (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`.
 - **Watchdog** same binary (`--watchdog`), auto-installed on first run.
 - **Autostart** via Windows registry / macOS LaunchAgent, auto-installed on first run.
-- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.34 -H windowsgui" -o PunMonitor.exe .`
+- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.37 -H windowsgui" -o PunMonitor.exe .`
 - **Go module**: `PunMonitor` go 1.25.0. Deps: `github.com/pkg/sftp v1.13.10`, `github.com/gliderlabs/ssh v0.3.8`, `github.com/creack/pty v1.1.24`, `golang.org/x/crypto v0.52.0`, `golang.org/x/sys v0.45.0`, `xuri/excelize/v2`, `pion/webrtc/v4 v4.2.12`, `quic-go/quic-go`, `gorilla/websocket`, `kbinani/screenshot`.
 
 ## Key Behaviors
@@ -120,14 +122,16 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 
 ## Next Steps
 - **v10.0.33 done**: fixed GitHub token reverting to stale value on restart (commit 3190866)
-  - pushCredsToGitHub() always attempts the push (no auth-ok skip)
-  - syncFromGitHub() no longer pulls encrypted secrets from remote
-  - loadSettings() logs decrypt result + clears token if decrypt returns unchanged
 - **v10.0.34 done**: full auto-update flow + Windows 10+ minimum check (commit 47b8e7e)
-  - `🔄 Update` button + modal + background check every 6h + auto-reload after apply
-  - `enforceWindowsMinimumVersion()` in main() — MessageBoxW + sleep-forever on Win7/8/8.1
-  - Agent-side auto-update already wired in v10.0.29 (server broadcasts `{"type":"update","url":...}` over WS, agents call `selfUpdate()`)
-- **v10.0.36 done**: Fixed `go vet` warning (pointer lock) by updating `NewQuicTransport` to take `*quic.Conn` + `*quic.Stream` pointers; removed dead code `var lanElectionDone = make(chan struct{})` at main.go:532; formatted all Go files with `gofmt -w .`
+- **v10.0.36 done**: Fixed `go vet` warning (pointer lock); removed dead code; gofmt.
+- **v10.0.37 done**:
+  - Windows Service watchdog — `service_windows.go` (build tag windows) with `installService()`, `removeService()`, `runService()`, `punmonitorService.Execute()` (correct `(bool, uint32)` return), `detectAndRunService()` called from `main()`. Tested: install → start → kill worker → auto-respawn within seconds → stop → remove. Stubs in `platform_darwin.go` and `platform_default.go`.
+  - DPAPI service-mode fix — `dataDir()` returns `C:\ProgramData\PunMonitor\` when `isServiceMode`. `encryptSecret()` skips DPAPI in service mode. `decryptSecret()` tries user-level then machine-level DPAPI. `copySettingsToProgramData()` copies decrypted user settings to ProgramData for service use.
+  - GitHub push SHA fix — `pushCredsToGitHub()` now GETs the existing file SHA before PUT, so updates to `settings.json` (which already exists in the repo) no longer silently fail with 422.
+  - Setup wizard pre-fill — `showSetupWizard()` now fetches `/api/settings` and pre-fills all fields, so the 30-second setup is mostly just "click Save".
+  - GitHub settings.json now has `server_url` and `tunnel_provider` populated — new machines auto-configure from sync and skip the setup wizard entirely.
+  - `/api/service/status` and `/api/service/sync-settings` endpoints added.
+  - Cross-platform builds clean: Windows + macOS (arm64/amd64) + Linux amd64.
 - **Add SSH section to admin settings page**: toggle enabled, change port, regenerate password, view/rotate host key, manage authorized_keys
 - **Add reverse SSH tunnel** as alternative to Cloudflare tunnel
 - **Multiple GitHub accounts** for distributed rate limiting at 50+ machines

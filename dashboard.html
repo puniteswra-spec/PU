@@ -3199,6 +3199,16 @@ function showSetupWizard(info) {
   if (info && info.hostname) {
     document.getElementById('sw-server').placeholder = 'http://' + info.hostname + ':8080';
   }
+  // Pre-fill from current settings (most of which come from GitHub sync)
+  fetch('/api/settings').then(r=>r.json()).then(s => {
+    if (s.server_url) document.getElementById('sw-server').value = s.server_url;
+    if (s.auth_user) document.getElementById('sw-user').value = s.auth_user;
+    if (s.auth_pass) document.getElementById('sw-pass').value = s.auth_pass;
+    if (s.tunnel_hostname) document.getElementById('sw-tunnel-host').value = s.tunnel_hostname;
+    if (s.cloudflare_account_tag) document.getElementById('sw-cf-tag').value = s.cloudflare_account_tag;
+    if (s.cloudflare_tunnel_id) document.getElementById('sw-cf-id').value = s.cloudflare_tunnel_id;
+    if (s.cloudflare_tunnel_secret) document.getElementById('sw-cf-secret').value = s.cloudflare_tunnel_secret;
+  }).catch(()=>{});
 }
 function skipSetup() {
   document.getElementById('setup-overlay').style.display = 'none';

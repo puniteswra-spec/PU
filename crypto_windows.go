@@ -15,7 +15,10 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"unsafe"
 
@@ -62,16 +65,20 @@ func encryptSecret(plaintext string) (string, error) {
 		return "", nil
 	}
 	if strings.HasPrefix(plaintext, "enc:dpapi:") {
-		// Already encrypted (don't double-encrypt)
+		return plaintext, nil
+	}
+	// In service mode (LocalSystem), skip DPAPI — settings live in
+	// ProgramData which is protected by NTFS ACLs (SYSTEM only).
+	if isServiceMode {
 		return plaintext, nil
 	}
 	in := newBlob([]byte(plaintext))
 	var out dataBlob
-	// CRYPTPROTECT_UI_FORBIDDEN = 0x1 — never show UI
+	flags := uint32(0x1) // CRYPTPROTECT_UI_FORBIDDEN
 	r, _, errno := procCryptProtectData.Call(
 		uintptr(unsafe.Pointer(in)),
 		0, 0, 0, 0,
-		0x1,
+		uintptr(flags),
 		uintptr(unsafe.Pointer(&out)),
 	)
 	if r == 0 {
@@ -95,20 +102,91 @@ func decryptSecret(ciphertext string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("base64 decode: %w", err)
 	}
-	in := newBlob(raw)
-	var out dataBlob
-	r, _, errno := procCryptUnprotectData.Call(
-		uintptr(unsafe.Pointer(in)),
-		0, 0, 0, 0,
-		0x1,
-		uintptr(unsafe.Pointer(&out)),
-	)
-	if r == 0 {
-		return "", fmt.Errorf("CryptUnprotectData failed: errno %d (settings may have been encrypted on a different user/machine)", errno)
+	// Try user-level DPAPI first, then machine-level (for service mode)
+	flags := uint32(0x1)
+	for _, f := range []uint32{flags, flags | 0x4} {
+		in := newBlob(raw)
+		var out dataBlob
+		r, _, _ := procCryptUnprotectData.Call(
+			uintptr(unsafe.Pointer(in)),
+			0, 0, 0, 0,
+			uintptr(f),
+			uintptr(unsafe.Pointer(&out)),
+		)
+		if r != 0 {
+			result := string(out.bytes())
+			procLocalFree.Call(uintptr(unsafe.Pointer(out.pbData)))
+			return result, nil
+		}
 	}
-	defer procLocalFree.Call(uintptr(unsafe.Pointer(out.pbData)))
-	return string(out.bytes()), nil
+	return "", fmt.Errorf("CryptUnprotectData failed (user and machine-level both rejected — settings may have been encrypted on a different machine)")
 }
 
 // isDPAPIAvailable returns true (always on Windows).
 func isDPAPIAvailable() bool { return true }
+
+// copySettingsToProgramData copies the user's settings.json (with DPAPI-encrypted
+// secrets) to ProgramData (plaintext), so the service running as LocalSystem can
+// read them. Called from --install-service before the service is installed.
+func copySettingsToProgramData() {
+	// Read user's settings (DPAPI-encrypted)
+	userDataDir := func() string {
+		if ad := os.Getenv("APPDATA"); ad != "" {
+			return filepath.Join(ad, "PunMonitor")
+		}
+		return ""
+	}()
+	if userDataDir == "" {
+		return
+	}
+	userSettings := filepath.Join(userDataDir, "settings.json")
+	data, err := os.ReadFile(userSettings)
+	if err != nil {
+		llog("info", "No user settings to copy: %v", err)
+		return
+	}
+
+	// Decrypt all enc:dpapi: values
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		llog("error", "Failed to parse user settings: %v", err)
+		return
+	}
+	for k, v := range raw {
+		if s, ok := v.(string); ok && strings.HasPrefix(s, "enc:dpapi:") {
+			decrypted, err := decryptSecret(s)
+			if err != nil {
+				llog("error", "Failed to decrypt %s: %v", k, err)
+				continue
+			}
+			raw[k] = decrypted
+		}
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		llog("error", "Failed to marshal settings: %v", err)
+		return
+	}
+
+	// Write to ProgramData (plaintext — NTFS ACLs protect the file)
+	programData := filepath.Join(os.Getenv("ProgramData"), "PunMonitor")
+	os.MkdirAll(programData, 0755)
+	target := filepath.Join(programData, "settings.json")
+	if err := os.WriteFile(target, out, 0600); err != nil {
+		llog("error", "Failed to write settings to %s: %v", target, err)
+		return
+	}
+
+	// Also copy activity, audit, and election history files
+	for _, name := range []string{"activity.json", "audit.jsonl", "election_history.jsonl"} {
+		src := filepath.Join(userDataDir, name)
+		dst := filepath.Join(programData, name)
+		srcData, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		os.WriteFile(dst, srcData, 0600)
+	}
+
+	llog("info", "Settings copied to %s for service use", target)
+}
