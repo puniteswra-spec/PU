@@ -4978,11 +4978,14 @@ func runWatchdog() {
 		wlog("Failed to get executable path: %v", err)
 		os.Exit(1)
 	}
-	permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
-	exePath := permPath
-	if _, err := os.Stat(permPath); err != nil {
-		exePath = watchdogExe
-	}
+	// Use the actual running binary as exePath (not binDir()+filename).
+	// This way the watchdog always restarts the SAME binary it was
+	// started from, regardless of where it lives on disk. Previously the
+	// watchdog hardcoded binDir() which is C:\Program Files\PunMonitor\
+	// on Windows, so if the running binary was in a different location
+	// (e.g. build dir) the watchdog would respawn the OLD binary from
+	// Program Files, silently downgrading the user.
+	exePath := watchdogExe
 
 	go func() {
 		for {
