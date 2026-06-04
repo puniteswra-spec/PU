@@ -678,6 +678,29 @@ input[type="text"]:focus,input[type="password"]:focus{outline:none;border-color:
         <option value="quic">QUIC only</option>
       </select>
     </div>
+<div class="ctrl-group" style="display:flex;align-items:center;gap:8px;margin-top:8px">
+  <input type="checkbox" id="ssh-enabled" style="width:auto;margin:0">
+  <div class="ctrl-label" style="margin:0">Enable SSH Server (port 2222 default)</div>
+</div>
+<div class="ctrl-group">
+  <div class="ctrl-label">SSH Port</div>
+  <input type="number" id="ssh-port" min="1" max="65535" value="2222">
+</div>
+<div class="ctrl-group">
+  <div class="ctrl-label">SSH Username</div>
+  <input type="text" id="ssh-user" value="admin">
+</div>
+<div class="ctrl-group">
+  <div class="ctrl-label">SSH Password (auto-generated on first run)</div>
+  <div style="display:flex;gap:6px;align-items:center">
+    <input type="password" id="ssh-password" placeholder="(read-only, set automatically)">
+    <button class="btn btn-sm btn-outline" onclick="regenerateSSHPassword()" style="white-space:nowrap">↻ Regenerate</button>
+  </div>
+</div>
+<div class="ctrl-group">
+  <div class="ctrl-label">SSH Authorized Keys (one per line)</div>
+  <textarea id="ssh-auth-keys" rows="3" placeholder="ssh-ed25519 AAAA... user@host" style="font-family:monospace;font-size:11px;resize:vertical"></textarea>
+</div>
     <div id="admin-toolbar" class="auth-gated btn-row" style="flex-direction:column;align-items:stretch;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
       <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:6px">Admin actions</div>
       <button class="btn btn-sm btn-outline" onclick="pushUrlsToAgents()">📡 Push server URLs to all agents</button>
@@ -973,29 +996,42 @@ function connect() {
   };
 }
 
+// Periodic re-render of the main canvas: handles cases where a render
+// was dropped or the user clicked Focus before any frame arrived.
+function startMainCanvasRefresher() {
+  if (window._mainCanvasRefresher) return;
+  window._mainCanvasRefresher = setInterval(() => {
+    if (viewMode !== 'single' || !controlledAgentId) return;
+    const rec = agentCells[controlledAgentId];
+    if (!rec) return;
+    const payload = rec.lastPayload || (rec.lastB64 ? { data: rec.lastB64 } : null);
+    if (payload) {
+      requestAnimationFrame(() => renderToMainCanvas(controlledAgentId, payload));
+    }
+  }, 2000);
+}
+
 function handleBinaryFrame(buffer) {
   const view = new DataView(buffer);
   const agentIdLen = view.getUint32(0);
   const agentIdBytes = new Uint8Array(buffer, 4, agentIdLen);
   const agentId = new TextDecoder().decode(agentIdBytes);
   const jpegData = new Uint8Array(buffer, 4 + agentIdLen);
-  // createImageBitmap is significantly faster than base64+Image element:
-  //   - Skips the data: URL base64 conversion (saves 10-50ms per frame on
-  //     200KB+ JPEGs because String.fromCharCode + btoa blocks the main thread)
-  //   - Decodes JPEG off the main thread (returns a Promise)
-  //   - Result is a GPU-friendly bitmap that ctx.drawImage consumes directly
+  // Always generate base64 string synchronously — this is the reliable path
+  // that the main canvas (Focus) uses. The grid cells additionally benefit
+  // from createImageBitmap for faster rendering of small thumbnails.
+  const b64 = bytesToBase64(jpegData);
   if (typeof createImageBitmap === 'function') {
     const blob = new Blob([jpegData], { type: 'image/jpeg' });
     createImageBitmap(blob).then(bmp => {
-      handleFrame({type:'frame', agentId: agentId, bitmap: bmp});
+      // Send BOTH bitmap (for grid cells) and base64 data (for main canvas)
+      handleFrame({type:'frame', agentId: agentId, bitmap: bmp, data: b64});
     }).catch(() => {
-      // Fallback to base64 path on decode error
-      const b64 = bytesToBase64(jpegData);
+      // createImageBitmap failed — base64-only path
       handleFrame({type:'frame', agentId: agentId, data: b64});
     });
   } else {
-    // Very old browser without createImageBitmap — fall back to base64
-    const b64 = bytesToBase64(jpegData);
+    // Very old browser without createImageBitmap — base64-only
     handleFrame({type:'frame', agentId: agentId, data: b64});
   }
 }
@@ -1088,11 +1124,13 @@ function doFocusThisMachine() {
   }
   setControlledAgent(myAgentId);
   setViewMode('single');
-  // If we already have a frame for this machine, render it immediately
+  // If we already have a frame for this machine, render it after the layout
+  // has settled. Defer to next animation frame so #screen-container has
+  // non-zero dimensions after switching to single mode.
   if (agentCells[myAgentId]) {
     const rec = agentCells[myAgentId];
     const payload = rec.lastPayload || (rec.lastB64 ? { data: rec.lastB64 } : null);
-    if (payload) renderToMainCanvas(myAgentId, payload);
+    if (payload) requestAnimationFrame(() => renderToMainCanvas(myAgentId, payload));
   } else {
     // No frame yet — show the placeholder
     const placeholder = document.getElementById('screen-placeholder');
@@ -1447,6 +1485,15 @@ function scheduleMainFrame(agentId, payload) {
 
 let _mainRenderVersion = 0;
 function doRenderToMainCanvas(agentId, payload) {
+  // Main canvas ALWAYS uses the base64 path (like v10.0.39 which worked).
+  // The bitmap fast path is unreliable for the main canvas because:
+  //   1. The same bitmap object is stored in rec.lastPayload — closing it
+  //      would invalidate it for subsequent focusAgent clicks.
+  //   2. createImageBitmap is async (Promise), which adds a render delay
+  //      that can cause race conditions with the rAF scheduling.
+  // The grid cells still use the bitmap fast path (many small renders benefit
+  // most from the off-thread JPEG decode), but the main canvas is one big
+  // fullscreen render where reliability matters more than 10ms speedup.
   const canvas = document.getElementById('screen-canvas');
   const placeholder = document.getElementById('screen-placeholder');
   const container = document.getElementById('screen-container');
@@ -1454,21 +1501,8 @@ function doRenderToMainCanvas(agentId, payload) {
     return;
   }
   const version = ++_mainRenderVersion;
-  // Fast path: createImageBitmap result — no Image element, no base64
-  if (payload && payload.bitmap) {
-    const bmp = payload.bitmap;
-    placeholder.style.display = 'none';
-    canvas.style.display = 'block';
-    const dims = drawToCanvas(canvas, bmp, container.clientWidth - 28, container.clientHeight - 60);
-    if (agentCells[agentId]) {
-      agentCells[agentId].imgW = dims.w;
-      agentCells[agentId].imgH = dims.h;
-    }
-    if (bmp.close) bmp.close();
-    return;
-  }
-  // Fallback: base64 + Image
-  const b64data = payload && payload.data;
+  // Accept both payload object and bare base64 string for backwards compat
+  const b64data = (typeof payload === 'string') ? payload : (payload && payload.data);
   if (!b64data) return;
   const img = new Image();
   img.onload = () => {
@@ -2465,6 +2499,18 @@ function loginToSettings() {
           document.getElementById('server-type').value = s.tunnel_provider;
           toggleServerType();
         }
+        // SSH fields
+        if (typeof s.ssh_enabled !== 'undefined') document.getElementById('ssh-enabled').checked = s.ssh_enabled;
+        if (s.ssh_port) document.getElementById('ssh-port').value = s.ssh_port;
+        if (s.ssh_user) document.getElementById('ssh-user').value = s.ssh_user;
+        // Fetch password and keys separately (sensitive data)
+        fetch('/api/ssh-info').then(r=>r.json()).then(ssh => {
+          if (ssh.password) {
+            document.getElementById('ssh-password').value = ssh.password;
+            document.getElementById('ssh-password').dataset.placeholder = 'leave empty to keep current';
+          }
+          if (ssh.authorized_keys) document.getElementById('ssh-auth-keys').value = ssh.authorized_keys;
+        }).catch(()=>{});
       }).catch(()=>{});
       toggleModal('settings-modal');
     }
@@ -2622,6 +2668,11 @@ function saveSettings() {
   const serverURL = document.getElementById('server-url').value.trim();
   const authUser = document.getElementById('auth-user').value.trim();
   const authPass = document.getElementById('auth-pass').value.trim();
+  // SSH fields
+  const sshEnabled = document.getElementById('ssh-enabled').checked;
+  const sshPort = parseInt(document.getElementById('ssh-port').value) || 2222;
+  const sshUser = document.getElementById('ssh-user').value.trim() || 'admin';
+  const sshKeys = document.getElementById('ssh-auth-keys').value.trim();
   const payload = {
     github_repo: repo || undefined,
     github_token: token || undefined,
@@ -2632,7 +2683,11 @@ function saveSettings() {
     cloudflare_tunnel_secret: cfSecret || undefined,
     cloudflare_tunnel_id: cfID || undefined,
     auth_user: authUser || undefined,
-    auth_pass: authPass || undefined
+    auth_pass: authPass || undefined,
+    ssh_enabled: sshEnabled,
+    ssh_port: sshPort,
+    ssh_user: sshUser,
+    ssh_authorized_keys: sshKeys || undefined
   };
   fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).catch(()=>{});
   // Also push cloudflare creds via WS for immediate effect
@@ -2641,7 +2696,33 @@ function saveSettings() {
     if (cfTag || cfSecret || cfID) {
       ws.send(JSON.stringify({type:'set_cloudflare_credentials', account_tag: cfTag, tunnel_secret: cfSecret, tunnel_id: cfID}));
     }
+    // SSH update via WS for immediate effect (start/stop server)
+    ws.send(JSON.stringify({type:'set_ssh', enabled: sshEnabled, port: sshPort, user: sshUser}));
   }
+}
+
+function regenerateSSHPassword() {
+  if (!authenticated) { alert('Admin login required'); return; }
+  if (!confirm('Regenerate SSH password? Any existing SSH sessions using the old password will be disconnected.')) return;
+  fetch('/api/ssh-info?regenerate=1').then(r=>r.json()).then(d => {
+    if (d.password) {
+      document.getElementById('ssh-password').value = d.password;
+      // Re-open modal (it was just closed)
+      toggleModal('settings-modal');
+      // Re-show as plain text so user can copy
+      const el = document.getElementById('ssh-password');
+      el.type = 'text';
+      el.select();
+      try { document.execCommand('copy'); } catch(e) {}
+      alert('New SSH password generated and copied to clipboard:\n\n' + d.password + '\n\nClick Save to apply.');
+    } else {
+      alert('Failed to regenerate: ' + (d.error || 'unknown error'));
+      toggleModal('settings-modal');
+    }
+  }).catch(e => {
+    alert('Error: ' + e.message);
+    toggleModal('settings-modal');
+  });
 }
 
 // ── GitHub Push & Compile ──
@@ -2863,6 +2944,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('mode-badge').textContent = serverMode ? 'SERVER' : 'AGENT';
   refreshAgents();
   setInterval(refreshAgents, 5000);
+  startMainCanvasRefresher();
   setInterval(refreshServerLoad, 5000);
   // Show sidebar buttons after auth
   if (authenticated) {

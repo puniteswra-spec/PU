@@ -699,6 +699,12 @@ func randomString(n int) string {
 	return string(b)
 }
 
+// generateRandomPassword is an alias used by /api/ssh-info?regenerate=1.
+// Kept as a separate name so the security intent is clear at the call site.
+func generateRandomPassword(n int) string {
+	return randomString(n)
+}
+
 func loadCredentials() {
 	data, err := os.ReadFile(filepath.Join(dataDir(), "punmonitor-credentials.json"))
 	if err != nil {
@@ -1163,6 +1169,28 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 		saveSettings()
 		pushCredsToGitHub()
 		llog("info", "Cloudflare credentials updated via dashboard")
+	case "set_ssh":
+		if v, ok := msgMap["enabled"].(bool); ok {
+			cfg.SSHEnabled = v
+		}
+		if p, ok := msgMap["port"].(float64); ok && p > 0 && p < 65536 {
+			cfg.SSHPort = int(p)
+		}
+		if u, ok := msgMap["user"].(string); ok && u != "" {
+			cfg.SSHUsername = u
+		}
+		// Apply immediately
+		if cfg.SSHEnabled && sshServer == nil {
+			if err := setupSSHServer(); err != nil {
+				llog("error", "Failed to start SSH via WS: %v", err)
+			} else {
+				llog("info", "SSH server started via dashboard")
+			}
+		} else if !cfg.SSHEnabled && sshServer != nil {
+			stopSSHServer()
+			llog("info", "SSH server stopped via dashboard")
+		}
+		saveSettings()
 	case "set_transport_order":
 		llog("info", "Transport order updated: %v", msgMap["order"])
 	case "generate_share_link":
@@ -2094,15 +2122,26 @@ func startHTTPServer() {
 				"turn_server_credential":   cfg.TurnServerCredential,
 				"capture_schedule":         cfg.CaptureSchedule,
 				"capture_days":             cfg.CaptureDays,
+				"ssh_enabled":              cfg.SSHEnabled,
+				"ssh_port":                 cfg.SSHPort,
+				"ssh_user":                 cfg.SSHUsername,
+				"ssh_authorized_keys":      cfg.SSHAuthorizedKeys,
 			})
 			return
 		}
 		if r.Method == "POST" {
 			var s SettingsFile
+			// Read body once so we can both decode typed fields AND inspect
+			// raw JSON for boolean fields that need "explicit" semantics
+			// (e.g. ssh_enabled=false must override the current true).
+			bodyBytes, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 			if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			rawMap := map[string]interface{}{}
+			_ = json.Unmarshal(bodyBytes, &rawMap)
 			if s.ElectionInterval != "" {
 				cfg.ElectionInterval = s.ElectionInterval
 				loadElectionInterval()
@@ -2162,6 +2201,41 @@ func startHTTPServer() {
 			}
 			cfg.CaptureSchedule = s.CaptureSchedule
 			cfg.CaptureDays = s.CaptureDays
+			// SSH settings - use rawMap to detect "explicit false" for booleans.
+			// JSON `false` would otherwise be indistinguishable from absent.
+			if _, ok := rawMap["ssh_enabled"]; ok {
+				if v, ok := rawMap["ssh_enabled"].(bool); ok {
+					cfg.SSHEnabled = v
+				}
+			}
+			if s.SSHPort > 0 && s.SSHPort < 65536 {
+				cfg.SSHPort = s.SSHPort
+			}
+			if s.SSHUsername != "" {
+				cfg.SSHUsername = s.SSHUsername
+			}
+			if _, ok := rawMap["ssh_authorized_keys"]; ok {
+				if v, ok := rawMap["ssh_authorized_keys"].(string); ok {
+					// Dashboard sends "\n"-joined text; convert to []string.
+					lines := strings.Split(v, "\n")
+					out := make([]string, 0, len(lines))
+					for _, l := range lines {
+						l = strings.TrimSpace(l)
+						if l != "" {
+							out = append(out, l)
+						}
+					}
+					cfg.SSHAuthorizedKeys = out
+				}
+			}
+			// Apply SSH changes immediately (start/stop server)
+			if cfg.SSHEnabled && sshServer == nil {
+				if err := setupSSHServer(); err != nil {
+					llog("error", "Failed to start SSH server: %v", err)
+				}
+			} else if !cfg.SSHEnabled && sshServer != nil {
+				stopSSHServer()
+			}
 			saveSettings()
 			pushCredsToGitHub()
 			// Re-test GitHub auth if the token just changed. We do this BEFORE
@@ -2640,6 +2714,18 @@ func startHTTPServer() {
 		json.NewEncoder(w).Encode(getTransportStatus())
 	})
 
+	http.HandleFunc("/api/capture-stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		errs5m, errsTotal, lastErr, lastSuccess := getCaptureStats()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"errors_5m":      errs5m,
+			"errors_total":   errsTotal,
+			"last_error":     lastErr,
+			"last_success":   lastSuccess,
+			"seconds_since":  time.Since(lastSuccess).Seconds(),
+		})
+	})
+
 	http.HandleFunc("/api/server-load", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(globalServerLoad.Snapshot())
@@ -2668,6 +2754,25 @@ func startHTTPServer() {
 
 	http.HandleFunc("/api/ssh-info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// Optional ?regenerate=1 — generate a new password, save, and return it.
+		if r.URL.Query().Get("regenerate") == "1" {
+			newPwd := generateRandomPassword(20)
+			cfg.SSHPassword = newPwd
+			saveSettings()
+			// Restart SSH server so it picks up the new password
+			if cfg.SSHEnabled {
+				stopSSHServer()
+				if err := setupSSHServer(); err != nil {
+					llog("error", "Failed to restart SSH after password regen: %v", err)
+				}
+			}
+			llog("info", "SSH password regenerated (length=%d)", len(newPwd))
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"password": newPwd,
+				"regenerated": true,
+			})
+			return
+		}
 		port := cfg.SSHPort
 		if port == 0 {
 			port = 2222
@@ -2683,16 +2788,19 @@ func startHTTPServer() {
 		}
 		cmd := fmt.Sprintf("ssh -p %d %s@%s", port, cfg.SSHUsername, host)
 		sftpCmd := fmt.Sprintf("sftp -P %d %s@%s", port, cfg.SSHUsername, host)
+		// Convert authorized_keys to newline-joined string for the textarea
+		authKeysStr := strings.Join(cfg.SSHAuthorizedKeys, "\n")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"enabled":     cfg.SSHEnabled && sshServer != nil,
-			"port":        port,
-			"host":        host,
-			"user":        cfg.SSHUsername,
-			"password":    cfg.SSHPassword,
-			"fingerprint": sshFingerprint,
-			"ssh_cmd":     cmd,
-			"sftp_cmd":    sftpCmd,
-			"features":    []string{"shell", "exec", "sftp", "port-forwarding", "reverse-tunnel", "public-key", "password"},
+			"enabled":         cfg.SSHEnabled && sshServer != nil,
+			"port":            port,
+			"host":            host,
+			"user":            cfg.SSHUsername,
+			"password":        cfg.SSHPassword,
+			"fingerprint":     sshFingerprint,
+			"ssh_cmd":         cmd,
+			"sftp_cmd":        sftpCmd,
+			"authorized_keys": authKeysStr,
+			"features":        []string{"shell", "exec", "sftp", "port-forwarding", "reverse-tunnel", "public-key", "password"},
 		})
 	})
 
@@ -3722,84 +3830,109 @@ func minInt(a, b int) int {
 	return b
 }
 
+// SettingsForSync is the SAFE subset of configuration that is pushed to GitHub
+// for other machines to auto-configure. NEVER include secrets here — anything
+// in this struct becomes visible to anyone with read access to the GitHub repo.
+type SettingsForSync struct {
+	ConfigPort       int     `json:"config_port"`
+	MaxFPS           float64 `json:"max_fps"`
+	GitHubRepo       string  `json:"github_repo"`
+	TunnelProvider   string  `json:"tunnel_provider"`
+	TunnelHostname   string  `json:"tunnel_hostname"`
+	ServerURL        string  `json:"server_url"`
+	CloudflareAcctTag string `json:"cloudflare_account_tag,omitempty"`
+	CloudflareTunnelID string `json:"cloudflare_tunnel_id,omitempty"`
+	ElectionInterval string  `json:"election_interval,omitempty"`
+	CaptureSchedule  string  `json:"capture_schedule,omitempty"`
+	CaptureDays      string  `json:"capture_days,omitempty"`
+	DisplayIndex     int     `json:"display_index,omitempty"`
+	AutoQuality      bool    `json:"auto_quality,omitempty"`
+	JPEGQuality      int     `json:"jpeg_quality,omitempty"`
+	SSHEnabled       bool    `json:"ssh_enabled,omitempty"`
+	SSHPort          int     `json:"ssh_port,omitempty"`
+}
+
+// SettingsForSyncFromCurrent builds the safe subset from current cfg.
+func SettingsForSyncFromCurrent() *SettingsForSync {
+	return &SettingsForSync{
+		ConfigPort:         cfg.ConfigPort,
+		MaxFPS:             cfg.MaxFPS,
+		GitHubRepo:         cfg.GitHubRepo,
+		TunnelProvider:     cfg.TunnelProvider,
+		TunnelHostname:     cfg.TunnelHostname,
+		ServerURL:          cfg.ServerURL,
+		CloudflareAcctTag:  cfg.CloudflareAccountTag,
+		CloudflareTunnelID: cfg.CloudflareTunnelID,
+		ElectionInterval:   cfg.ElectionInterval,
+		CaptureSchedule:    cfg.CaptureSchedule,
+		CaptureDays:        cfg.CaptureDays,
+		DisplayIndex:       cfg.DisplayIndex,
+		AutoQuality:        cfg.AutoQuality,
+		JPEGQuality:        cfg.JPEGQuality,
+		SSHEnabled:         cfg.SSHEnabled,
+		SSHPort:            cfg.SSHPort,
+	}
+}
+
 func pushCredsToGitHub() {
 	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
 		return
 	}
-	// CRITICAL: do NOT skip when auth is bad. The user may have JUST
-	// updated their token via /api/settings — at that moment the cached
-	// githubAuthOK flag is still false (it resets to false on every
-	// process start). If we skip the push, the new token will never reach
-	// GitHub, and the next syncFromGitHub() will pull the OLD token back
-	// and overwrite the new one. Always attempt the push; the PUT call
-	// will fail with 401 if the token really is still bad, and
-	// setGitHubAuth() will be called from the response handler.
-	// Push punmonitor-credentials.json
-	credsPath := filepath.Join(dataDir(), "punmonitor-credentials.json")
-	if credData, err := os.ReadFile(credsPath); err == nil {
-		encoded := base64.StdEncoding.EncodeToString(credData)
-		payload, _ := json.Marshal(map[string]interface{}{
-			"message": "credential backup",
-			"content": encoded,
-			"branch":  "main",
-		})
-		url := fmt.Sprintf("https://api.github.com/repos/%s/contents/punmonitor-credentials.json", normalizeGitHubRepo(cfg.GitHubRepo))
-		req, err := http.NewRequest("PUT", url, bytes.NewReader(payload))
-		if err != nil {
-			llog("error", "Failed to create request for credentials: %v", err)
-			return
-		}
-		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			llog("error", "Failed to push credentials: %v", err)
-			return
-		}
-		defer resp.Body.Close()
-		llog("info", "Credentials pushed to GitHub")
+	// SECURITY: Only push the SAFE SettingsForSync subset, NEVER the full
+	// settings.json. The full file contains DPAPI-encrypted blobs, the SSH
+	// password (plaintext), the Cloudflare tunnel secret, host key, etc.
+	// — all of which are now off-limits for GitHub. See SettingsForSync.
+	settingsURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/settings.json", normalizeGitHubRepo(cfg.GitHubRepo))
+
+	sync := SettingsForSyncFromCurrent()
+	syncData, err := json.MarshalIndent(sync, "", "  ")
+	if err != nil {
+		llog("error", "Failed to marshal safe settings: %v", err)
+		return
 	}
-	// Push settings.json (GET SHA first if file exists, then PUT with SHA)
-	if settingsData, err := os.ReadFile(settingsFilePath()); err == nil {
-		encoded := base64.StdEncoding.EncodeToString(settingsData)
-		settingsURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/settings.json", normalizeGitHubRepo(cfg.GitHubRepo))
-		// Fetch existing SHA
-		getReq, _ := http.NewRequest("GET", settingsURL, nil)
-		getReq.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
-		sha := ""
-		if resp, err := http.DefaultClient.Do(getReq); err == nil {
-			var gr struct {
-				SHA string `json:"sha"`
-			}
-			json.NewDecoder(resp.Body).Decode(&gr)
-			resp.Body.Close()
-			sha = gr.SHA
+	encoded := base64.StdEncoding.EncodeToString(syncData)
+
+	// Fetch existing SHA so we update rather than create
+	getReq, _ := http.NewRequest("GET", settingsURL, nil)
+	getReq.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+	sha := ""
+	if resp, err := http.DefaultClient.Do(getReq); err == nil {
+		var gr struct {
+			SHA string `json:"sha"`
 		}
-		payload := map[string]interface{}{
-			"message": "settings backup",
-			"content": encoded,
-			"branch":  "main",
-		}
-		if sha != "" {
-			payload["sha"] = sha
-		}
-		body, _ := json.Marshal(payload)
-		req, _ := http.NewRequest("PUT", settingsURL, bytes.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			llog("error", "Failed to push settings: %v", err)
-		} else {
-			defer resp.Body.Close()
-			if resp.StatusCode >= 300 {
-				respBody, _ := io.ReadAll(resp.Body)
-				llog("error", "Settings push failed (status %d): %s", resp.StatusCode, string(respBody))
-			} else {
-				llog("info", "Settings pushed to GitHub (status %d)", resp.StatusCode)
-			}
-		}
+		json.NewDecoder(resp.Body).Decode(&gr)
+		resp.Body.Close()
+		sha = gr.SHA
 	}
+	payload := map[string]interface{}{
+		"message": "safe-config sync (secrets redacted)",
+		"content": encoded,
+		"branch":  "main",
+	}
+	if sha != "" {
+		payload["sha"] = sha
+	}
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("PUT", settingsURL, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		llog("error", "Failed to push safe config: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		llog("error", "Safe config push failed (status %d): %s", resp.StatusCode, string(respBody))
+	} else {
+		llog("info", "Safe config pushed to GitHub (status %d) — secrets redacted", resp.StatusCode)
+	}
+
+	// SECURITY: We NO LONGER push punmonitor-credentials.json to GitHub.
+	// It contains the Cloudflare TunnelSecret in plaintext — anyone with
+	// the secret can take over the tunnel. Backup locally only.
+	llog("info", "Local backup: punmonitor-credentials.json (NOT pushed to GitHub — contains TunnelSecret)")
 }
 
 func buildShareURL(agentID string) string {
@@ -4088,6 +4221,118 @@ func runPull(serverURL string) {
 	fmt.Printf("Dashboard: http://%s:8080\n", getLocalIP())
 }
 
+// captureStats tracks screen-capture reliability so we can warn before
+// the dashboard shows black frames. Reset every 5 minutes for the rolling
+// rate; we keep a lifetime counter for the log.
+var (
+	captureStatsMu       sync.Mutex
+	captureErrors5m      int
+	captureErrorsTotal   int64
+	captureLastError     string
+	captureLastErrorTime time.Time
+	captureLastSuccess   time.Time
+)
+
+// captureWithRetry attempts CaptureRect up to maxAttempts times with
+// exponential backoff. On any successful capture, returns immediately.
+// On full failure, returns a placeholder image + the last error so the
+// caller can decide whether to skip the frame.
+func captureWithRetry(bounds image.Rectangle, maxAttempts int) (image.Image, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	backoffs := []time.Duration{0, 80 * time.Millisecond, 250 * time.Millisecond, 600 * time.Millisecond}
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 && backoffs[attempt] > 0 {
+			time.Sleep(backoffs[attempt])
+		}
+		img, err := safeCapture(bounds)
+		if err == nil && img != nil && !img.Bounds().Empty() {
+			if attempt > 0 {
+				llog("info", "screen capture recovered after %d retries", attempt)
+			}
+			return img, nil
+		}
+		if err != nil {
+			lastErr = err
+			llog("warn", "screen capture attempt %d/%d failed: %v", attempt+1, maxAttempts, err)
+		} else {
+			lastErr = fmt.Errorf("nil or empty image from CaptureRect")
+			llog("warn", "screen capture attempt %d/%d returned nil/empty image", attempt+1, maxAttempts)
+		}
+	}
+	// All attempts failed - record and try PrintWindow fallback
+	captureStatsMu.Lock()
+	captureErrors5m++
+	captureErrorsTotal++
+	captureLastError = fmt.Sprintf("%v", lastErr)
+	captureLastErrorTime = time.Now()
+	captureStatsMu.Unlock()
+	return nil, lastErr
+}
+
+func safeCapture(bounds image.Rectangle) (image.Image, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			llog("error", "PANIC in safeCapture recovered: %v", r)
+		}
+	}()
+	return screenshot.CaptureRect(bounds)
+}
+
+// capturePlaceholder returns a 100x100 placeholder image with the given
+// error text drawn on it. Used when capture fully fails so the dashboard
+// shows a visible "no signal" frame instead of staying stale.
+func capturePlaceholder(errMsg string) image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, 640, 360))
+	// Dark red background to make "no signal" obvious
+	for y := 0; y < 360; y++ {
+		for x := 0; x < 640; x++ {
+			img.Set(x, y, color.RGBA{40, 0, 0, 255})
+		}
+	}
+	// Simple "NO SIGNAL" indicator using colored blocks (no font deps)
+	// 3 vertical bars at x=200/300/400 from y=120 to y=240
+	for y := 120; y < 240; y++ {
+		for x := 200; x < 220; x++ {
+			img.Set(x, y, color.RGBA{255, 80, 80, 255})
+		}
+		for x := 300; x < 320; x++ {
+			img.Set(x, y, color.RGBA{255, 80, 80, 255})
+		}
+		for x := 400; x < 420; x++ {
+			img.Set(x, y, color.RGBA{255, 80, 80, 255})
+		}
+	}
+	// Border
+	for i := 0; i < 640; i++ {
+		img.Set(i, 0, color.RGBA{120, 0, 0, 255})
+		img.Set(i, 359, color.RGBA{120, 0, 0, 255})
+	}
+	for i := 0; i < 360; i++ {
+		img.Set(0, i, color.RGBA{120, 0, 0, 255})
+		img.Set(639, i, color.RGBA{120, 0, 0, 255})
+	}
+	// Stash error text in a global so the dashboard can read it
+	if errMsg != "" {
+		captureStatsMu.Lock()
+		captureLastError = errMsg
+		captureStatsMu.Unlock()
+	}
+	return img
+}
+
+func getCaptureStats() (errors5m int, errorsTotal int64, lastError string, lastSuccess time.Time) {
+	captureStatsMu.Lock()
+	defer captureStatsMu.Unlock()
+	// Auto-decay 5-minute counter every 5 minutes since last reset
+	if time.Since(captureLastErrorTime) > 5*time.Minute && time.Since(captureLastSuccess) > 5*time.Minute {
+		captureErrors5m = 0
+	}
+	return captureErrors5m, captureErrorsTotal, captureLastError, captureLastSuccess
+}
+
 func captureScreen() (image.Image, error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -4107,17 +4352,18 @@ func captureScreen() (image.Image, error) {
 		return img, fmt.Errorf("empty bounds (no display available)")
 	}
 
-	img, err := screenshot.CaptureRect(bounds)
+	img, err := captureWithRetry(bounds, 3)
 	if err != nil {
-		// If capture fails, return a placeholder image instead of panicking
-		img = image.NewRGBA(image.Rect(0, 0, 100, 100))
-		for y := 0; y < 100; y++ {
-			for x := 0; x < 100; x++ {
-				img.Set(x, y, color.RGBA{uint8(x % 256), uint8(y % 256), 128, 255})
-			}
-		}
-		return img, err
+		// Return a visible "no signal" placeholder so the dashboard
+		// can show the user something is wrong, rather than going stale.
+		captureStatsMu.Lock()
+		captureLastSuccess = time.Time{} // reset success marker
+		captureStatsMu.Unlock()
+		return capturePlaceholder(err.Error()), err
 	}
+	captureStatsMu.Lock()
+	captureLastSuccess = time.Now()
+	captureStatsMu.Unlock()
 	return img, nil
 }
 
@@ -4127,26 +4373,17 @@ func captureScreenByIndex(index int) (image.Image, error) {
 			llog("error", "PANIC in captureScreenByIndex recovered: %v", r)
 		}
 	}()
-	llog("info", "captureScreenByIndex: index=%d", index)
 	if index < 0 {
-		img, err := captureScreen()
-		llog("info", "captureScreen (default) returned: err=%v bounds=%v", err, img.Bounds())
-		return img, err
-	}
-	bounds := screenshot.GetDisplayBounds(index)
-	llog("info", "captureScreenByIndex: GetDisplayBounds(%d) = %v", index, bounds)
-	if bounds.Empty() {
-		img, err := captureScreen()
-		llog("info", "captureScreen (empty bounds) returned: err=%v bounds=%v", err, img.Bounds())
-		return img, err
-	}
-	img, err := screenshot.CaptureRect(bounds)
-	if img == nil {
-		llog("info", "CaptureRect returned: err=%v (nil image, falling back)", err)
 		return captureScreen()
 	}
-	llog("info", "CaptureRect returned: err=%v bounds=%v", err, img.Bounds())
+	bounds := screenshot.GetDisplayBounds(index)
+	if bounds.Empty() {
+		return captureScreen()
+	}
+	img, err := captureWithRetry(bounds, 3)
 	if err != nil {
+		llog("warn", "captureScreenByIndex(%d) all retries failed: %v", index, err)
+		// Fall back to display 0 in case the requested index just disappeared
 		return captureScreen()
 	}
 	return img, nil
@@ -4171,6 +4408,9 @@ func startCloudflareTunnel(cfg *Config) {
 		return
 	}
 
+	// Kill any stale cloudflared processes to prevent port conflicts
+	killExistingCloudflared()
+
 	// Check if cloudflared is already running — reuse existing tunnel
 	if tunnelCmd != nil && tunnelCmd.Process != nil {
 		if err := tunnelCmd.Process.Signal(syscall.Signal(0)); err == nil {
@@ -4179,15 +4419,6 @@ func startCloudflareTunnel(cfg *Config) {
 		}
 		llog("info", "Previous cloudflared process dead, starting new tunnel")
 		tunnelCmd = nil
-	}
-
-	// Also check for any existing cloudflared process with our tunnel ID
-	if cfg.CloudflareTunnelID != "" {
-		out, err := exec.Command("pgrep", "-f", "cloudflared.*"+cfg.CloudflareTunnelID).Output()
-		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
-			llog("info", "Existing cloudflared process found with tunnel %s — reusing", cfg.CloudflareTunnelID)
-			return
-		}
 	}
 
 	// Try named tunnel first if we have an ID
@@ -4280,6 +4511,133 @@ ingress:
 	}
 }
 
+func killExistingCloudflared() {
+	if runtime.GOOS == "windows" {
+		cmdList := exec.Command("tasklist", "/FI", "IMAGENAME eq cloudflared.exe", "/NH")
+		newHiddenCmd(cmdList)
+		out, err := cmdList.Output()
+		if err != nil {
+			return
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.Fields(line)
+			if len(parts) > 1 {
+				pid := parts[1]
+				llog("info", "Killing stale cloudflared PID %s", pid)
+				cmdKill := exec.Command("taskkill", "/F", "/PID", pid)
+				newHiddenCmd(cmdKill)
+				cmdKill.Run()
+			}
+		}
+	} else {
+		out, err := exec.Command("pgrep", "cloudflared").Output()
+		if err != nil {
+			return
+		}
+		pids := strings.Split(strings.TrimSpace(string(out)), "\n")
+		for _, pid := range pids {
+			pid = strings.TrimSpace(pid)
+			if pid != "" {
+				llog("info", "Killing stale cloudflared PID %s", pid)
+				exec.Command("kill", "-9", pid).Run()
+			}
+		}
+	}
+}
+
+func cleanupStaleInstances() {
+	killExistingCloudflared()
+
+	// On Windows, kill all other PunMonitor processes (except current PID and watchdog)
+	if runtime.GOOS == "windows" {
+		myPID := os.Getpid()
+		cmdList := exec.Command("tasklist", "/FI", "IMAGENAME eq PunMonitor.exe", "/NH", "/FO", "CSV")
+		newHiddenCmd(cmdList)
+		out, err := cmdList.Output()
+		if err != nil {
+			return
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			// CSV format: "punmonitor.exe","1234","Console","1","7,456 K"
+			parts := strings.Split(line, "\",\"")
+			if len(parts) >= 2 {
+				pidStr := strings.Trim(parts[1], "\"")
+				pid, err := strconv.Atoi(pidStr)
+				if err != nil || pid == myPID {
+					continue
+				}
+				llog("info", "Killing stale PunMonitor PID %d", pid)
+				cmdKill := exec.Command("taskkill", "/F", "/PID", pidStr)
+				newHiddenCmd(cmdKill)
+				cmdKill.Run()
+			}
+		}
+	} else {
+		// Unix: kill other PunMonitor processes by name, excluding our PID
+		myPID := os.Getpid()
+		out, err := exec.Command("pgrep", "-x", "PunMonitor").Output()
+		if err != nil {
+			return
+		}
+		pids := strings.Split(strings.TrimSpace(string(out)), "\n")
+		for _, pid := range pids {
+			pid = strings.TrimSpace(pid)
+			if pid == "" || pid == fmt.Sprintf("%d", myPID) {
+				continue
+			}
+			llog("info", "Killing stale PunMonitor PID %s", pid)
+			exec.Command("kill", "-9", pid).Run()
+		}
+	}
+
+	// Also clean up known old copies of the binary from user temp and Downloads
+	cleanOldBinaryCopies()
+}
+
+func cleanOldBinaryCopies() {
+	dirs := []string{
+		os.TempDir(),
+		filepath.Join(os.Getenv("USERPROFILE"), "Downloads"),
+		filepath.Join(os.Getenv("USERPROFILE"), "Desktop"),
+	}
+	// Also scan the dataDir/bin for old cloudflared versions (not our binary)
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		// Don't delete our own running binary
+		exe, _ := os.Executable()
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := strings.ToLower(e.Name())
+			if strings.HasPrefix(name, "punmonitor") && strings.HasSuffix(name, ".exe") {
+				fullPath := filepath.Join(dir, e.Name())
+				if strings.EqualFold(fullPath, exe) {
+					continue
+				}
+				llog("info", "Removing old binary copy: %s", fullPath)
+				os.Remove(fullPath)
+			}
+		}
+	}
+}
+
 func startQuickTunnel(cfg *Config) {
 	llog("info", "Starting quick Cloudflare tunnel to http://localhost:%d", cfg.ConfigPort)
 	if err := EnsureCloudflaredInstalled(); err != nil {
@@ -4331,7 +4689,7 @@ func startQuickTunnel(cfg *Config) {
 
 var defaultGitHubRepo string
 var defaultGitHubToken string
-var binaryVersion = "10.0.34"
+var binaryVersion = "10.0.50"
 
 func main() {
 	hideConsole()
@@ -4359,6 +4717,22 @@ func main() {
 				i++
 				defaultGitHubToken = os.Args[i]
 			}
+		}
+	}
+
+	// If launched by the Windows Service supervision loop (or the env var
+	// is set), mark service mode BEFORE any dataDir() call. This is critical
+	// because the worker process reads settings from ProgramData (not the
+	// empty LocalSystem %APPDATA%) and uses machine-level DPAPI.
+	if os.Getenv("PUNMONITOR_SERVICE_MODE") == "1" {
+		isServiceMode = true
+		llog("info", "Running in service mode (worker under PunMonitor service)")
+	}
+	for i := 1; i < len(os.Args); i++ {
+		if os.Args[i] == "--service-mode" {
+			isServiceMode = true
+			llog("info", "Running in service mode (worker under PunMonitor service)")
+			break
 		}
 	}
 
@@ -4422,6 +4796,11 @@ func main() {
 	// Self-relocate to permanent location if running from a temporary path (e.g. Downloads)
 	ensureBinaryRelocated()
 	addDefenderExclusion()
+
+	// Before claiming the singleton, clean up any stale instances from previous
+	// runs (e.g. old binary in Downloads, orphaned processes from crashes, etc.)
+	// This ensures tunnels, SSH, and agents all use the same ports without conflicts.
+	cleanupStaleInstances()
 
 	if !singleton() {
 		llog("error", "Another instance is already running. Exiting.")
@@ -5031,8 +5410,10 @@ func selfUpdate(downloadURL string) {
 			"echo [PunMonitor] Step 4: Installing new binary as PunMonitor.exe...\r\n" +
 			"copy /Y \"" + newExe + "\" \"" + finalExe + "\" >nul 2>&1\r\n" +
 			"del /F /Q \"" + newExe + "\" >nul 2>&1\r\n" +
-			"echo [PunMonitor] Step 5: Cleaning temp files...\r\n" +
+			"echo [PunMonitor] Step 5: Cleaning all old binary copies...\r\n" +
 			"del /q \"%TEMP%\\PunMonitor*.exe\" >nul 2>&1\r\n" +
+			"del /q \"%USERPROFILE%\\Downloads\\PunMonitor*.exe\" >nul 2>&1\r\n" +
+			"del /q \"%USERPROFILE%\\Desktop\\PunMonitor*.exe\" >nul 2>&1\r\n" +
 			"del /q \"%TEMP%\\pun_*.bat\" >nul 2>&1\r\n" +
 			"echo [PunMonitor] Step 6: Reinstalling autostart...\r\n" +
 			"\"" + finalExe + "\" --install >nul 2>&1\r\n" +

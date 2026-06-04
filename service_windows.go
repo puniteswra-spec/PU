@@ -172,6 +172,11 @@ func (m *punmonitorService) runSupervisionLoop() {
 		}
 
 		cmd := exec.Command(mainExe)
+		// Pass --service-mode flag AND set env var so the spawned worker
+		// knows it's running under the service. Without these, the worker
+		// reads from LocalSystem's empty %APPDATA% instead of ProgramData.
+		cmd.Args = []string{mainExe, "--service-mode"}
+		cmd.Env = append(os.Environ(), "PUNMONITOR_SERVICE_MODE=1")
 		newHiddenCmd(cmd)
 
 		if err := cmd.Start(); err != nil {
