@@ -2130,18 +2130,32 @@ func startHTTPServer() {
 			return
 		}
 		if r.Method == "POST" {
-			var s SettingsFile
-			// Read body once so we can both decode typed fields AND inspect
-			// raw JSON for boolean fields that need "explicit" semantics
-			// (e.g. ssh_enabled=false must override the current true).
 			bodyBytes, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			rawMap := map[string]interface{}{}
+			_ = json.Unmarshal(bodyBytes, &rawMap)
+
+			// Pre-process: if ssh_authorized_keys is a string, convert it to a []string
+			// array of lines and update rawMap so the json Decoder doesn't complain about types.
+			if v, ok := rawMap["ssh_authorized_keys"].(string); ok {
+				lines := strings.Split(v, "\n")
+				out := make([]string, 0, len(lines))
+				for _, l := range lines {
+					l = strings.TrimSpace(l)
+					if l != "" {
+						out = append(out, l)
+					}
+				}
+				rawMap["ssh_authorized_keys"] = out
+				bodyBytes, _ = json.Marshal(rawMap)
+				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			}
+
+			var s SettingsFile
 			if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			rawMap := map[string]interface{}{}
-			_ = json.Unmarshal(bodyBytes, &rawMap)
 			if s.ElectionInterval != "" {
 				cfg.ElectionInterval = s.ElectionInterval
 				loadElectionInterval()
@@ -2215,18 +2229,7 @@ func startHTTPServer() {
 				cfg.SSHUsername = s.SSHUsername
 			}
 			if _, ok := rawMap["ssh_authorized_keys"]; ok {
-				if v, ok := rawMap["ssh_authorized_keys"].(string); ok {
-					// Dashboard sends "\n"-joined text; convert to []string.
-					lines := strings.Split(v, "\n")
-					out := make([]string, 0, len(lines))
-					for _, l := range lines {
-						l = strings.TrimSpace(l)
-						if l != "" {
-							out = append(out, l)
-						}
-					}
-					cfg.SSHAuthorizedKeys = out
-				}
+				cfg.SSHAuthorizedKeys = s.SSHAuthorizedKeys
 			}
 			// Apply SSH changes immediately (start/stop server)
 			if cfg.SSHEnabled && sshServer == nil {
