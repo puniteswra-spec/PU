@@ -1119,7 +1119,7 @@ function setViewMode(mode) {
     if (agentCells[target]) {
       const rec = agentCells[target];
       const payload = rec.lastPayload || (rec.lastB64 ? { data: rec.lastB64 } : null);
-      if (payload) renderToMainCanvas(target, payload);
+      if (payload) requestAnimationFrame(() => renderToMainCanvas(target, payload));
     }
   } else {
     updateControlBar();
@@ -1308,11 +1308,14 @@ function syncAgentListFromKnown() {
 function focusAgent(id) {
   setControlledAgent(id);
   setViewMode('single');
+  // Defer render to next animation frame so the layout has settled after
+  // switching to single-mode. Otherwise the container has zero dimensions
+  // (clientWidth=0, clientHeight=0) and doRenderToMainCanvas returns early.
   if (agentCells[id]) {
     const rec = agentCells[id];
     const payload = rec.lastPayload || (rec.lastB64 ? { data: rec.lastB64 } : null);
     if (payload) {
-      renderToMainCanvas(id, payload);
+      requestAnimationFrame(() => renderToMainCanvas(id, payload));
       return;
     }
   }
@@ -1415,26 +1418,6 @@ function doRenderToCell(agentId, payload) {
   img.onerror = () => {
     if (_renderVersion[agentId] !== version) return;
     placeholder.querySelector('div:nth-child(2)').textContent = 'Failed to decode frame';
-  };
-  img.src = 'data:image/jpeg;base64,' + b64data;
-}
-    const dims = drawToCanvas(rec.canvas, img, cw, ch);
-    rec.imgW = dims.w;
-    rec.imgH = dims.h;
-    rec.lastTs = Date.now();
-    if (rec.badgeEl) {
-      if (agentId === controlledAgentId && remoteControlEnabled && authenticated) {
-        rec.badgeEl.textContent = '🎮 Control';
-        rec.badgeEl.className = 'cell-badge control';
-      } else {
-        rec.badgeEl.textContent = 'Live';
-        rec.badgeEl.className = 'cell-badge live';
-      }
-    }
-  };
-  img.onerror = () => {
-    rec.emptyEl.textContent = 'Decode error';
-    rec.emptyEl.style.display = 'flex';
   };
   img.src = 'data:image/jpeg;base64,' + b64data;
 }
