@@ -6972,14 +6972,16 @@ func writeWatchdogHeartbeat() {
 }
 
 func startWatchdogProcess() {
+	// Use os.Executable() so the watchdog is always the SAME binary as
+	// the monitor. Previously the code looked up binDir()+filename which
+	// is C:\Program Files\PunMonitor\ on Windows; if the monitor was
+	// running from a different location (e.g. build dir, Downloads) the
+	// watchdog would spawn the OLD binary from Program Files, silently
+	// downgrading the user to the old version.
 	watchdogExe, err := os.Executable()
 	if err != nil {
 		llog("error", "Cannot get executable path for watchdog: %v", err)
 		return
-	}
-	permPath := filepath.Join(binDir(), filepath.Base(watchdogExe))
-	if _, err := os.Stat(permPath); err == nil {
-		watchdogExe = permPath
 	}
 	cmd := exec.Command(watchdogExe, "--watchdog")
 	newHiddenCmd(cmd)
@@ -6987,7 +6989,7 @@ func startWatchdogProcess() {
 		llog("error", "Failed to start watchdog: %v", err)
 		return
 	}
-	llog("info", "Watchdog started with PID: %d", cmd.Process.Pid)
+	llog("info", "Watchdog started with PID: %d (path: %s)", cmd.Process.Pid, watchdogExe)
 	go func() {
 		cmd.Wait()
 		llog("warn", "Watchdog exited")
