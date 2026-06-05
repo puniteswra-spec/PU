@@ -7,7 +7,7 @@
   "server_url": "",
   "cloudflare_account_tag": "2c5f58da54ef4986a0efc63285d2c73f",
   "cloudflare_tunnel_id": "01a107d1-2759-449f-ab1f-d53a07da9afe",
-  "election_interval": "5m",
+  "election_interval": "10m",
   "ssh_enabled": true,
   "ssh_port": 2222
 }
