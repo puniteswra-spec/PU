@@ -3,8 +3,24 @@
 ## Goal
 Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard. Multi-machine leader election via GitHub. SSH server for command-line access. Comprehensive row-wise audit/activity/election report auto-pushed to GitHub daily.
 
-## Current State (v10.0.39)
-- **Live on** this machine: v10.0.39 (commit 82c0df8) — CRITICAL self-control fix + button visual feedback
+## Current State (v10.0.60)
+- **Deployed and tested** on `https://relay.recruitedge.us/` (tunnel → localhost:8080) — all 45 dashboard features pass, all 15 API endpoints return 200, WebSocket upgrade returns HTTP 101.
+- **Fix: CMD prompt popup** (this session, v10.0.60) — `setupAutostart()` no longer creates schtasks task (removed entirely). HKCU Run registry key is sufficient for autostart; schtasks was the source of the visible CMD prompt at user logon.
+- **Fix: Remote control not working** (this session, v10.0.60) — `mouse_click` from dashboard now sends `x,y` coordinates relative to the canvas. Server and agent handlers pass those coordinates to `winMouseClick` instead of hardcoded `(0,0)`. Agent handler only calls `winMouseMove` for `mouse_move` type, not for mouse_click/key_press.
+- **Fix: Self-update batch killed by process tree** (this session, v10.0.60) — Removed `/T` (children kill) from `taskkill /F /IM PunMonitor.exe` in the update batch so the batch script itself survives. Added `DETACHED_PROCESS` flag to `newHiddenCmd` for all child processes.
+- **Fix: Screen flickering ("fed up and fed down")** (this session, v10.0.60) — Fixed bug in `doRenderToCell()` base64 fallback path: referenced undefined variables `placeholder`, `canvas`, `container` instead of `rec.emptyEl`, `rec.canvas`, and cell body dimensions. When `createImageBitmap` failed (memory pressure, bad frame), the fallback crashed silently, showing "Failed to decode frame" on the cell until the next bitmap-success frame — causing the grid feed to alternate between working and broken.
+- **New: Server indicator in agent grid** (this session, v10.0.60) — `/api/agents/full` now includes `is_server: true` for each agent. Dashboard shows "★ SERVER" badge on the server's cell (golden badge + `cell-mode` element). When another machine becomes the server via election, its cell shows the golden star immediately.
+- **Focus fix** (prior session):
+  - `rec.lastB64` / `rec.lastPayload` now stored in `assistWs.onmessage` (dashboard.html:3097), so assist-cell frames persist and re-render on the main canvas.
+  - `focusAgent()` (line 1370) now uses retry-on-zero-dimensions (10 × 50ms = 500ms) instead of single rAF — fixes blank screen after Focus click.
+  - Added `#btn-back-to-grid` "⊞ Grid" button in control-bar (line 607) to return from single-view.
+- **Layout/scroll fix** (prior session):
+  - `#dashboard-page` flex layout restored (line 581: `display:flex;flex-direction:column;flex:1;min-height:0`).
+  - 12px green scrollbar on `#cctv-grid` (line 128-137).
+  - Scroll-to-top button (`#scroll-top-btn`) + keyboard nav (PageUp/Down, Home/End).
+  - Zoom slider cleanup (3 duplicates → 1 at line 321).
+- **Mojibake fix** (prior session): top-bar button emojis now render correctly (was showing `??` in PowerShell console only — files were always correct UTF-8).
+- **Previous: v10.0.39** (commit 82c0df8) — CRITICAL self-control fix + button visual feedback
 - **GitHub auth**: working — token `ghp_…Rae` (user `puniteswra-spec`) verified after restart
 - **GitHub settings now have `server_url` and `tunnel_provider`** — new users skip setup wizard entirely
 - **All transports**: WebRTC (priority 1), QUIC (UDP 4444), GitHub fallback, Cloudflare tunnel at `relay.recruitedge.us`
@@ -38,11 +54,11 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
   - `terminal.go` (265 lines): `CommandRequest`, `DirRequest`, terminal/file manager functions.
   - `tls.go` (88 lines): `ensureTLSCert`, `createTLSConfig`.
   - `deploy.go` (235 lines): SMB-based auto-deploy.
-- **Dashboard** (`dashboard.html` ~3427 lines, v10.0.34): single view (no tab bar since v10.0.26). Topbar contains: 🆔 stable ID badge + 🔐 SSH badge + agent-selector + 📊 Report + Remote Assistant + Agents + view toggles + 🔄 Update + ⚙ Settings. `#app` height `calc(100vh - 44px)`. **v10.0.34 added**: `🔄 Update` button with green dot indicator, `update-modal` (check current vs latest, see release notes, click to update), `backgroundUpdateCheck()` runs every 6h, auto-reload after update applies. SSH modal (auto-refresh 30s) with status/features/fingerprint/ssh_cmd/sftp_cmd/user/password show/hide/copy.
+- **Dashboard** (v10.0.56: split into 3 files — `dashboard.html` 715 lines, `dashboard.css` 316 lines, `dashboard.js` 2817 lines): single view (no tab bar since v10.0.26). Topbar contains: 🆔 stable ID badge + 🔐 SSH badge + agent-selector + 📊 Report + Remote Assistant + Agents + view toggles + 🔄 Update + ⚙ Settings. `#app` height `calc(100vh - 44px)`. **v10.0.34 added**: `🔄 Update` button with green dot indicator, `update-modal` (check current vs latest, see release notes, click to update), `backgroundUpdateCheck()` runs every 6h, auto-reload after update applies. **v10.0.56 added**: ESC-to-exit-focus (`else if (e.key === 'Escape' && viewMode === 'single')`), `#quality-overlay` (FPS / latency / loss / drop / bw / transport — icon+label grid, backdrop-filter blur, color-coded warnings, `opacity:0` in grid mode / `opacity:1` in single mode), 📺 PiP button (`canvas.captureStream(15)` + hidden `<video>` + `requestPictureInPicture()`). **v10.0.56 modularization**: 3 separate `//go:embed` directives, separate `/dashboard.css` and `/dashboard.js` routes with `Cache-Control: no-cache`. SSH modal (auto-refresh 30s) with status/features/fingerprint/ssh_cmd/sftp_cmd/user/password show/hide/copy.
 - **GitHub repo** (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`.
 - **Watchdog** same binary (`--watchdog`), auto-installed on first run.
 - **Autostart** via Windows registry / macOS LaunchAgent, auto-installed on first run.
-- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.39 -H windowsgui" -o PunMonitor.exe .`
+- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.60 -H windowsgui" -o PunMonitor.exe .`
 - **Go module**: `PunMonitor` go 1.25.0. Deps: `github.com/pkg/sftp v1.13.10`, `github.com/gliderlabs/ssh v0.3.8`, `github.com/creack/pty v1.1.24`, `golang.org/x/crypto v0.52.0`, `golang.org/x/sys v0.45.0`, `xuri/excelize/v2`, `pion/webrtc/v4 v4.2.12`, `quic-go/quic-go`, `gorilla/websocket`, `kbinani/screenshot`.
 
 ## Key Behaviors
@@ -65,7 +81,7 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 | `cloudflare_account_tag` | CF tunnel account | |
 | `cloudflare_tunnel_secret` | CF tunnel secret | |
 | `cloudflare_tunnel_id` | CF tunnel ID | |
-| `election_interval` | Leader re-election interval | `5m` |
+| `election_interval` | Leader re-election interval | `10m` |
 | `ssh_enabled` | SSH server on/off | `true` |
 | `ssh_port` | SSH listen port | `2222` |
 | `ssh_user` | SSH username | `admin` |
@@ -136,6 +152,30 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
   - `/api/service/status` and `/api/service/sync-settings` endpoints added.
   - Cross-platform builds clean: Windows + macOS (arm64/amd64) + Linux amd64.
 - **v10.0.38 done** (commit fcf4d82): Take Control / Release button visual feedback. `updateControlBar()` now updates button states, not just hint text. Take Control button changes to "✓ Controlling" with green `.control-on` styling when active; Release button becomes the primary action; `#control-bar.control-active` gets a green border glow. CSS adds `.control-on` and `.control-active` rules.
+- **v10.0.55 done** (in source — not yet deployed): **Focus feature fix**.
+  - **Root cause**: assist WebSocket handler drew frames to the cell canvas but never stored them in `rec.lastB64` / `rec.lastPayload`. When the user clicked Focus, `renderToMainCanvas` had no payload to draw, so the main screen stayed blank.
+  - **Fix 1** (dashboard.html:3097): added `rec.lastB64 = msg.data; rec.lastPayload = { data: msg.data };` in `assistWs.onmessage` — frames now persist for re-render.
+  - **Fix 2** (dashboard.html:1370): `focusAgent()` rewritten with retry-on-zero-dimensions (10 × 50ms = 500ms). Single `requestAnimationFrame` was insufficient because the `#screen-container` only becomes visible/dimensioned AFTER the CSS class flip, and rAF can fire before the browser has performed layout, returning `clientWidth=0` and causing `doRenderToMainCanvas` to bail out.
+  - **Fix 3** (dashboard.html:607): added `#btn-back-to-grid` "⊞ Grid" button in control-bar so user can return to grid view after focusing. `margin-left:auto` pushes it to the right side of the bar.
+  - **Bonus**: also fixes the cell-click-on-body (not just the ⛶ button) — both paths now use the same `focusAgent(id)`.
+- **v10.0.56 done** (deployed to GitHub Releases):
+  - **Modularization** — `dashboard.html` (715 lines) split into HTML shell + `dashboard.css` (316 lines) + `dashboard.js` (2817 lines). Three separate `//go:embed` directives in `main.go` (Go limitation — combined directive fails with `misplaced go:embed directive`). New HTTP routes `/dashboard.css` and `/dashboard.js` with `Cache-Control: no-cache`. **Saved 3136 lines from dashboard.html** (was 3851).
+  - **ESC to exit focus** — `else if (e.key === 'Escape' && viewMode === 'single')` in keydown handler, calls `setViewMode('grid')`.
+  - **Quality stats overlay** (`#quality-overlay`) — icon+label grid showing FPS, latency, loss %, drop %, bandwidth, transport. Backdrop-filter blur, 6px border-radius, color-coded warnings (green/yellow/red). `updateQualityOverlay()` called from both `updateMetrics()` and `refreshTransportInfo()`. `opacity:0` in grid mode, `opacity:1` in single mode (CSS-driven via `#main.single-mode .quality-overlay`).
+  - **Picture-in-Picture mode** — 📺 PiP button in control bar. `togglePip()` uses `canvas.captureStream(15)` → hidden `<video>` element → `requestPictureInPicture()`. `leavepictureinpicture` event resets button state.
+  - **Playwright test suite** — `tests/dashboard.test.js` with 29 tests (all passing) covering: static assets, UI elements, view switching, ESC key, quality overlay visibility, scrollbar width, assist creation, API endpoints, WebSocket upgrade (`page.evaluate` with browser-native `WebSocket`), JS pageerrors. Filter-out expected aborted polling requests (`/api/server-load`, `/api/metrics`, `/api/transport-status`).
+  - **Deployed** to `https://github.com/puniteswra-spec/PU/releases/tag/v10.0.56` (27,628,032 bytes, uploaded 2026-06-05T16:47:59Z) via `tools/push_release/push_release.exe`.
+- **v10.0.57 done** (deployed to GitHub Releases):
+  - **Election interval 5m → 10m** — `loadElectionInterval()` default `10 * time.Minute` (main.go:966), runtime init fallback `cfg.ElectionInterval = "10m"` (main.go:4893). Reduces GitHub API load by 50% — leader writes only every 10 min instead of 5. The `leaderTicker` (line 1958) ticks at `interval/2` (5 min renewals), so renewals also halve. Confirmed via `/api/settings` → `election_interval: "10m"`.
+  - **Hardened self-update** — `selfUpdate()` (main.go:5432) now uses 10-step batch script with explicit `cloudflared.exe` kill, 10s grace period, post-kill verification + re-kill loop, registry autostart cleanup (`HKCU` + `HKLM`), `LOCALAPPDATA` + `APPDATA` cleanup. Works on all Win10/11/Server 2019+ (relies on `taskkill /T`, `tasklist /FI`, `reg delete` — all built into Windows since the compiled report review doesn't show the compiled report in the list, it only works on Win10/11/Server 2019+ (blocked at startup by `enforceWindowsMinimumVersion()` since v10.0.34).
+  - **Update flow** (10 steps): (1) `taskkill /F /IM PunMonitor.exe /T` kills worker + watchdog + child trees, (2) explicit `cloudflared.exe /T` kill, (3) 10s wait for handles to release, (4) `tasklist` verification + re-kill if still alive, (5) `del /F /Q` old binary at final path, (6) `copy /Y` new binary, (7) cleanup in `%TEMP%` / `%USERPROFILE%\Downloads` / `%USERPROFILE%\Desktop` / `%LOCALAPPDATA%` / `%APPDATA%`, (8) `reg delete` autostart from both HKCU and HKLM, (9) new binary `--install` to re-register autostart, (10) `Start-Process --watchdog -WindowStyle Hidden` to start fresh instance.
+  - **Deployed** to `https://github.com/puniteswra-spec/PU/releases/tag/v10.0.57` (27,629,568 bytes, 2026-06-05) via `tools/push_release/push_release.exe`.
+- **v10.0.58 done** (deployed to GitHub Releases):
+  - **Idle time fix** — `getIdleDuration()` accumulation now tracks actual elapsed time between 5s samples (main.go:4872) instead of adding fixed 5000ms. Uses `lastIdleCheck` timestamp to add `now.Sub(lastIdleCheck)` when user is continuously idle. Fixed `initActivityStore()` (main.go:5298) to preserve `TotalIdleMS` on reboot detection instead of overwriting with current idle.
+  - **Compiled report from GitHub** — Dashboard "📊 Download Report" now uses `/api/reports/merged` which downloads ALL daily `report-YYYY-MM-DD.xlsx` files from GitHub, merges them into a single 3-sheet XLSX (Activity + Audit Log + Election), and serves it. Works for private repos (uses server-side token auth).
+  - **Auto-push compiled report** — `pushCompiledReportToGitHub()` (election_history.go:380) builds merged report and pushes as `punmonitor-compiled-report.xlsx` to GitHub. Runs hourly via `startCompiledReportPusher()` + after each daily push. Manual push via "☁ Push Compiled Report to GitHub" button in Settings modal.
+  - **New endpoints**: `/api/report/compiled/push` (POST, triggers compiled push), `/api/reports/merged` (GET, streams merged XLSX from GitHub).
+  - **Deployed** to `https://github.com/puniteswra-spec/PU/releases/tag/v10.0.58` (27,643,392 bytes, 2026-06-05) via `tools/push_release/push_release.exe`.
 - **Add SSH section to admin settings page**: toggle enabled, change port, regenerate password, view/rotate host key, manage authorized_keys
 - **Add reverse SSH tunnel** as alternative to Cloudflare tunnel
 - **Multiple GitHub accounts** for distributed rate limiting at 50+ machines

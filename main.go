@@ -40,6 +40,12 @@ import (
 //go:embed dashboard.html
 var dashboardHTML string
 
+//go:embed dashboard.css
+var dashboardCSS string
+
+//go:embed dashboard.js
+var dashboardJS string
+
 var startTime = time.Now()
 
 var (
@@ -957,7 +963,7 @@ func setElectionInterval(d time.Duration) {
 }
 
 func loadElectionInterval() {
-	const defaultInterval = 5 * time.Minute
+	const defaultInterval = 10 * time.Minute
 	if cfg.ElectionInterval == "" {
 		setElectionInterval(defaultInterval)
 		return
@@ -1259,17 +1265,19 @@ func handleWSMessage(conn *websocket.Conn, msg []byte) {
 			}
 		}
 	case "mouse_click":
+		cx, _ := msgMap["x"].(float64)
+		cy, _ := msgMap["y"].(float64)
 		if target, ok := msgMap["agentId"].(string); ok && target != "" {
 			if target == cfg.AgentID {
 				btn, _ := msgMap["button"].(string)
-				winMouseClick(0, 0, btn != "right")
+				winMouseClick(int(cx), int(cy), btn != "right")
 				return
 			}
 			forwardToAgent(target, msg)
 			return
 		}
 		btn, _ := msgMap["button"].(string)
-		winMouseClick(0, 0, btn != "right")
+		winMouseClick(int(cx), int(cy), btn != "right")
 	case "key_press":
 		if target, ok := msgMap["agentId"].(string); ok && target != "" {
 			if target == cfg.AgentID {
@@ -1941,6 +1949,7 @@ func runServerComponents() {
 	}
 	startQUICServer() // HTTP/3 transport for agents
 	startDailyReportPusher()
+	startCompiledReportPusher()
 	go safeRun("leader-renewal", func() {
 		// Leader-only GitHub writes optimization:
 		//  - The LEADER renews every electionInterval/2 (fast, keeps its claim)
@@ -2089,6 +2098,18 @@ func startHTTPServer() {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(dashboardContent))
+	})
+
+	// Static assets extracted from dashboard.html (CSS + JS)
+	http.HandleFunc("/dashboard.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write([]byte(dashboardCSS))
+	})
+	http.HandleFunc("/dashboard.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write([]byte(dashboardJS))
 	})
 
 	http.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
@@ -2525,6 +2546,7 @@ func startHTTPServer() {
 
 	http.HandleFunc("/api/report.xlsx", handleReportXLSX)
 	http.HandleFunc("/api/report.xls", handleReportXLSX)
+	http.HandleFunc("/api/agent/download", handleAgentDownload)
 
 	http.HandleFunc("/api/agents", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -2556,7 +2578,7 @@ func startHTTPServer() {
 			if v, ok := hiddenAgents.Load(id); ok {
 				hidden = v.(bool)
 			}
-			list = append(list, map[string]interface{}{"id": id, "hidden": hidden, "connected": true})
+			list = append(list, map[string]interface{}{"id": id, "hidden": hidden, "connected": true, "is_server": id == cfg.AgentID && cfg.IsServerMode})
 		}
 		agentConnsMu.RUnlock()
 		myHidden := false
@@ -2564,7 +2586,7 @@ func startHTTPServer() {
 			myHidden = v.(bool)
 		}
 		if _, exists := agentConns[cfg.AgentID]; !exists {
-			list = append(list, map[string]interface{}{"id": cfg.AgentID, "hidden": myHidden, "connected": false})
+			list = append(list, map[string]interface{}{"id": cfg.AgentID, "hidden": myHidden, "connected": false, "is_server": cfg.IsServerMode})
 		}
 		json.NewEncoder(w).Encode(list)
 	})
@@ -2885,6 +2907,28 @@ func startHTTPServer() {
 			lastDailyReportPushed = filename
 		}
 		dailyReportPushMu.Unlock()
+		resp := map[string]interface{}{
+			"filename":    filename,
+			"message":     msg,
+			"event_count": len(getElectionHistory()),
+		}
+		if err != nil {
+			resp["error"] = err.Error()
+			resp["ok"] = false
+		} else {
+			resp["ok"] = true
+		}
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	// /api/report/compiled/push — POST to manually trigger a compiled report push
+	http.HandleFunc("/api/report/compiled/push", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		filename, msg, err := pushCompiledReportToGitHub()
 		resp := map[string]interface{}{
 			"filename":    filename,
 			"message":     msg,
@@ -4692,7 +4736,18 @@ func startQuickTunnel(cfg *Config) {
 
 var defaultGitHubRepo string
 var defaultGitHubToken string
-var binaryVersion = "10.0.50"
+var binaryVersion = "10.0.60"
+
+func handleAgentDownload(w http.ResponseWriter, r *http.Request) {
+	binaryPath := "PunMonitor.exe"
+	if _, err := os.Stat(binaryPath); err != nil {
+		http.Error(w, "Agent binary not found", 404)
+		return
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename=\"PunMonitor.exe\"")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeFile(w, r, binaryPath)
+}
 
 func main() {
 	hideConsole()
@@ -4842,14 +4897,26 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+		var lastIdleCheck time.Time
 		for {
 			select {
-			case <-ticker.C:
-				if globalActivity != nil && getIdleDuration() >= 5*time.Second {
-					globalActivity.mu.Lock()
-					globalActivity.state.TotalIdleMS += 5000
-					globalActivity.mu.Unlock()
-					globalActivity.save()
+			case now := <-ticker.C:
+				if globalActivity != nil {
+					idleDur := getIdleDuration()
+					if idleDur >= 5*time.Second {
+						if !lastIdleCheck.IsZero() {
+							elapsed := now.Sub(lastIdleCheck)
+							if elapsed > 0 && elapsed < 30*time.Second {
+								globalActivity.mu.Lock()
+								globalActivity.state.TotalIdleMS += int64(elapsed / time.Millisecond)
+								globalActivity.mu.Unlock()
+								globalActivity.save()
+							}
+						}
+						lastIdleCheck = now
+					} else {
+						lastIdleCheck = time.Time{}
+					}
 				}
 			case <-idleCtx.Done():
 				return
@@ -4860,8 +4927,8 @@ func main() {
 	loadSettings()
 	loadElectionInterval()
 	if cfg.ElectionInterval == "" {
-		cfg.ElectionInterval = "5m"
-		llog("info", "Election interval not set – initializing to default 5m")
+		cfg.ElectionInterval = "10m"
+		llog("info", "Election interval not set – initializing to default 10m")
 		saveSettings()
 		loadElectionInterval()
 	}
@@ -5253,7 +5320,10 @@ func initActivityStore() *ActivityStore {
 	s.mu.Lock()
 	if boot > 0 && boot != s.state.BootTimeMS {
 		s.state.BootTimeMS = boot
-		s.recordLocked("system_startup", formatTime(boot)+" — system boot")
+		if s.state.TotalIdleMS == 0 {
+			s.state.TotalIdleMS = int64(getIdleDuration() / time.Millisecond)
+		}
+		s.recordLocked("system_startup", formatTime(boot)+" ? system boot")
 		s.state.LastWakeMS = now
 	}
 	s.state.LastStartupMS = now
@@ -5403,29 +5473,46 @@ func selfUpdate(downloadURL string) {
 		finalExe := filepath.Join(filepath.Dir(exe), "PunMonitor.exe")
 		script := filepath.Join(os.TempDir(), "pun_clean_install.bat")
 		batContent := "@echo off\r\n" +
-			"echo [PunMonitor] Step 1: Killing ALL PunMonitor processes...\r\n" +
-			"taskkill /F /IM PunMonitor.exe /T >nul 2>&1\r\n" +
-			"taskkill /F /IM PunMonitor_windows.exe /T >nul 2>&1\r\n" +
-			"taskkill /F /IM PunMonitor_check.exe /T >nul 2>&1\r\n" +
-			"echo [PunMonitor] Step 2: Waiting for processes to exit...\r\n" +
-			"timeout /t 5 /nobreak >nul\r\n" +
-			"echo [PunMonitor] Step 3: Removing old binaries...\r\n" +
+			"setlocal enabledelayedexpansion\r\n" +
+			"echo [PunMonitor] Step 1: Killing ALL PunMonitor processes (worker + watchdog; no /T to avoid killing our own batch)...\r\n" +
+			"taskkill /F /IM PunMonitor.exe >nul 2>&1\r\n" +
+			"taskkill /F /IM PunMonitor_windows.exe >nul 2>&1\r\n" +
+			"taskkill /F /IM PunMonitor_check.exe >nul 2>&1\r\n" +
+			"echo [PunMonitor] Step 2: Killing cloudflared tunnel + any leftover child processes...\r\n" +
+			"taskkill /F /IM cloudflared.exe /T >nul 2>&1\r\n" +
+			"taskkill /F /IM cloudflared_windows.exe /T >nul 2>&1\r\n" +
+			"echo [PunMonitor] Step 3: Waiting 10s for processes + handles to fully release...\r\n" +
+			"timeout /t 10 /nobreak >nul\r\n" +
+			"echo [PunMonitor] Step 4: Verifying no PunMonitor processes remain...\r\n" +
+			"tasklist /FI \"IMAGENAME eq PunMonitor.exe\" 2>NUL | find /I \"PunMonitor.exe\" >nul\r\n" +
+			"if not errorlevel 1 (\r\n" +
+			"    echo [PunMonitor] WARNING: PunMonitor.exe still alive, force-killing again (no /T)...\r\n" +
+			"    taskkill /F /IM PunMonitor.exe >nul 2>&1\r\n" +
+			"    timeout /t 5 /nobreak >nul\r\n" +
+			")\r\n" +
+			"echo [PunMonitor] Step 5: Removing old binaries from all known locations...\r\n" +
 			"del /F /Q \"" + finalExe + "\" >nul 2>&1\r\n" +
 			"del /F /Q \"" + exe + "\" >nul 2>&1\r\n" +
-			"timeout /t 1 /nobreak >nul\r\n" +
-			"echo [PunMonitor] Step 4: Installing new binary as PunMonitor.exe...\r\n" +
+			"timeout /t 2 /nobreak >nul\r\n" +
+			"echo [PunMonitor] Step 6: Installing new binary as PunMonitor.exe...\r\n" +
 			"copy /Y \"" + newExe + "\" \"" + finalExe + "\" >nul 2>&1\r\n" +
 			"del /F /Q \"" + newExe + "\" >nul 2>&1\r\n" +
-			"echo [PunMonitor] Step 5: Cleaning all old binary copies...\r\n" +
+			"echo [PunMonitor] Step 7: Cleaning all old binary copies in user dirs...\r\n" +
 			"del /q \"%TEMP%\\PunMonitor*.exe\" >nul 2>&1\r\n" +
 			"del /q \"%USERPROFILE%\\Downloads\\PunMonitor*.exe\" >nul 2>&1\r\n" +
 			"del /q \"%USERPROFILE%\\Desktop\\PunMonitor*.exe\" >nul 2>&1\r\n" +
+			"del /q \"%LOCALAPPDATA%\\PunMonitor*.exe\" >nul 2>&1\r\n" +
+			"del /q \"%APPDATA%\\PunMonitor*.exe\" >nul 2>&1\r\n" +
 			"del /q \"%TEMP%\\pun_*.bat\" >nul 2>&1\r\n" +
-			"echo [PunMonitor] Step 6: Reinstalling autostart...\r\n" +
+			"echo [PunMonitor] Step 8: Removing old autostart registry entries (clean slate)...\r\n" +
+			"reg delete \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /v PunMonitor /f >nul 2>&1\r\n" +
+			"reg delete \"HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /v PunMonitor /f >nul 2>&1\r\n" +
+			"echo [PunMonitor] Step 9: Reinstalling autostart via new binary...\r\n" +
 			"\"" + finalExe + "\" --install >nul 2>&1\r\n" +
-			"echo [PunMonitor] Step 7: Starting fresh instance (hidden)...\r\n" +
+			"echo [PunMonitor] Step 10: Starting fresh instance (hidden) with watchdog...\r\n" +
 			"powershell -WindowStyle Hidden -Command \"Start-Process -FilePath '" + finalExe + "' -ArgumentList '--watchdog' -WindowStyle Hidden\" >nul 2>&1\r\n" +
-			"echo [PunMonitor] Update complete!\r\n"
+			"echo [PunMonitor] Update complete! New instance launched in background.\r\n" +
+			"endlocal\r\n"
 		os.WriteFile(script, []byte(batContent), 0644)
 		cmd := exec.Command("cmd", "/c", script)
 		newHiddenCmd(cmd)
@@ -6528,14 +6615,19 @@ func agentReadLoop(conn *websocket.Conn, hostname string) {
 			// Forwarded remote control commands (mouse_move, mouse_click, key_press, etc.)
 			// Execute locally instead of re-forwarding (which would loop or fail silently)
 			if t := msgMap["type"].(string); t == "mouse_move" || t == "mouse_click" || t == "key_press" {
-				if x, ok := msgMap["x"].(float64); ok {
-					if y, ok := msgMap["y"].(float64); ok {
-						winMouseMove(int(x), int(y))
+				if t == "mouse_move" {
+					if x, ok := msgMap["x"].(float64); ok {
+						if y, ok := msgMap["y"].(float64); ok {
+							winMouseMove(int(x), int(y))
+						}
 					}
 				}
 				if t == "mouse_click" {
+					cx, _ := msgMap["x"].(float64)
+					cy, _ := msgMap["y"].(float64)
 					btn, _ := msgMap["button"].(string)
-					winMouseClick(0, 0, btn != "right")
+					winMouseMove(int(cx), int(cy))
+					winMouseClick(int(cx), int(cy), btn != "right")
 				}
 				if t == "key_press" {
 					if key, ok := msgMap["key"].(float64); ok {

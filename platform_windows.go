@@ -23,7 +23,7 @@ import (
 func newHiddenCmd(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
-		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+		CreationFlags: 0x08000000 | 0x00000001, // CREATE_NO_WINDOW | DETACHED_PROCESS
 	}
 }
 
@@ -423,32 +423,7 @@ func setupAutostart() {
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(path))),
 		uintptr(len(path)*2),
 	)
-	// Skip schtasks when not admin: it requires /RL HIGHEST which fails with
-	// "Access is denied" AND flashes a cmd window. The HKCU Run registry
-	// entry already provides autostart for non-admin users.
-	admin := isWindowsAdmin()
-	if !admin {
-		llog("info", "Autostart installed: %s (registry only — schtasks skipped: not admin)", path)
-		return
-	}
-	schtasksExe, _ := exec.LookPath("schtasks")
-	if schtasksExe != "" {
-		schCmd := exec.Command(schtasksExe,
-			"/Create",
-			"/TN", "PunMonitor",
-			"/TR", fmt.Sprintf(`"%s" --watchdog`, watchdogExe),
-			"/SC", "ONLOGON",
-			"/F",
-			"/RL", "HIGHEST",
-		)
-		newHiddenCmd(schCmd)
-		if out, err := schCmd.CombinedOutput(); err != nil {
-			llog("warn", "schtasks create failed: %v (output: %s)", err, string(out))
-		} else {
-			llog("info", "Scheduled task 'PunMonitor' created/updated")
-		}
-	}
-	llog("info", "Autostart installed: %s (+ scheduled task)", path)
+	llog("info", "Autostart installed: %s (HKCU Run only — no schtasks to avoid CMD popup)", path)
 }
 
 func removeAutostart() {

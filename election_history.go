@@ -341,6 +341,22 @@ func startDailyReportPusher() {
 	}()
 }
 
+// startCompiledReportPusher launches a background goroutine that pushes
+// the compiled report to GitHub every hour (and a few minutes after startup).
+func startCompiledReportPusher() {
+	go func() {
+		// Initial push ~5 minutes after startup
+		time.Sleep(5 * time.Minute)
+		pushCompiledReportToGitHub()
+
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			pushCompiledReportToGitHub()
+		}
+	}()
+}
+
 // pushOnce performs one daily report push. Safe to call concurrently.
 func pushOnce() {
 	dailyReportPushMu.Lock()
@@ -354,4 +370,94 @@ func pushOnce() {
 	dailyReportPusherState = "OK " + time.Now().Format(time.RFC3339) + ": " + msg
 	lastDailyReportPushed = filename
 	llog("info", "daily report auto-push: %s", msg)
+
+	// Also push compiled report
+	go pushCompiledReportToGitHub()
+}
+
+// pushCompiledReportToGitHub builds the merged report (from all daily reports in GitHub)
+// and pushes it as a single compiled file: punmonitor-compiled-report.xlsx
+func pushCompiledReportToGitHub() (string, string, error) {
+	if cfg.GitHubRepo == "" || cfg.GitHubToken == "" {
+		return "", "github not configured", nil
+	}
+	if ok, errStr := isGitHubAuthOK(); !ok && errStr != "" {
+		return "", "auth failed: " + errStr, fmt.Errorf("github auth failed: %s", errStr)
+	}
+	// Build merged report by fetching all daily reports from GitHub
+	data, err := buildMergedReportXLSXBytes()
+	if err != nil {
+		return "", "", fmt.Errorf("xlsx build: %w", err)
+	}
+	filename := "punmonitor-compiled-report.xlsx"
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s",
+		normalizeGitHubRepo(cfg.GitHubRepo), filename)
+
+	req, _ := http.NewRequest("GET", apiURL, nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	resp, err := httpFastClient.Do(req)
+	if err != nil {
+		return filename, "", fmt.Errorf("github GET: %w", err)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		resp.Body.Close()
+		setGitHubAuth(false, fmt.Sprintf("GitHub API %d — token revoked or missing scopes", resp.StatusCode))
+		return filename, "auth failed", fmt.Errorf("github auth failed (%d) — update token in settings", resp.StatusCode)
+	}
+	var existingSHA string
+	if resp.StatusCode == http.StatusOK {
+		var gh struct { SHA string `json:"sha"` }
+		_ = json.NewDecoder(resp.Body).Decode(&gh)
+		existingSHA = gh.SHA
+	}
+	resp.Body.Close()
+
+	encoded := base64.StdEncoding.EncodeToString(data)
+	auditCount := 0
+	if globalAudit != nil {
+		auditCount = len(globalAudit.Recent(10000))
+	}
+	payload := map[string]interface{}{
+		"message": fmt.Sprintf("compiled report %s: %d election events, %d audit entries",
+			time.Now().Format("2006-01-02"),
+			len(getElectionHistory()),
+			auditCount),
+		"content": encoded,
+		"branch":  "main",
+	}
+	if existingSHA != "" {
+		payload["sha"] = existingSHA
+	}
+	payloadData, _ := json.Marshal(payload)
+	req, _ = http.NewRequest("PUT", apiURL, bytes.NewReader(payloadData))
+	req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = httpFastClient.Do(req)
+	if err != nil {
+		return filename, "", fmt.Errorf("github PUT: %w", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	llog("info", "compiled report push: status=%d body=%s", resp.StatusCode, string(body)[:minInt(200, len(body))])
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		setGitHubAuth(false, fmt.Sprintf("GitHub API %d — token revoked or missing scopes", resp.StatusCode))
+		return filename, "auth failed", fmt.Errorf("github auth failed (%d) — update token in settings", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyStr := strings.TrimSpace(string(body))
+		if len(bodyStr) > 300 {
+			bodyStr = bodyStr[:300] + "..."
+		}
+		return filename, fmt.Sprintf("github returned %d", resp.StatusCode), fmt.Errorf("body: %s", bodyStr)
+	}
+	setGitHubAuth(true, "")
+	return filename, "compiled report pushed to " + normalizeGitHubRepo(cfg.GitHubRepo) + "/" + filename, nil
+}
+
+// buildMergedReportXLSXBytes returns the merged report as bytes (same logic as /api/reports/merged)
+func buildMergedReportXLSXBytes() ([]byte, error) {
+	var buf bytes.Buffer
+	err := buildMergedReportXLSX(&buf)
+	return buf.Bytes(), err
 }
