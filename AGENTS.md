@@ -3,13 +3,18 @@
 ## Goal
 Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard. Multi-machine leader election via GitHub. SSH server for command-line access. Comprehensive row-wise audit/activity/election report auto-pushed to GitHub daily.
 
-## Current State (v10.0.60)
+## Current State (v10.0.61)
 - **Deployed and tested** on `https://relay.recruitedge.us/` (tunnel → localhost:8080) — all 45 dashboard features pass, all 15 API endpoints return 200, WebSocket upgrade returns HTTP 101.
 - **Fix: CMD prompt popup** (this session, v10.0.60) — `setupAutostart()` no longer creates schtasks task (removed entirely). HKCU Run registry key is sufficient for autostart; schtasks was the source of the visible CMD prompt at user logon.
 - **Fix: Remote control not working** (this session, v10.0.60) — `mouse_click` from dashboard now sends `x,y` coordinates relative to the canvas. Server and agent handlers pass those coordinates to `winMouseClick` instead of hardcoded `(0,0)`. Agent handler only calls `winMouseMove` for `mouse_move` type, not for mouse_click/key_press.
 - **Fix: Self-update batch killed by process tree** (this session, v10.0.60) — Removed `/T` (children kill) from `taskkill /F /IM PunMonitor.exe` in the update batch so the batch script itself survives. Added `DETACHED_PROCESS` flag to `newHiddenCmd` for all child processes.
 - **Fix: Screen flickering ("fed up and fed down")** (this session, v10.0.60) — Fixed bug in `doRenderToCell()` base64 fallback path: referenced undefined variables `placeholder`, `canvas`, `container` instead of `rec.emptyEl`, `rec.canvas`, and cell body dimensions. When `createImageBitmap` failed (memory pressure, bad frame), the fallback crashed silently, showing "Failed to decode frame" on the cell until the next bitmap-success frame — causing the grid feed to alternate between working and broken.
 - **New: Server indicator in agent grid** (this session, v10.0.60) — `/api/agents/full` now includes `is_server: true` for each agent. Dashboard shows "★ SERVER" badge on the server's cell (golden badge + `cell-mode` element). When another machine becomes the server via election, its cell shows the golden star immediately.
+- **Fix: Boot time and idle time wrong / missing in agent grid** (this session, v10.0.61):
+  - **Idle accumulation bug**: First idle period after startup was NEVER counted (the goroutine skipped the first detection because `lastIdleCheck` was zero). Fixed by backdating `lastIdleCheck` to `now - idleDur` on first idle detection, so all accumulated idle time is counted. Also raised the 30s sanity cap to 24h.
+  - **WebRTC agent hello** missing `boot_time` and `idle_time` — agents connecting via WebRTC never sent these fields to the server, so their grid cells showed "—". Fixed by adding them.
+  - **QUIC agent hello** missing `boot_time` and `idle_time` — same issue. Fixed by adding them.
+  - **Server's own info stale**: The server stored its own `boot_time` and `idle_time` as static values (computed once at startup via IIFE). When the dashboard fetched `/api/agent-system-info/{serverID}`, idle_time showed the startup snapshot, not accumulated idle. Fixed by dynamically injecting live `globalActivity.Summary()` values in the handler when the queried agent is the server itself.
 - **Focus fix** (prior session):
   - `rec.lastB64` / `rec.lastPayload` now stored in `assistWs.onmessage` (dashboard.html:3097), so assist-cell frames persist and re-render on the main canvas.
   - `focusAgent()` (line 1370) now uses retry-on-zero-dimensions (10 × 50ms = 500ms) instead of single rAF — fixes blank screen after Focus click.
@@ -58,7 +63,7 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 - **GitHub repo** (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`.
 - **Watchdog** same binary (`--watchdog`), auto-installed on first run.
 - **Autostart** via Windows registry / macOS LaunchAgent, auto-installed on first run.
-- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.60 -H windowsgui" -o PunMonitor.exe .`
+- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.61 -H windowsgui" -o PunMonitor.exe .`
 - **Go module**: `PunMonitor` go 1.25.0. Deps: `github.com/pkg/sftp v1.13.10`, `github.com/gliderlabs/ssh v0.3.8`, `github.com/creack/pty v1.1.24`, `golang.org/x/crypto v0.52.0`, `golang.org/x/sys v0.45.0`, `xuri/excelize/v2`, `pion/webrtc/v4 v4.2.12`, `quic-go/quic-go`, `gorilla/websocket`, `kbinani/screenshot`.
 
 ## Key Behaviors

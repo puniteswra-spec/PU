@@ -200,6 +200,15 @@ func tryAgentQUIC(hostname, serverURL string) bool {
 		"mode":      "agent",
 		"transport": "quic",
 	}
+	if globalActivity != nil {
+		s := globalActivity.Summary()
+		if b, ok := s["boot_time"]; ok {
+			sysInfo["boot_time"] = b
+		}
+		if ti, ok := s["total_idle"]; ok {
+			sysInfo["idle_time"] = ti
+		}
+	}
 	hello, _ := json.Marshal(map[string]interface{}{
 		"type":       "hello",
 		"agentId":    hostname,

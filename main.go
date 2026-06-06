@@ -2383,6 +2383,26 @@ func startHTTPServer() {
 		w.Header().Set("Content-Type", "application/json")
 		agentID := strings.TrimPrefix(r.URL.Path, "/api/agent-system-info/")
 		if info, ok := agentSystemInfo.Load(agentID); ok {
+			// For the server's own entry, inject live boot_time and idle_time
+			// instead of the static snapshot taken at startup.
+			if agentID == cfg.AgentID && globalActivity != nil {
+				s := globalActivity.Summary()
+				if m, ok := info.(map[string]interface{}); ok {
+					// Create a shallow copy so we don't mutate the stored map
+					out := make(map[string]interface{}, len(m)+2)
+					for k, v := range m {
+						out[k] = v
+					}
+					if b, exists := s["boot_time"]; exists {
+						out["boot_time"] = b
+					}
+					if ti, exists := s["total_idle"]; exists {
+						out["idle_time"] = ti
+					}
+					json.NewEncoder(w).Encode(out)
+					return
+				}
+			}
 			json.NewEncoder(w).Encode(info)
 		} else {
 			w.WriteHeader(404)
@@ -4736,7 +4756,7 @@ func startQuickTunnel(cfg *Config) {
 
 var defaultGitHubRepo string
 var defaultGitHubToken string
-var binaryVersion = "10.0.60"
+var binaryVersion = "10.0.61"
 
 func handleAgentDownload(w http.ResponseWriter, r *http.Request) {
 	binaryPath := "PunMonitor.exe"
@@ -4904,14 +4924,18 @@ func main() {
 				if globalActivity != nil {
 					idleDur := getIdleDuration()
 					if idleDur >= 5*time.Second {
-						if !lastIdleCheck.IsZero() {
-							elapsed := now.Sub(lastIdleCheck)
-							if elapsed > 0 && elapsed < 30*time.Second {
-								globalActivity.mu.Lock()
-								globalActivity.state.TotalIdleMS += int64(elapsed / time.Millisecond)
-								globalActivity.mu.Unlock()
-								globalActivity.save()
-							}
+						if lastIdleCheck.IsZero() {
+							// First idle detection: backdate lastCheck to when user
+							// actually became idle, so ALL accumulated idle time is
+							// counted, not just from the first tick onward.
+							lastIdleCheck = now.Add(-idleDur)
+						}
+						elapsed := now.Sub(lastIdleCheck)
+						if elapsed > 0 && elapsed < 86400*time.Second {
+							globalActivity.mu.Lock()
+							globalActivity.state.TotalIdleMS += int64(elapsed / time.Millisecond)
+							globalActivity.mu.Unlock()
+							globalActivity.save()
 						}
 						lastIdleCheck = now
 					} else {
@@ -6748,20 +6772,30 @@ func tryAgentWebRTC(hostname, serverURL string) bool {
 		llog("error", "Agent WebRTC WS connect to %s failed: %v", wsURL, err)
 		return false
 	}
+	sysInfo := map[string]string{
+		"hostname": getHostname(),
+		"local_ip": getLocalIP(),
+		"wan_ip":   getWANIP(),
+		"os":       runtime.GOOS,
+		"arch":     runtime.GOARCH,
+		"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
+		"version":  binaryVersion,
+		"mode":     "agent",
+	}
+	if globalActivity != nil {
+		s := globalActivity.Summary()
+		if b, ok := s["boot_time"]; ok {
+			sysInfo["boot_time"] = b
+		}
+		if ti, ok := s["total_idle"]; ok {
+			sysInfo["idle_time"] = ti
+		}
+	}
 	hello, _ := json.Marshal(map[string]interface{}{
 		"type":    "hello",
 		"agentId": hostname,
 		"agent":   true,
-		"systemInfo": map[string]string{
-			"hostname": getHostname(),
-			"local_ip": getLocalIP(),
-			"wan_ip":   getWANIP(),
-			"os":       runtime.GOOS,
-			"arch":     runtime.GOARCH,
-			"uptime":   fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
-			"version":  binaryVersion,
-			"mode":     "agent",
-		},
+		"systemInfo": sysInfo,
 	})
 	if err := safeWriteMessage(conn, websocket.TextMessage, hello); err != nil {
 		conn.Close()
