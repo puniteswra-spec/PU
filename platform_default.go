@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-func newHiddenCmd(cmd *exec.Cmd) {}
-func hideConsole()               {}
-func addDefenderExclusion()      {}
+func newHiddenCmd(cmd *exec.Cmd)   {}
+func newDetachedCmd(cmd *exec.Cmd) {}
+func hideConsole()                 {}
+func addDefenderExclusion()        {}
 
 func watchdogSingleton() bool {
 	lockFile := filepath.Join(os.TempDir(), "PunMonitorWatchdog.lock")

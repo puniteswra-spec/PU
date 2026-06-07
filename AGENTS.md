@@ -3,7 +3,7 @@
 ## Goal
 Single binary, zero config shipped — self-configures from GitHub on first run. Everything manageable through dashboard. Multi-machine leader election via GitHub. SSH server for command-line access. Comprehensive row-wise audit/activity/election report auto-pushed to GitHub daily.
 
-## Current State (v10.0.62)
+## Current State (v10.0.63)
 - **Deployed and tested** on `https://relay.recruitedge.us/` (tunnel → localhost:8080) — all 45 dashboard features pass, all 15 API endpoints return 200, WebSocket upgrade returns HTTP 101.
 - **Fix: CMD prompt popup** (this session, v10.0.60) — `setupAutostart()` no longer creates schtasks task (removed entirely). HKCU Run registry key is sufficient for autostart; schtasks was the source of the visible CMD prompt at user logon.
 - **Fix: Remote control not working** (this session, v10.0.60) — `mouse_click` from dashboard now sends `x,y` coordinates relative to the canvas. Server and agent handlers pass those coordinates to `winMouseClick` instead of hardcoded `(0,0)`. Agent handler only calls `winMouseMove` for `mouse_move` type, not for mouse_click/key_press.
@@ -66,7 +66,7 @@ Single binary, zero config shipped — self-configures from GitHub on first run.
 - **GitHub repo** (`puniteswra-spec/PU`) baked at build time via `-X main.defaultGitHubRepo`.
 - **Watchdog** same binary (`--watchdog`), auto-installed on first run.
 - **Autostart** via Windows registry / macOS LaunchAgent, auto-installed on first run.
-- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.62 -H windowsgui" -o PunMonitor.exe .`
+- **Build**: `go build -ldflags "-X main.binaryVersion=10.0.63 -H windowsgui" -o PunMonitor.exe .`
 - **Go module**: `PunMonitor` go 1.25.0. Deps: `github.com/pkg/sftp v1.13.10`, `github.com/gliderlabs/ssh v0.3.8`, `github.com/creack/pty v1.1.24`, `golang.org/x/crypto v0.52.0`, `golang.org/x/sys v0.45.0`, `xuri/excelize/v2`, `pion/webrtc/v4 v4.2.12`, `quic-go/quic-go`, `gorilla/websocket`, `kbinani/screenshot`.
 
 ## Key Behaviors

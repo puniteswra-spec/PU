@@ -23,6 +23,10 @@ func newHiddenCmd(cmd *exec.Cmd) {
 		Setpgid: true,
 	}
 }
+
+func newDetachedCmd(cmd *exec.Cmd) {
+	newHiddenCmd(cmd)
+}
 func hideConsole() {
 	// Detach from terminal: create new session and redirect all std FDs to /dev/null
 	syscall.Syscall(syscall.SYS_SETSID, 0, 0, 0)

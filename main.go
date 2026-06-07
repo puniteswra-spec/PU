@@ -4703,6 +4703,19 @@ func cleanOldBinaryCopies() {
 		filepath.Join(os.Getenv("USERPROFILE"), "Downloads"),
 		filepath.Join(os.Getenv("USERPROFILE"), "Desktop"),
 	}
+	// Remove old binary from C:\Program Files\PunMonitor\ if it exists
+	// (v10.0.61 and earlier used this path — v10.0.62+ uses LOCALAPPDATA).
+	if pf := os.Getenv("ProgramFiles"); pf != "" {
+		oldPfExe := filepath.Join(pf, "PunMonitor", "PunMonitor.exe")
+		if _, err := os.Stat(oldPfExe); err == nil {
+			if err := os.Remove(oldPfExe); err != nil {
+				llog("warn", "Cannot remove old Program Files binary (need admin?): %v", err)
+			} else {
+				llog("info", "Removed old Program Files binary: %s", oldPfExe)
+				os.Remove(filepath.Dir(oldPfExe))
+			}
+		}
+	}
 	// Also scan the dataDir/bin for old cloudflared versions (not our binary)
 	for _, dir := range dirs {
 		if dir == "" {
@@ -4782,7 +4795,7 @@ func startQuickTunnel(cfg *Config) {
 
 var defaultGitHubRepo string
 var defaultGitHubToken string
-var binaryVersion = "10.0.62"
+var binaryVersion = "10.0.63"
 
 func handleAgentDownload(w http.ResponseWriter, r *http.Request) {
 	binaryPath := "PunMonitor.exe"
