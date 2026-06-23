@@ -1,10 +1,10 @@
 {
   "config_port": 8080,
-  "max_fps": 10,
+  "max_fps": 5,
   "github_repo": "puniteswra-spec/PU",
-  "tunnel_provider": "",
+  "tunnel_provider": "cloudflare",
   "tunnel_hostname": "relay.recruitedge.us",
-  "server_url": "",
+  "server_url": "https://relay.recruitedge.us",
   "cloudflare_account_tag": "2c5f58da54ef4986a0efc63285d2c73f",
   "cloudflare_tunnel_id": "01a107d1-2759-449f-ab1f-d53a07da9afe",
   "election_interval": "10m",
