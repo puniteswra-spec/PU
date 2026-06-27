@@ -1,6 +1,6 @@
 {
   "config_port": 8080,
-  "max_fps": 5,
+  "max_fps": 10,
   "github_repo": "puniteswra-spec/PU",
   "tunnel_provider": "cloudflare",
   "tunnel_hostname": "relay.recruitedge.us",
